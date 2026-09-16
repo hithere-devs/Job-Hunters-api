@@ -1,4 +1,4 @@
-import { open } from 'node:fs/promises'
+import { open, lstat } from 'node:fs/promises'
 import { constants } from 'node:fs'
 
 const credential = /password|passcode|one.?time|\botp\b|verification.?code|security.?code|recovery.?code|api.?key|access.?token|refresh.?token|captcha|secret/i
@@ -10,14 +10,19 @@ const deny = (reason) => ({ block: true, blockReason: `huntly_guard:${reason}` }
 
 export async function readPolicy(path, tenant, now = Date.now()) {
   if (!Number.isInteger(tenant) || tenant < 1 || tenant > 10 || path !== `/run/huntly-openclaw/tenant-${tenant}.json`) throw new Error('policy_identity')
+  const directory = await lstat('/run/huntly-openclaw')
+  if (!directory.isDirectory() || directory.uid !== 0 || (directory.mode & 0o777) !== 0o711) throw new Error('policy_directory_permissions')
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW)
   try {
     const stat = await handle.stat()
-    if (!stat.isFile() || stat.nlink !== 1 || stat.size > 1_000_000 || (stat.mode & 0o777) !== 0o600 || ![0, process.getuid?.()].includes(stat.uid)) throw new Error('policy_permissions')
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size > 1_000_000 || (stat.mode & 0o777) !== 0o640 || stat.uid !== 0 || stat.gid !== process.getgid?.()) throw new Error('policy_permissions')
     const policy = JSON.parse(await handle.readFile('utf8'))
     validatePolicy(policy, now)
     return policy
   } finally { await handle.close() }
+}
+export function assertRunContext(policy, context) {
+  if (context?.sessionKey !== `agent:main:huntly-apply-${policy.attemptId}`) throw new Error('policy_session_mismatch')
 }
 export function validatePolicy(p, now = Date.now()) {
   if (!p || typeof p.attemptId !== 'string' || !p.attemptId || typeof p.targetId !== 'string' || !p.targetId || !Number.isSafeInteger(p.deadlineEpoch) || p.deadlineEpoch <= now || p.deadlineEpoch > now + 660_000) throw new Error('policy_missing_or_expired')

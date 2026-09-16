@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { decide, validatePolicy } from './guard.mjs'
+import { decide, validatePolicy, assertRunContext } from './guard.mjs'
 const now = 1000000
 const policy = () => ({ attemptId: 'attempt', targetId: 'TARGET1', allowedHosts: ['jobs.ashbyhq.com'], approvedFields: [], resumePath: '/tmp/openclaw/uploads/resume.pdf', deadlineEpoch: now + 300000 })
 const facts = () => ({ targetId: 'TARGET1', url: 'https://jobs.ashbyhq.com/company/id/application', frameUrls: ['https://jobs.ashbyhq.com/company/id/application'], hasAuthentication: false, wizardStep: null })
@@ -72,4 +72,9 @@ test('fill batch cannot hide one unapproved sensitive or credential field', asyn
 test('a Yes/No choice without host-observed question context cannot evade sensitive policy', async () => {
  const option={...node(),tag:'div',type:'radio',role:'radio',name:'Yes',label:'Yes',choiceContext:false}
  assert.equal((await check(event({kind:'click',ref:'e1'}),policy(),facts(),option)).block,true)
+})
+
+test('policy session belongs to the exact attempt, never another run or missing context', () => {
+ assert.doesNotThrow(()=>assertRunContext(policy(),{sessionKey:'agent:main:huntly-apply-attempt'}))
+ for(const context of [{},{sessionKey:'agent:main:huntly-apply-other'},undefined]) assert.throws(()=>assertRunContext(policy(),context),/policy_session_mismatch/)
 })

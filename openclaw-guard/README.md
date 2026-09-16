@@ -31,7 +31,7 @@ HUNTLY_OPENCLAW_ROOT=/opt/huntly/openclaw-runtime/node_modules/openclaw
 
 ## Run policy
 
-Before starting each run, the VM agent atomically writes its tenant's file with mode 0600, readable by the tenant, under a root-controlled directory. The agent owns creation/deletion, not OpenClaw. Remove it when a run ends or is cancelled.
+Before starting each run, the VM agent atomically writes its tenant's file with mode 0640, owned by root with the tenant primary group. The parent directory must be root-owned mode 0711. The tenant can read but cannot modify policy. The agent owns creation/deletion, not OpenClaw. Remove it when a run ends or is cancelled.
 
 ```json
 {
@@ -43,6 +43,8 @@ Before starting each run, the VM agent atomically writes its tenant's file with 
   "deadlineEpoch": 1800000000000
 }
 ```
+
+The gateway session key must equal `agent:main:huntly-apply-${attemptId}`. Missing or different session context is denied.
 
 Deadlines are epoch milliseconds, at most eleven minutes into the future. Files without valid policy, restrictive permissions, exact tenant path, approved host or bound tab fail closed. `approvedFields` contains only existing explicit, country-scoped user answers. It is not a permission to infer a sensitive answer from residence or a resume. Field labels and types must match the actual DOM, not model-supplied claims.
 

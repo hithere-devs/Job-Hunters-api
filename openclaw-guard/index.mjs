@@ -1,4 +1,4 @@
-import { decide, readPolicy } from './guard.mjs'
+import { decide, readPolicy, assertRunContext } from './guard.mjs'
 import { describeElement, loadRuntime, pageFacts } from './runtime.mjs'
 
 export default {
@@ -11,6 +11,7 @@ export default {
         if (event.toolName !== 'browser') return { block: true, blockReason: 'huntly_guard:tool_not_browser' }
         const tenant = Number(process.env.HUNTLY_TENANT_INDEX)
         const policy = await readPolicy(process.env.HUNTLY_POLICY_PATH, tenant)
+        assertRunContext(policy, context)
         const root = process.env.HUNTLY_OPENCLAW_ROOT || '/opt/huntly/openclaw-runtime/node_modules/openclaw'
         const runtime = await loadRuntime(root)
         const cdpUrl = `http://127.0.0.1:${9200 + tenant}`
