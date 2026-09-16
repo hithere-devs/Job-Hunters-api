@@ -123,3 +123,29 @@ acceptance loss, and cross-tenant file/public-host rejection.
 A fake gateway does not establish deployed gateway compatibility or prove that
 an in-flight browser tool releases on abort. Those need the live M3.2 gate and
 must be reported separately.
+
+## Live gateway compatibility, 2026-09-16
+
+The unchanged client bundled with the pinned 2026.8.1 schemas connected to
+the deployed OpenClaw 2026.9.3 tenant 10 gateway at `127.0.0.1:28789`. Both
+fixtures prohibited tools and browser actions. Tokens were read inside the VM
+from the root-owned registry and were never printed.
+
+The no-tools reply fixture returned:
+
+```json
+{"gate":"actual-gateway10-no-tools","status":"ok","cancelConfirmed":true,"eventCount":9,"protocolReplyMatches":true,"error":null}
+```
+
+The client-owned short wait deadline returned:
+
+```json
+{"gate":"actual-gateway10-wait-deadline","status":"timeout","cancelConfirmed":true,"eventCount":2,"protocolReplyMatches":false,"error":"OpenClaw hard deadline exceeded"}
+```
+
+A separate 1-second run-deadline fixture initially returned terminal `error`
+rather than `timeout`, revealing a race between the monitor and abort wait.
+The monitor now lets the cancellation owner retain the timeout reason. A
+regression test covers this race. No fixture opened a browser, so these results
+prove gateway authentication, streaming and cancellation, not browser release
+or a successful application.

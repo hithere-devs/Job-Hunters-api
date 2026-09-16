@@ -6,11 +6,12 @@ import { validateAgentParams, validateAgentWaitParams, validateChatAbortParams, 
 import { OpenClawClient, OpenClawRunError, openClawGatewayUrl } from './openclaw-client.js'
 const cleanup: Array<() => Promise<void>> = []
 afterEach(async () => { for (const close of cleanup.splice(0)) await close() })
-async function fixture(options: { complete?: boolean; noStop?: boolean; dropAgent?: boolean } = {}) {
+async function fixture(options: { complete?: boolean; noStop?: boolean; dropAgent?: boolean; waitUntilAbort?: boolean } = {}) {
   const requests: Array<{ id: string; method: string; params: Record<string, any> }> = []
   const server = new WebSocketServer({ host: '127.0.0.1', port: 0 })
   await new Promise<void>((resolve) => server.once('listening', resolve))
   let stopped = false
+  const waiting: Array<() => void> = []
   server.on('connection', (ws) => {
     ws.send(JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'test-nonce', ts: Date.now() } }))
     ws.on('message', (bytes) => {
@@ -24,8 +25,9 @@ async function fixture(options: { complete?: boolean; noStop?: boolean; dropAgen
         ws.send(JSON.stringify({ type: 'event', event: 'agent', payload: { runId: request.params.idempotencyKey, stream: 'assistant', data: { text: 'Form filled. Submit held.' }, seq: 1, ts: Date.now() } }))
       } else if (request.method === 'agent.wait') {
         assert.ok(validateAgentWaitParams(request.params))
+        if (options.waitUntilAbort && !stopped) { waiting.push(() => respond({ runId: request.params.runId, status: 'error', endedAt: Date.now() })); return }
         respond(stopped || options.complete ? { runId: request.params.runId, status: stopped ? 'error' : 'ok', endedAt: Date.now(), terminalReply: { text: 'Ready for owner verification' } } : { runId: request.params.runId, status: 'timeout' })
-      } else if (request.method === 'chat.abort') { assert.ok(validateChatAbortParams(request.params)); stopped = !options.noStop; respond({ ok: true, aborted: true, runIds: [request.params.runId] }) }
+      } else if (request.method === 'chat.abort') { assert.ok(validateChatAbortParams(request.params)); stopped = !options.noStop; waiting.splice(0).forEach(finish => finish()); respond({ ok: true, aborted: true, runIds: [request.params.runId] }) }
       else if (request.method === 'chat.send') { assert.ok(validateChatSendParams(request.params)); respond({ runId: request.params.idempotencyKey, status: 'accepted' }) }
     })
   })
@@ -105,4 +107,11 @@ test('rejects cross-tenant files and non-loopback targets', async () => {
   const publicClient = new OpenClawClient({ tokenForTenant: () => 'token', urlForTenant: () => 'ws://example.com:18789', cancelTimeoutMs: 10 })
   await assert.rejects(publicClient.startRun(9, { attemptId: 'public-host', prompt: 'Fill' }))
   await publicClient.close()
+})
+
+test('timeout reason wins when an in-flight wait returns a terminal error during abort', async () => {
+  const { client } = await fixture({ waitUntilAbort: true })
+  const { runId } = await client.startRun(9, { attemptId: 'abort-race', prompt: 'Fill test form', timeoutMs: 10000 })
+  const result = await client.waitForRun(runId, { timeoutMs: 20 })
+  assert.equal(result.status, 'timeout'); assert.equal(result.cancelConfirmed, true)
 })

@@ -200,9 +200,11 @@ export class OpenClawClient {
         const params = { runId: run.id, timeoutMs: Math.min(10_000, remaining) }
         if (!validateAgentWaitParams(params)) throw new Error('Invalid wait parameters')
         const payload = record(await (await this.connection(run.tenant)).rpc('agent.wait', params, params.timeoutMs + 1_000))
+        if (run.stopping || run.result) return
         if (this.terminal(payload)) {
           const reply = record(payload.terminalReply)
           const childrenStopped = await this.stopChildRuns(run)
+          if (run.stopping || run.result) return
           if (!childrenStopped) { this.finish(run, { runId: run.id, status: 'error', text: run.text, cancelConfirmed: false, error: 'OpenClaw nudge cancellation unconfirmed' }); return }
           this.finish(run, { runId: run.id, status: payload.status === 'ok' ? 'ok' : payload.status === 'error' ? 'error' : 'cancelled', text: typeof reply.text === 'string' ? reply.text : run.text, error: typeof payload.error === 'string' ? payload.error : undefined, cancelConfirmed: true })
           return
