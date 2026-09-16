@@ -457,7 +457,7 @@ export async function discoverForRun(
       scoreBreakdown: ranking.breakdown,
       reasons: hasApplyableUrl(entry.scraped) ? ranking.reasons : [...ranking.reasons, 'no_applyable_url'],
     })
-    if (!ranking.accepted || !hasApplyableUrl(entry.scraped)) continue
+    if (!ranking.accepted) continue
     candidateValues.push({
       runId,
       userId,
@@ -465,8 +465,8 @@ export async function discoverForRun(
       sourcePortal: entry.scraped.portal,
       score: ranking.score,
       scoreBreakdown: ranking.breakdown,
-      reasons: ranking.reasons,
-      status: 'discovered',
+      status: hasApplyableUrl(entry.scraped) ? 'discovered' : 'needs_review',
+      reasons: hasApplyableUrl(entry.scraped) ? ranking.reasons : [...ranking.reasons, 'no_applyable_url'],
     })
   }
 
