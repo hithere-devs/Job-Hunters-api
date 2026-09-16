@@ -13,7 +13,7 @@ const questions: ResolverQuestion[] = [
 ]
 const sources: AnswerSource[] = [
   { id: 'profile:linkedin', label: 'LinkedIn profile URL', text: 'https://www.linkedin.com/in/example-candidate', kind: 'profile', topic: 'contact' },
-  { id: 'user:sponsorship', label: 'Will you require employment sponsorship?', text: 'India no; USA yes', kind: 'explicit_answer', topic: 'sponsorship' },
+  { id: 'user:sponsorship', label: 'Will you require employment sponsorship?', text: 'For India no, for USA yes', kind: 'explicit_answer', topic: 'sponsorship' },
 ]
 try {
   const results = await resolveAnswerBatch({ userId: null, questions, sources })

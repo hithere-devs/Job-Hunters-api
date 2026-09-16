@@ -70,3 +70,12 @@ it('honors old cross-application opt-outs while allowing same-application answer
   assert.equal(canUsePriorHumanAnswer({ applicationId: 'other', remember: true, answerMeta: { source: 'user' } }, current), true)
   assert.equal(canUsePriorHumanAnswer({ applicationId: 'current', remember: true, answerMeta: { source: 'profile_ai' } }, current), false)
 })
+it('parses explicit comma-separated country answers without assigning ambiguous or lowercase us clauses', () => {
+  const comma = { ...source, text: 'For India no, for USA yes' }
+  assert.equal(conditionalCountryAnswer(comma, 'IN'), 'no')
+  assert.equal(conditionalCountryAnswer(comma, 'US'), 'yes')
+  assert.equal(conditionalCountryAnswer(comma, 'GB'), null)
+  assert.equal(conditionalCountryAnswer({ ...source, text: 'For India or USA no' }, 'US'), null)
+  assert.equal(conditionalCountryAnswer({ ...source, text: 'For India no, tell us yes' }, 'US'), null)
+  assert.equal(conditionalCountryAnswer({ ...source, text: 'For India no, for USA yes or no' }, 'US'), null)
+})

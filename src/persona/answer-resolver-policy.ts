@@ -53,7 +53,7 @@ export function conditionalCountryAnswer(source: AnswerSource, country: string):
   const exact = binary(source.text)
   if (exact && /^(?:yes|no|true|false)[.! ]*$/i.test(source.text.trim())) return source.country === country ? exact : null
   const answers = new Set<'yes' | 'no'>()
-  const clauses = source.text.split(/[;\n]|\bbut\b|\bhowever\b/i)
+  const clauses = source.text.split(/[;,\n]|\bbut\b|\bhowever\b/i)
   for (const clause of clauses) {
     const countries = countriesIn(clause)
     if (countries.length !== 1 || countries[0] !== country) continue
