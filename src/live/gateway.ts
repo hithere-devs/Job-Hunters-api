@@ -2,9 +2,11 @@ import type { Server } from 'node:http'
 import WebSocket, { WebSocketServer, type WebSocket as WebSocketLike } from 'ws'
 import { and, desc, eq } from 'drizzle-orm'
 import { db } from '../db/client.js'
-import { applyAttempts, attemptEvents, playgroundRuns, userBrowserSessions, users } from '../db/schema.js'
+import { applyAttempts, attemptEvents, huntCandidates, playgroundRuns, userBrowserSessions, users } from '../db/schema.js'
 import { getTenantStatus } from '../browser/vm-client.js'
 import { env } from '../config/env.js'
+import { applicationJobInfo } from '../hunt/application-queue.js'
+import { proxyReadOnlyVnc, type VncWatchTarget } from './vnc-watch.js'
 import { forwardAttemptInput } from './watch-policy.js'
 import { logger } from '../lib/logger.js'
 import { verifyAccessToken, type AccessTokenPayload } from '../lib/jwt.js'
@@ -24,6 +26,7 @@ import { subscribeToPlayground, type PlaygroundEvent } from '../playground/event
  * else's application must never reach it.
  */
 
+const VNC_PATH = /^\/live\/([0-9a-f-]{36})\/vnc$/i
 const PATH = /^\/live\/([0-9a-f-]{36})(\/watch)?$/i
 /** Playground runs get their own path so the two id spaces cannot collide. */
 const PLAYGROUND_PATH = /^\/live\/playground\/([0-9a-f-]{36})$/i
@@ -44,6 +47,26 @@ async function currentSocketIdentity(payload: AccessTokenPayload): Promise<boole
   return Boolean(user && user.authVersion === payload.authVersion)
 }
 
+/** Only the current VM attempt can reveal this user's full desktop. */
+async function authorizeVncAttempt(token: string, attemptId: string): Promise<VncWatchTarget | null> {
+  const identity = verifyAccessToken(token)
+  if (!await currentSocketIdentity(identity)) return null
+  const [session] = await db.select().from(userBrowserSessions).where(and(eq(userBrowserSessions.userId, identity.sub), eq(userBrowserSessions.vmId, env.VM_ID))).limit(1)
+  if (!session || session.tenantIndex < 1 || session.tenantIndex > 10) return null
+  // One tenant profile has one live Chrome. A stale older attempt must never
+  // become a window onto a later attempt merely because its user matches.
+  const [latest] = await db.select({ attempt: applyAttempts, candidate: huntCandidates }).from(applyAttempts)
+    .innerJoin(huntCandidates, and(eq(huntCandidates.id, applyAttempts.candidateId), eq(huntCandidates.userId, identity.sub)))
+    .where(and(eq(applyAttempts.userId, identity.sub), eq(applyAttempts.browserSessionId, `vm:${session.tenantIndex}`)))
+    .orderBy(desc(applyAttempts.createdAt)).limit(1)
+  if (!latest || latest.attempt.completedAt !== null || latest.candidate.status !== 'applying' || latest.attempt.id !== attemptId || latest.attempt.browserSessionId !== `vm:${session.tenantIndex}` || !['pending', 'submitting'].includes(latest.attempt.status)) return null
+  const queue = await applicationJobInfo(identity.sub, latest.candidate.id, latest.candidate.runId)
+  if (queue.queueState !== 'active' || !queue.lockActive) return null
+  const status = await getTenantStatus(session.tenantIndex)
+  if (status.mode !== 'apply' || status.vncReadOnly !== true) return null
+  return { tenantIndex: session.tenantIndex, sessionId: session.id, attemptId }
+}
+
 export function attachLiveGateway(server: Server): WebSocketServer {
   // `noServer` so the upgrade can be rejected before a socket exists — an
   // unauthenticated client should never reach an open WebSocket.
@@ -52,6 +75,13 @@ export function attachLiveGateway(server: Server): WebSocketServer {
   server.on('upgrade', (request, socket, head) => {
     const url = new URL(request.url ?? '', `http://${request.headers.host ?? 'localhost'}`)
     if (request.headers.origin && !env.CORS_ORIGINS.includes(request.headers.origin)) { socket.destroy(); return }
+    const vnc = VNC_PATH.exec(url.pathname)
+    if (vnc) {
+      const token = url.searchParams.get('token') ?? ''
+      // Authentication and ownership run before handleUpgrade or opening VNC.
+      void proxyReadOnlyVnc({ request, socket, head, wss, authorize: () => authorizeVncAttempt(token, vnc[1]!) }).catch(() => socket.destroy())
+      return
+    }
     if (url.pathname === '/me/browser-session/stream') {
       const token = url.searchParams.get('token') ?? ''
       const sessionId = url.searchParams.get('sessionId') ?? ''

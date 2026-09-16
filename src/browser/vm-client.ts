@@ -32,6 +32,8 @@ export interface VmApplyInfo {
 export type VmMode = 'connect' | 'apply' | 'idle'
 
 export interface VmTenantStatus {
+  /** True only when the VM enforces view-only VNC and clipboard isolation. */
+  vncReadOnly?: boolean
   mode: VmMode
   pid: number | null
   uptimeMs: number

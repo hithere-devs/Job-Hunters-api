@@ -149,3 +149,38 @@ The monitor now lets the cancellation owner retain the timeout reason. A
 regression test covers this race. No fixture opened a browser, so these results
 prove gateway authentication, streaming and cancellation, not browser release
 or a successful application.
+
+## VM desktop watch transport
+
+Active VM applications advertise `runtime.watchTransport="vnc"`. Live
+Applications and Applications use noVNC with `viewOnly=true`,
+`focusOnClick=false`, viewport scaling enabled, and remote resizing disabled.
+The existing event socket still carries application state and field updates;
+the existing CDP frame stream remains a user-selectable fallback. Takeover code
+remains unchanged and is never enabled by the VNC watch.
+
+`/live/:attemptId/vnc?token=...` is a `noServer` authenticated proxy. Before
+opening the upstream it checks access-token expiry, authVersion, owned VM
+session, the latest attempt on that VM profile, candidate/attempt status,
+BullMQ active lock, and VM `mode=apply` with `vncReadOnly=true`. It repeats
+these checks every five seconds and closes on session reassignment, attempt
+replacement or mode change. Authorization is bounded to three seconds.
+
+RFB protocol negotiation requires traffic in both directions. Consequently,
+blocking DOM events or setting noVNC viewOnly is not the security boundary.
+The VM must run x11vnc with `-viewonly -noclipboard`, restart VNC when changing
+browser mode, and advertise the enforced state. The API refuses VNC watch
+without that explicit status flag.
+
+Tenant 9 was tested with an isolated local page and a raw RFB client that sent
+keyboard and mouse events despite the UI restrictions. A CDP positive control
+proved the page could receive ordinary typing and clicks. Exact gate:
+
+```json
+{"gate":"tenant9-server-viewonly","mode":"apply","vncReadOnly":true,"rfb":"RFB 003.008","positiveControl":true,"vncKeysIgnored":true,"vncClicksIgnored":true}
+```
+
+The fixture closed its own page and stopped tenant 9 through the VM agent.
+No login or real application was involved. WS fixture tests additionally prove
+unauthorized requests never accept or open upstream, binary RFB traffic is
+relayed, and changed authorization/session identity severs a connection.

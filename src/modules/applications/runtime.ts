@@ -43,7 +43,7 @@ export async function applicationRuntimes(userId: string, applicationIds: string
   if (!applicationIds.length) return new Map<string, ApplicationRuntime>()
   const rows = await db.selectDistinctOn([applications.id], {
     applicationId: applications.id, candidateId: huntCandidates.id, runId: huntCandidates.runId,
-    candidateStatus: huntCandidates.status, attemptId: applyAttempts.id, attemptStatus: applyAttempts.status,
+    browserSessionId: applyAttempts.browserSessionId, candidateStatus: huntCandidates.status, attemptId: applyAttempts.id, attemptStatus: applyAttempts.status,
     startedAt: applyAttempts.startedAt, updatedAt: applyAttempts.updatedAt,
     lastState: sql<{state:string;reason:string|null;at:string}|null>`(select json_build_object('state', e.state, 'reason', e.reason, 'at', e.at) from ${attemptEvents} e where e.attempt_id = ${applyAttempts.id} order by e.at desc limit 1)`,
     error: applyAttempts.error,
@@ -59,6 +59,7 @@ export async function applicationRuntimes(userId: string, applicationIds: string
       : (['missing','failed','completed'].includes(queue.queueState) || (queue.queueState === 'active' && !queue.lockActive)) && ['queued','applying','approved','tailored'].includes(row.candidateStatus) ? 'interrupted'
       : row.lastState?.state ?? row.candidateStatus
     return [row.applicationId, {...queue, phase, active, watchAvailable: active && Boolean(row.attemptId),
+      watchTransport: row.browserSessionId?.startsWith('vm:') ? 'vnc' as const : 'cdp' as const,
       attemptId: row.attemptId, reason: row.lastState?.reason ?? row.error,
       startedAt: row.startedAt?.toISOString() ?? null, lastActivityAt: row.lastState?.at ?? row.updatedAt?.toISOString() ?? null,
     }] as const
@@ -66,6 +67,6 @@ export async function applicationRuntimes(userId: string, applicationIds: string
 }
 export type ApplicationRuntime = {
   queueState: string; scheduledFor: string | null; workerConnected: boolean; lockActive: boolean;
-  phase: string; active: boolean; watchAvailable: boolean; attemptId: string | null;
+  phase: string; active: boolean; watchAvailable: boolean; watchTransport: 'vnc' | 'cdp'; attemptId: string | null;
   reason: string | null; startedAt: string | null; lastActivityAt: string | null;
 }
