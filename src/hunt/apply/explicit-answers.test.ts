@@ -52,8 +52,25 @@ describe('explicit answer provenance', () => {
     assert.equal(valueFromProfile('totalExperience', profile), '5')
   })
 })
-it('never reuses a generic work-authorisation or sponsorship yes/no across jobs', () => {
-  for (const label of ['Are you legally authorized to work in the country where you are applying?', 'Will you require sponsorship?', 'Are you authorized to work in the USA?']) {
+it('never reuses a work-authorisation answer whose truth depends on the job', () => {
+  // "the country where you are applying" and an unqualified "sponsorship?" both
+  // mean something different on every posting — the same person is authorised
+  // in Bengaluru and not in New York. Carrying either one over would put a
+  // wrong answer on a real application.
+  for (const label of [
+    'Are you legally authorized to work in the country where you are applying?',
+    'Will you require sponsorship?',
+    'Are you authorised to work where this role is located?',
+  ]) {
     assert.equal(canReuseExplicitAnswer({ label, type: 'select', options: ['Yes', 'No'], required: true }), false)
+  }
+})
+
+it('reuses a work-authorisation answer that names the country', () => {
+  // This is a fact about the person, not the posting, and re-asking it on every
+  // application is what made the product feel like it forgot everything it was
+  // told. The answer is still never guessed — only reused once given.
+  for (const label of ['Are you authorized to work in the USA?', 'Do you have the right to work in the UK?']) {
+    assert.equal(canReuseExplicitAnswer({ label, type: 'select', options: ['Yes', 'No'], required: true }), true)
   }
 })

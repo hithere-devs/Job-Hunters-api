@@ -96,11 +96,51 @@ export function isContextualQuestion(field: FormField): boolean {
   return /\b(?:why|motivat\w*|cover\s*letter|this\s+(?:company|role|position|job)|our\s+(?:company|team|mission)|join\s+us)\b/i.test(field.label)
 }
 
-/** Legal commitments/reference/background answers always require this application’s review. */
+/**
+ * Whether an answer the user gave explicitly may be reused on the next form.
+ *
+ * Two different things were collapsed here, and collapsing them is what made
+ * the product feel like it forgot everything you told it.
+ *
+ * Refusing to *guess* someone's visa status, gender or veteran status is
+ * correct and stays correct — `sensitiveReason` still blocks every automatic
+ * rung from inventing one. But an answer the user typed themselves and asked us
+ * to remember is a stable fact about them, and re-asking "are you legally
+ * authorised to work in the US?" on every single application is not caution, it
+ * is amnesia. Those answers were being stored with `remember: true` and then
+ * discarded by this function on the way back out.
+ *
+ * What genuinely cannot carry over is anything whose truth is scoped to *this*
+ * application: a reference's contact details, a background-check consent, an
+ * attestation, or a legal question about obligations to a specific employer.
+ */
+const ANSWER_IS_APPLICATION_SPECIFIC = /background|reference|legal question/i
+
+/**
+ * Work authorisation only carries over when the question names the country.
+ *
+ * "Are you authorised to work in the United States?" is a fact about the
+ * person: same answer on every US posting. "Are you authorised to work in the
+ * country where you are applying?" is a fact about the *job* — the same person
+ * answers yes in Bengaluru and no in New York — and reusing it would put a
+ * wrong answer on a real application.
+ *
+ * An unqualified "Will you require sponsorship?" is the second kind: the
+ * country is implied by the posting, not stated. Those keep getting asked.
+ */
+const WORK_AUTH_IS_JOB_RELATIVE =
+  /\b(?:countr(?:y|ies)\s+(?:where|in\s+which|of|for)|this\s+countr|the\s+(?:job|role|position)\s+(?:is\s+)?(?:located|location)|where\s+(?:this\s+)?(?:job|role|position)|listed|applying\s+(?:to|for))\b/i
+const WORK_AUTH_NAMES_A_COUNTRY =
+  /\b(?:united\s+states|u\.?s\.?a?\b|usa|u\.?k\.?\b|united\s+kingdom|canada|india|australia|singapore|germany|france|ireland|netherlands|new\s+zealand|eu\b|european\s+union|schengen|switzerland|japan|uae|emirates)\b/i
+
 export function canReuseExplicitAnswer(field: FormField): boolean {
   if (credentialFieldReason(field) || isContextualQuestion(field)) return false
   const reason = sensitiveReason(field.label, field.options)
-  if (reason && /background|legal|reference|visa|authorisation/i.test(reason)) return false
+  if (reason && ANSWER_IS_APPLICATION_SPECIFIC.test(reason)) return false
+  if (reason && /visa or work authorisation/i.test(reason)) {
+    if (WORK_AUTH_IS_JOB_RELATIVE.test(field.label)) return false
+    if (!WORK_AUTH_NAMES_A_COUNTRY.test(field.label)) return false
+  }
   return !/\b(?:certif\w*|attest\w*|declaration|employment\s+contract|legally\s+binding)\b/i.test(field.label)
 }
 

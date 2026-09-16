@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { fieldSignature, heuristicMatch, sensitiveReason, valueFromProfile, normaliseLabel } from './fields.js'
+import { canReuseExplicitAnswer, fieldSignature, heuristicMatch, sensitiveReason, valueFromProfile, normaliseLabel } from './fields.js'
 import type { PortalProfile } from '../portal-profile.js'
 
 const profile = {
@@ -194,5 +194,48 @@ describe('label normalisation', () => {
 
   it('leaves an ordinary label alone', () => {
     assert.equal(normaliseLabel('LinkedIn URL'), 'LinkedIn URL')
+  })
+})
+
+describe('reusing answers the user gave explicitly', () => {
+  const field = (label: string, options?: string[]) => ({ label, type: 'text', required: true, ...(options ? { options } : {}) })
+
+  it('reuses work authorisation when the question names the country', () => {
+    // The reported bug: these were stored with remember:true and then refused
+    // on the way back out, so every application asked again. Refusing to guess
+    // a visa status is right; refusing to reuse one the user typed is amnesia.
+    assert.equal(canReuseExplicitAnswer(field('Are you legally authorized to work in the United States?')), true)
+    assert.equal(canReuseExplicitAnswer(field('Do you have the right to work in the UK?')), true)
+    assert.equal(canReuseExplicitAnswer(field('Will you require visa sponsorship to work in India?')), true)
+  })
+
+  it('does not reuse a work-authorisation answer that depends on the job', () => {
+    // Same person, different answer: yes in Bengaluru, no in New York. Reusing
+    // one of these would put a wrong answer on a real application.
+    assert.equal(canReuseExplicitAnswer(field('Are you legally authorized to work in the country where you are applying?')), false)
+    assert.equal(canReuseExplicitAnswer(field('Will you require sponsorship?')), false)
+    assert.equal(canReuseExplicitAnswer(field('Are you authorised to work where this role is located?')), false)
+  })
+
+  it('still refuses to guess those questions on its own', () => {
+    // Reuse and inference are different rungs. The refusal list is untouched.
+    assert.ok(sensitiveReason('Are you legally authorized to work in the United States?'))
+    assert.ok(sensitiveReason('Will you now or in the future require visa sponsorship?'))
+  })
+
+  it('does not carry over anything scoped to one application', () => {
+    assert.equal(canReuseExplicitAnswer(field('Reference name and contact email')), false)
+    assert.equal(canReuseExplicitAnswer(field('Have you ever been convicted of a felony?')), false)
+    assert.equal(canReuseExplicitAnswer(field('Are you subject to any restrictive covenants with your current employer?')), false)
+    assert.equal(canReuseExplicitAnswer(field('I certify the above information is accurate')), false)
+  })
+
+  it('reuses demographics the user chose to disclose', () => {
+    assert.equal(canReuseExplicitAnswer(field('Input gender', ['Male', 'Female', 'Prefer not to say'])), true)
+  })
+
+  it('never reuses a credential or a motivation answer', () => {
+    assert.equal(canReuseExplicitAnswer(field('One time code')), false)
+    assert.equal(canReuseExplicitAnswer(field('Why do you want to join us?')), false)
   })
 })
