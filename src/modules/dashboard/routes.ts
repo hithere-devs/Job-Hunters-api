@@ -54,8 +54,8 @@ const jobsQuerySchema = z
   .object({
     runId: z.string().uuid().optional(),
     page: z.coerce.number().int().min(1).default(1),
-    pageSize: z.coerce.number().int().refine((value) => value === 20 || value === 50, {
-      message: 'pageSize must be 20 or 50',
+    pageSize: z.coerce.number().int().refine((value) => value === 20 || value === 50 || value === 100, {
+      message: 'pageSize must be 20, 50, or 100',
     }).default(20),
     status: z.enum(SCRAPED_JOB_STATUSES).optional(),
     portal: z.string().trim().min(1).max(80).optional(),
