@@ -69,7 +69,10 @@ try{
  console.log(JSON.stringify(proof))
  assert.equal(proof.status,'ok');assert.equal(proof.quiescent,true);assert.equal(proof.nameFilled,true);assert.equal(proof.authorizationExplicitFalse,true);assert.equal(proof.locationCommitted,true);assert.equal(proof.finalSubmitUntouched,true);assert.equal(proof.finalSubmitDenied,true);assert.equal(physicalTargetMatch,true);assert.equal(wrongTenantRejected,true);assert.equal(syntheticResumeUploaded,true)
 }finally{
+ try {
  if(installed)await vm('/openclaw-policy','DELETE',{attemptId}).catch(()=>{})
  if(resumeReplaced){const current=await readOwnedResume();if(current?.equals(fakeResume)){if(originalResume)await uploadResume(originalResume);else await unlink(resumeFile)}}
- await client.close();await page?.close().catch(()=>{});await browser?.close().catch(()=>{});await vm('/stop','POST').catch(()=>{})
+ } finally {
+  try { await client.close() } finally { await page?.close().catch(()=>{});await browser?.close().catch(()=>{});await vm('/stop','POST').catch(()=>{}) }
+ }
 }
