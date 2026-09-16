@@ -16,4 +16,5 @@ CREATE UNIQUE INDEX "user_browser_sessions_user_idx" ON "user_browser_sessions" 
 CREATE UNIQUE INDEX "user_browser_sessions_slot_idx" ON "user_browser_sessions" USING btree ("vm_id","tenant_index");
 --> statement-breakpoint
 DROP INDEX IF EXISTS field_answers_scope_idx;
+DELETE FROM field_answers a USING field_answers b WHERE a.id > b.id AND a.host = b.host AND a.field_signature = b.field_signature AND (a.user_id = b.user_id OR (a.user_id IS NULL AND b.user_id IS NULL));
 CREATE UNIQUE INDEX field_answers_scope_idx ON field_answers (user_id, host, field_signature) NULLS NOT DISTINCT;
