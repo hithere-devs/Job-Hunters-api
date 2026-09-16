@@ -5,7 +5,7 @@ import { Queue, Worker, type Job as BullJob } from 'bullmq'
 import { and, count, eq, inArray, lt, notInArray, sql } from 'drizzle-orm'
 import { env, hasRedis } from '../config/env.js'
 import { db } from '../db/client.js'
-import { applications, applyAttempts, huntCandidates, huntRunJobs, huntRuns, userSchedules } from '../db/schema.js'
+import { applications, applyAttempts, huntCandidates, huntRunJobs, huntRuns, jobs, userSchedules } from '../db/schema.js'
 import { serviceUnavailable } from '../lib/errors.js'
 import { logger } from '../lib/logger.js'
 import { stopBrowser } from '../browser/client.js'
@@ -136,8 +136,9 @@ export async function enqueueApprovedCandidates(
       .from(huntRuns)
       .where(and(eq(huntRuns.id, runId), eq(huntRuns.userId, userId)))
       .limit(1),
-    db.select({ id: huntCandidates.id, jobId: huntCandidates.jobId, portal: huntCandidates.sourcePortal })
+    db.select({ id: huntCandidates.id, jobId: huntCandidates.jobId, portal: huntCandidates.sourcePortal, score: huntCandidates.score, title: jobs.title, company: jobs.company, jobUrl: jobs.canonicalUrl, description: jobs.descriptionText, locations: jobs.locations })
       .from(huntCandidates)
+      .innerJoin(jobs, eq(huntCandidates.jobId, jobs.id))
       .where(and(
         eq(huntCandidates.userId, userId),
         eq(huntCandidates.runId, runId),
@@ -150,6 +151,23 @@ export async function enqueueApprovedCandidates(
   const selected = selectedRows.sort((left, right) => (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0))
   const ordered = planApplicationOrder(selected, target)
   if (ordered.length === 0) return { queued: 0, capped: selected.length > 0 }
+
+  // Make queued applications visible immediately. The worker will reuse these
+  // rows and transition them as it prepares each browser session.
+  await db.insert(applications).values(ordered.map((candidate) => ({
+    userId,
+    jobId: candidate.jobId,
+    role: candidate.title,
+    company: candidate.company,
+    location: (candidate.locations as Array<{ raw?: string }>).map((item) => item.raw).filter(Boolean).join('; '),
+    jobUrl: candidate.jobUrl,
+    jobDescription: candidate.description,
+    portalId: candidate.portal,
+    portalName: candidate.portal,
+    matchScore: candidate.score,
+    status: 'queued' as const,
+    huntRunId: runId,
+  }))).onConflictDoNothing()
 
   const spacing = Math.floor(APPLY_WINDOW_MS / ordered.length)
   await applicationQueue().addBulk(ordered.map((candidate, index) => ({
