@@ -139,3 +139,60 @@ The extension transport itself does not provide richer DOM access than our
 existing Playwright/CDP driver. These gates establish that it works safely with
 our guard and existing Chrome profile. A real provider application and its
 submission receipt remain a separate acceptance test.
+
+## Gemini model switch and tool gate
+
+The first real extension attempt reached an Anthropic credit error before any
+browser tool. Driver changes would not fix that. A funded OpenRouter key was
+configured privately, never printed or committed.
+
+Native OpenClaw settings that were validated:
+
+```json
+{
+  "models": {"providers": {"openrouter": {"apiKey": "${OPENROUTER_API_KEY}"}}},
+  "agents": {"defaults": {
+    "model": {"primary": "openrouter/google/gemini-3.1-flash-lite", "fallbacks": []},
+    "thinkingDefault": "low",
+    "models": {"openrouter/google/gemini-3.1-flash-lite": {"params": {"maxTokens": 2048}}}
+  }},
+  "plugins": {
+    "allow": ["browser", "huntly-application-guard", "openrouter"],
+    "entries": {"openrouter": {"enabled": true}, "perplexity": {"enabled": false}}
+  },
+  "tools": {"web": {"search": {"enabled": false}, "fetch": {"enabled": false}}}
+}
+```
+
+Merge these into existing configuration; do not discard other safety settings.
+The key belongs in the root-owned gateway env file. Enabling the OpenRouter key
+without explicitly disabling unneeded Perplexity caused OpenClaw to attempt an
+unwanted plugin installation and refuse gateway startup. Disabling that plugin
+fixed startup without weakening filesystem permissions.
+
+Gemini 3.5 Flash's native default requested 65,536 output tokens and failed
+OpenRouter's credit preauthorization. Output caps and the cheaper 3.1 Flash Lite
+model avoid that excessive reservation. Never purchase credits automatically.
+
+The no-tools native Lite gate returned:
+
+```json
+{"gate":"native-openclaw-gemini9","tenant":9,"attemptId":"1b5d7dcb-22ff-44fd-af59-212ce9029e54","status":"ok","quiescent":true,"replyMatches":true,"actualProvider":"openrouter","actualModel":"google/gemini-3.1-flash-lite","stopReason":"stop","toolResultCount":0,"errorCategories":[]}
+```
+
+The first Lite extension fixture failed résumé upload. It supplied the correct
+path and inputRef but combined them with `action:act, kind:type`. The fixture's
+final syntax instruction had listed only snapshot and act, contradicting its
+upload instruction. The corrected prompt spells out the separate upload action
+and forbids adding kind, submit, ref, or element. The application guard was not
+relaxed. The file input is now required in the fixture.
+
+The corrected full native Lite extension gate passed:
+
+```json
+{"gate":"extension-guarded-dom-fixture","tenant":2,"attemptId":"073a7fa9-5900-4aa2-8128-789891782258","transport":"extension","physicalTargetMatch":true,"wrongTenantRejected":true,"syntheticResumeUploaded":true,"finalSubmitDenied":true,"status":"ok","quiescent":true,"stepEvents":57,"nameFilled":true,"authorizationExplicitFalse":true,"locationCommitted":true,"finalSubmitUntouched":true}
+```
+
+This verifies real multi-turn Gemini tool handling through the extension,
+including upload and guarded sensitive choices. It is still a synthetic form,
+not evidence that a real employer accepted an application.
