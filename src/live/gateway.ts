@@ -1,9 +1,10 @@
 import type { Server } from 'node:http'
 import WebSocket, { WebSocketServer, type WebSocket as WebSocketLike } from 'ws'
-import { and, eq } from 'drizzle-orm'
+import { and, desc, eq } from 'drizzle-orm'
 import { db } from '../db/client.js'
-import { applyAttempts, playgroundRuns, userBrowserSessions } from '../db/schema.js'
+import { applyAttempts, attemptEvents, playgroundRuns, userBrowserSessions } from '../db/schema.js'
 import { env } from '../config/env.js'
+import { forwardAttemptInput } from './watch-policy.js'
 import { logger } from '../lib/logger.js'
 import { verifyAccessToken } from '../lib/jwt.js'
 import { subscribeToAttempts, type AttemptEventPayload } from '../hunt/apply/events.js'
@@ -22,7 +23,7 @@ import { subscribeToPlayground, type PlaygroundEvent } from '../playground/event
  * else's application must never reach it.
  */
 
-const PATH = /^\/live\/([0-9a-f-]{36})$/i
+const PATH = /^\/live\/([0-9a-f-]{36})(\/watch)?$/i
 /** Playground runs get their own path so the two id spaces cannot collide. */
 const PLAYGROUND_PATH = /^\/live\/playground\/([0-9a-f-]{36})$/i
 
@@ -40,7 +41,7 @@ interface Client {
 export function attachLiveGateway(server: Server): WebSocketServer {
   // `noServer` so the upgrade can be rejected before a socket exists — an
   // unauthenticated client should never reach an open WebSocket.
-  const wss = new WebSocketServer({ noServer: true })
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 65536 })
 
   server.on('upgrade', (request, socket, head) => {
     const url = new URL(request.url ?? '', `http://${request.headers.host ?? 'localhost'}`)
@@ -124,12 +125,12 @@ export function attachLiveGateway(server: Server): WebSocketServer {
       }
 
       wss.handleUpgrade(request, socket, head, (ws) => {
-        accept(ws, userId, attemptId!)
+        accept(ws, userId, attemptId!, Boolean(match[2]))
       })
     })()
   })
 
-  function accept(socket: WebSocketLike, userId: string, attemptId: string): void {
+  function accept(socket: WebSocketLike, userId: string, attemptId: string, readOnly: boolean): void {
     void markWatching(attemptId)
 
     const unsubscribe = subscribeToAttempts(userId, (payload: AttemptEventPayload) => {
@@ -146,23 +147,20 @@ export function attachLiveGateway(server: Server): WebSocketServer {
     const client: Client = { socket, userId, attemptId, unsubscribe, refresh }
 
     socket.on('message', (raw) => {
-      let event: TakeoverEvent
-      try {
-        event = JSON.parse(String(raw)) as TakeoverEvent
-      } catch {
-        return
-      }
-      if (!['click', 'key', 'scroll', 'release'].includes(event.kind)) return
-      void sendTakeover(attemptId, event)
+      forwardAttemptInput(readOnly, String(raw), event => { void sendTakeover(attemptId, event) })
     })
 
     socket.on('close', () => close(client))
     socket.on('error', () => close(client))
 
     socket.send(
-      JSON.stringify({ type: 'ready', attemptId, takeoverWindowMs: env.APPLY_TAKEOVER_WINDOW_MS }),
+      JSON.stringify({ type: 'ready', attemptId, readOnly, takeoverWindowMs: readOnly ? 0 : env.APPLY_TAKEOVER_WINDOW_MS }),
       () => undefined,
     )
+    // Late watchers receive the last known state, not a misleading Connecting label.
+    void db.select().from(attemptEvents).where(eq(attemptEvents.attemptId, attemptId)).orderBy(desc(attemptEvents.at)).limit(1).then(([event]) => {
+      if (event && socket.readyState === socket.OPEN) socket.send(JSON.stringify({ type: 'state', attemptId, state: event.state, reason: event.reason, detail: null, at: event.at.toISOString() }))
+    }).catch(() => undefined)
   }
 
   /**

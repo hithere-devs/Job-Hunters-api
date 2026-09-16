@@ -6,6 +6,7 @@ import { and, count, eq, inArray, lt, notInArray, sql } from 'drizzle-orm'
 import { env, hasRedis } from '../config/env.js'
 import { db } from '../db/client.js'
 import { applications, applyAttempts, huntCandidates, huntRunJobs, huntRuns, jobs, userSchedules } from '../db/schema.js'
+import { isAggregatorApplicationUrl } from '../modules/dashboard/job-policy.js'
 import { serviceUnavailable } from '../lib/errors.js'
 import { logger } from '../lib/logger.js'
 import { stopBrowser } from '../browser/client.js'
@@ -130,13 +131,13 @@ export async function enqueueApprovedCandidates(
   userId: string,
   runId: string,
   selectedIds: string[],
-): Promise<{ queued: number; capped: boolean }> {
+): Promise<{ queued: number; capped: boolean; queuedJobIds: string[]; skipped: Array<{ jobId: string; reason: string }> }> {
   const [[run], selectedRows] = await Promise.all([
     db.select({ target: huntRuns.targetApplications })
       .from(huntRuns)
       .where(and(eq(huntRuns.id, runId), eq(huntRuns.userId, userId)))
       .limit(1),
-    db.select({ id: huntCandidates.id, jobId: huntCandidates.jobId, portal: huntCandidates.sourcePortal, score: huntCandidates.score, title: jobs.title, company: jobs.company, jobUrl: jobs.canonicalUrl, description: jobs.descriptionText, locations: jobs.locations })
+    db.select({ id: huntCandidates.id, jobId: huntCandidates.jobId, portal: huntCandidates.sourcePortal, score: huntCandidates.score, title: jobs.title, company: jobs.company, jobUrl: jobs.canonicalUrl, description: jobs.descriptionText, locations: jobs.locations, applyUrl: sql<string>`coalesce(nullif(${jobs.applyUrl}, ''), (select nullif(js.apply_url, '') from job_sources js where js.job_id = ${jobs.id} and js.portal_id = ${huntCandidates.sourcePortal} order by js.fetched_at desc limit 1), ${jobs.canonicalUrl})` })
       .from(huntCandidates)
       .innerJoin(jobs, eq(huntCandidates.jobId, jobs.id))
       .where(and(
@@ -149,8 +150,15 @@ export async function enqueueApprovedCandidates(
   const target = Math.min(run.target, MAX_DAILY_APPLICATIONS)
   const order = new Map(selectedIds.map((id, index) => [id, index]))
   const selected = selectedRows.sort((left, right) => (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0))
-  const ordered = planApplicationOrder(selected, target)
-  if (ordered.length === 0) return { queued: 0, capped: selected.length > 0 }
+  const unavailable = selected.filter(row => isAggregatorApplicationUrl(row.applyUrl))
+  const skipped = unavailable.map(row => ({ jobId: row.jobId, reason: 'No direct application URL found. Open the source to apply manually.' }))
+  if (unavailable.length) {
+    await db.update(huntCandidates).set({ status: 'needs_review', updatedAt: new Date() }).where(inArray(huntCandidates.id, unavailable.map(r => r.id)))
+    await db.update(huntRunJobs).set({ status: 'needs_review', reasons: sql`array_append(${huntRunJobs.reasons}, 'no_applyable_url')`, updatedAt: new Date() }).where(and(eq(huntRunJobs.runId, runId), inArray(huntRunJobs.jobId, unavailable.map(r => r.jobId))))
+  }
+  const applyable = selected.filter(row => !isAggregatorApplicationUrl(row.applyUrl))
+  const ordered = planApplicationOrder(applyable, target)
+  if (ordered.length === 0) return { queued: 0, capped: applyable.length > 0, queuedJobIds: [], skipped }
 
   // Make queued applications visible immediately. The worker will reuse these
   // rows and transition them as it prepares each browser session.
@@ -195,18 +203,18 @@ export async function enqueueApprovedCandidates(
     ))
   await db
     .update(huntCandidates)
-    .set({ status: 'rejected', updatedAt: new Date() })
+    .set({ status: 'discovered', updatedAt: new Date() })
     .where(and(
-      inArray(huntCandidates.id, selected.map((candidate) => candidate.id)),
+      inArray(huntCandidates.id, applyable.map((candidate) => candidate.id)),
       notInArray(huntCandidates.id, ordered.map((candidate) => candidate.id)),
     ))
-  const rejectedJobIds = selected
+  const rejectedJobIds = applyable
     .filter((candidate) => !ordered.some((queued) => queued.id === candidate.id))
     .map((candidate) => candidate.jobId)
   if (rejectedJobIds.length > 0) {
     await db
       .update(huntRunJobs)
-      .set({ status: 'rejected', updatedAt: new Date() })
+      .set({ status: sql`coalesce(${huntRunJobs.eligibilityStatus}, 'eligible')::hunt_run_job_status`, updatedAt: new Date() })
       .where(and(eq(huntRunJobs.runId, runId), inArray(huntRunJobs.jobId, rejectedJobIds)))
   }
   await db
@@ -220,7 +228,7 @@ export async function enqueueApprovedCandidates(
     })
     .where(and(eq(huntRuns.id, runId), eq(huntRuns.userId, userId)))
 
-  return { queued: ordered.length, capped: selected.length > ordered.length }
+  return { queued: ordered.length, capped: applyable.length > ordered.length, queuedJobIds: ordered.map(r => r.jobId), skipped }
 }
 
 async function finishRunWhenSettled(job: BullJob<ApplyJobData>): Promise<void> {
@@ -432,4 +440,20 @@ export async function closeApplicationQueue(): Promise<void> {
   queue = undefined
   if (connection) await connection.quit()
   connection = undefined
+}
+
+/** Read-only queue diagnostics. Never promotes, retries, or removes a job. */
+export async function applicationJobInfo(userId: string, candidateId: string, runId: string) {
+  if (!hasRedis) return { queueState: 'unavailable', scheduledFor: null, workerConnected: false, lockActive: false }
+  try {
+    const q = applicationQueue()
+    const job = await q.getJob(`apply-${userId}-${candidateId}`)
+    const workerConnected = (await q.getWorkersCount()) > 0
+    if (!job || job.data.userId !== userId || job.data.runId !== runId) return { queueState: 'missing', scheduledFor: null, workerConnected, lockActive: false }
+    const queueState = await job.getState()
+    const lockActive = queueState === 'active' && (await redis().pttl(q.toKey(`${job.id}:lock`))) > 0
+    return { queueState, scheduledFor: queueState === 'delayed' ? new Date(job.timestamp + job.delay).toISOString() : null, workerConnected, lockActive }
+  } catch {
+    return { queueState: 'unavailable', scheduledFor: null, workerConnected: false, lockActive: false }
+  }
 }

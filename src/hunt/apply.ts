@@ -215,10 +215,7 @@ export async function applyApprovedCandidate(
         .set({ liveUrl: session.liveUrl, browserSessionId: session.sessionId, updatedAt: new Date() })
         .where(eq(applyAttempts.id, attempt.id))
     }
-    screencast =
-      !session.liveUrl && (await isWatched(attempt.id))
-        ? await startScreencast({ page, userId, attemptId: attempt.id })
-        : null
+    screencast = await startScreencast({ page, userId, attemptId: attempt.id })
 
     await transition({ attemptId: attempt.id, userId, state: 'filling' })
     const result = await fillForm({

@@ -453,6 +453,7 @@ export async function discoverForRun(
       jobId: entry.job.id,
       sourcePortal: entry.scraped.portal,
       status: hasApplyableUrl(entry.scraped) ? ranking.decision : 'needs_review',
+      eligibilityStatus: ranking.decision,
       score: ranking.score,
       scoreBreakdown: ranking.breakdown,
       reasons: hasApplyableUrl(entry.scraped) ? ranking.reasons : [...ranking.reasons, 'no_applyable_url'],

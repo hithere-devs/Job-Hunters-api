@@ -1,4 +1,4 @@
-import { and, count, countDistinct, desc, eq, gte, ilike, lte, or, sql } from 'drizzle-orm'
+import { and, count, desc, eq, sql } from 'drizzle-orm'
 import { Router } from 'express'
 import { z } from 'zod'
 import { db } from '../../db/client.js'
@@ -12,6 +12,9 @@ import {
   jobs,
   userPortals,
 } from '../../db/schema.js'
+import { salaryOf, experienceOf } from './job-format.js'
+import { listDashboardJobs, jobsQuerySchema } from './scraped-jobs.js'
+import { approveScrapedJobs } from '../../hunt/approval.js'
 import { notFound } from '../../lib/errors.js'
 import { asyncHandler, ok, pathParam } from '../../lib/http.js'
 import { localDate, localDateKey, todayLocal } from '../../lib/sql.js'
@@ -27,56 +30,9 @@ const querySchema = z.object({
   recentApplications: z.coerce.number().int().min(1).max(20).default(4),
 })
 
-const SCRAPED_JOB_STATUSES = [
-  'scraped',
-  'eligible',
-  'below_threshold',
-  'deal_breaker',
-  'role_mismatch',
-  'experience_mismatch',
-  'seniority_mismatch',
-  'insufficient_skills',
-  'location_mismatch',
-  'approved',
-  'rejected',
-  'queued',
-  'tailored',
-  'applying',
-  'applied',
-  'needs_review',
-  'failed',
-  'closed',
-] as const
-
-const isoDay = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD')
-
-const jobsQuerySchema = z
-  .object({
-    runId: z.string().uuid().optional(),
-    page: z.coerce.number().int().min(1).default(1),
-    pageSize: z.coerce.number().int().refine((value) => value === 20 || value === 50 || value === 100, {
-      message: 'pageSize must be 20, 50, or 100',
-    }).default(20),
-    status: z.enum(SCRAPED_JOB_STATUSES).optional(),
-    portal: z.string().trim().min(1).max(80).optional(),
-    query: z.string().trim().max(120).optional(),
-    minScore: z.coerce.number().int().min(0).max(100).optional(),
-    maxScore: z.coerce.number().int().min(0).max(100).optional(),
-    remote: z.enum(['remote', 'hybrid', 'onsite', 'unknown']).optional(),
-    /**
-     * "Asks for at most N years." Postings that never state a figure are
-     * excluded rather than assumed to qualify — the filter means what it says.
-     */
-    maxExperience: z.coerce.number().int().min(0).max(50).optional(),
-    foundOn: isoDay.optional(),
-    postedOn: isoDay.optional(),
-  })
-  .refine(
-    (value) => value.minScore === undefined || value.maxScore === undefined || value.minScore <= value.maxScore,
-    { message: 'minScore cannot exceed maxScore', path: ['minScore'] },
-  )
 const jobDetailQuerySchema = z.object({ runId: z.string().uuid() })
 const jobParamSchema = z.object({ jobId: z.string().uuid() })
+const bulkApplySchema = z.object({ jobs: z.array(z.object({ jobId: z.string().uuid(), runId: z.string().uuid() })).min(1).max(100) })
 
 /**
  * Salary and experience are parsed once, at scrape time, and stored. This used
@@ -84,34 +40,6 @@ const jobParamSchema = z.object({ jobId: z.string().uuid() })
  * recomputed per page view, and unfilterable because it existed only in the
  * response.
  */
-function salaryOf(job: {
-  salaryText: string | null
-  salaryMin: string | null
-  salaryMax: string | null
-  salaryCurrency: string | null
-  salaryPeriod: string | null
-}): string | null {
-  if (job.salaryText) return job.salaryText
-  const min = job.salaryMin === null ? null : Number(job.salaryMin)
-  const max = job.salaryMax === null ? null : Number(job.salaryMax)
-  if (min === null && max === null) return null
-  const format = (value: number): string => Math.round(value).toLocaleString('en-US')
-  const body = min !== null && max !== null && min !== max
-    ? `${format(min)}–${format(max)}`
-    : format((min ?? max) as number)
-  return `${job.salaryCurrency ? `${job.salaryCurrency} ` : ''}${body}${job.salaryPeriod ? ` per ${job.salaryPeriod}` : ''}`
-}
-
-function experienceOf(job: { experienceMin: number | null; experienceMax: number | null }): string | null {
-  const { experienceMin: min, experienceMax: max } = job
-  if (min === null && max === null) return null
-  const unit = (value: number): string => (value === 1 ? 'year' : 'years')
-  if (min !== null && max !== null && min !== max) return `${min}–${max} ${unit(max)}`
-  if (min === 0 && max === null) return 'No experience required'
-  if (min !== null && max === null) return `${min}+ ${unit(min)}`
-  const only = (max ?? min) as number
-  return `${only} ${unit(only)}`
-}
 
 
 /**
@@ -334,249 +262,13 @@ dashboardRouter.get(
   }),
 )
 
-dashboardRouter.get(
-  '/jobs',
-  validate({ query: jobsQuerySchema }),
-  asyncHandler(async (req, res) => {
-    const auth = currentUser(req)
-    const query = validatedQuery<z.infer<typeof jobsQuerySchema>>(req)
-    const runWhere = query.runId
-      ? and(eq(huntRuns.id, query.runId), eq(huntRuns.userId, auth.id))
-      : eq(huntRuns.userId, auth.id)
-    const [run] = await db
-      .select()
-      .from(huntRuns)
-      .where(runWhere)
-      .orderBy(desc(huntRuns.createdAt))
-      .limit(1)
+dashboardRouter.get('/jobs', validate({ query: jobsQuerySchema }), asyncHandler(async (req, res) => {
+  ok(res, await listDashboardJobs(currentUser(req).id, validatedQuery<z.infer<typeof jobsQuerySchema>>(req)))
+}))
 
-    const emptyPagination = {
-      page: query.page,
-      pageSize: query.pageSize,
-      total: 0,
-      totalPages: 0,
-    }
-    if (!run) {
-      ok(res, {
-        run: null,
-        counts: { all: 0 },
-        portals: {},
-        items: [],
-        historical: false,
-        pagination: emptyPagination,
-      })
-      return
-    }
-
-    const search = query.query ? `%${query.query}%` : undefined
-    const commonDetailedConditions = [
-      eq(huntRunJobs.runId, run.id),
-      eq(huntRunJobs.userId, auth.id),
-      search
-        ? or(
-            ilike(jobs.title, search),
-            ilike(jobs.company, search),
-            sql`${jobs.skills}::text ilike ${search}`,
-          )
-        : undefined,
-      query.minScore !== undefined ? gte(huntRunJobs.score, query.minScore) : undefined,
-      query.maxScore !== undefined ? lte(huntRunJobs.score, query.maxScore) : undefined,
-      query.remote ? eq(jobs.remoteMode, query.remote) : undefined,
-      query.maxExperience !== undefined ? lte(jobs.experienceMin, query.maxExperience) : undefined,
-      query.foundOn
-        ? sql`${localDate(huntRunJobs.discoveredAt)} = ${query.foundOn}::date`
-        : undefined,
-      query.postedOn ? sql`${localDate(jobs.postedAt)} = ${query.postedOn}::date` : undefined,
-    ]
-    const detailedWhere = and(
-      ...commonDetailedConditions,
-      query.status ? eq(huntRunJobs.status, query.status) : undefined,
-      query.portal ? eq(huntRunJobs.sourcePortal, query.portal) : undefined,
-    )
-    const baseDetailedWhere = and(
-      eq(huntRunJobs.runId, run.id),
-      eq(huntRunJobs.userId, auth.id),
-    )
-    const offset = (query.page - 1) * query.pageSize
-
-    let counts: Record<string, number> = { all: 0 }
-    let portals: Record<string, number> = {}
-    let items: Array<Record<string, unknown>> = []
-    let total = 0
-
-    // The status counts double as the "is this run detailed?" check: their sum
-    // is the run's row count, so the extra count query this used to run first —
-    // serially, before anything else could start — is gone.
-    const statusRows = await db
-      .select({ status: huntRunJobs.status, value: count() })
-      .from(huntRunJobs)
-      .where(baseDetailedWhere)
-      .groupBy(huntRunJobs.status)
-    const detailedRunTotal = statusRows.reduce((sum, row) => sum + Number(row.value), 0)
-    const historical = detailedRunTotal === 0
-
-    if (!historical) {
-      const [totalRow, portalRows, detailed] = await Promise.all([
-        db
-          .select({ value: count() })
-          .from(huntRunJobs)
-          .innerJoin(jobs, eq(huntRunJobs.jobId, jobs.id))
-          .where(detailedWhere),
-        db
-          .select({ portal: huntRunJobs.sourcePortal, value: count() })
-          .from(huntRunJobs)
-          .where(baseDetailedWhere)
-          .groupBy(huntRunJobs.sourcePortal),
-        db
-          .select({
-            runJob: huntRunJobs,
-            job: jobs,
-            candidateId: huntCandidates.id,
-            candidateStatus: huntCandidates.status,
-          })
-          .from(huntRunJobs)
-          .innerJoin(jobs, eq(huntRunJobs.jobId, jobs.id))
-          .leftJoin(
-            huntCandidates,
-            and(
-              eq(huntCandidates.runId, huntRunJobs.runId),
-              eq(huntCandidates.jobId, huntRunJobs.jobId),
-            ),
-          )
-          .where(detailedWhere)
-          .orderBy(desc(huntRunJobs.score), desc(huntRunJobs.discoveredAt))
-          .limit(query.pageSize)
-          .offset(offset),
-      ])
-      total = Number(totalRow[0]?.value ?? 0)
-      counts = { all: detailedRunTotal }
-      for (const row of statusRows) counts[row.status] = Number(row.value)
-      portals = Object.fromEntries(portalRows.map((row) => [row.portal, Number(row.value)]))
-      items = detailed.map(({ runJob, job, candidateId, candidateStatus }) => ({
-        id: runJob.id,
-        jobId: job.id,
-        candidateId,
-        title: job.title,
-        company: job.company,
-        locations: job.locations,
-        remote: job.remoteMode,
-        employmentType: job.employmentType,
-        sourcePortal: runJob.sourcePortal,
-        status: runJob.status,
-        candidateStatus,
-        score: runJob.score,
-        skills: job.skills,
-        salary: salaryOf(job),
-        experience: experienceOf(job),
-        experienceMin: job.experienceMin,
-        experienceMax: job.experienceMax,
-        responsibilities: job.responsibilities,
-        jobUrl: job.canonicalUrl,
-        postedAt: job.postedAt.toISOString(),
-        discoveredAt: runJob.discoveredAt.toISOString(),
-      }))
-    } else {
-      const windowStart = run.startedAt ?? run.createdAt
-      const windowEnd = run.finishedAt ?? new Date()
-      const windowCondition = or(
-        and(gte(jobSources.fetchedAt, windowStart), lte(jobSources.fetchedAt, windowEnd)),
-        and(gte(jobs.createdAt, windowStart), lte(jobs.createdAt, windowEnd)),
-      )
-      const fallbackWhere = and(
-        windowCondition,
-        search
-          ? or(
-              ilike(jobs.title, search),
-              ilike(jobs.company, search),
-              sql`${jobs.skills}::text ilike ${search}`,
-            )
-          : undefined,
-        query.remote ? eq(jobs.remoteMode, query.remote) : undefined,
-        query.maxExperience !== undefined ? lte(jobs.experienceMin, query.maxExperience) : undefined,
-        query.foundOn ? sql`${localDate(jobSources.fetchedAt)} = ${query.foundOn}::date` : undefined,
-        query.postedOn ? sql`${localDate(jobs.postedAt)} = ${query.postedOn}::date` : undefined,
-        query.portal ? eq(jobSources.portalId, query.portal) : undefined,
-        query.status && query.status !== 'scraped' ? sql`false` : undefined,
-        query.minScore !== undefined || query.maxScore !== undefined ? sql`false` : undefined,
-      )
-      const [totalRows, portalRows, fallback] = await Promise.all([
-        db
-          .select({ value: countDistinct(jobs.id) })
-          .from(jobSources)
-          .innerJoin(jobs, eq(jobSources.jobId, jobs.id))
-          .where(fallbackWhere),
-        db
-          .select({ portal: jobSources.portalId, value: countDistinct(jobs.id) })
-          .from(jobSources)
-          .innerJoin(jobs, eq(jobSources.jobId, jobs.id))
-          .where(windowCondition)
-          .groupBy(jobSources.portalId),
-        db
-          .select({
-            job: jobs,
-            sourcePortal: sql<string>`min(${jobSources.portalId})`,
-            discoveredAt: sql<string>`min(${jobSources.fetchedAt})`,
-          })
-          .from(jobSources)
-          .innerJoin(jobs, eq(jobSources.jobId, jobs.id))
-          .where(fallbackWhere)
-          .groupBy(jobs.id)
-          .orderBy(desc(jobs.postedAt))
-          .limit(query.pageSize)
-          .offset(offset),
-      ])
-      total = Number(totalRows[0]?.value ?? 0)
-      counts = { all: total, scraped: total }
-      portals = Object.fromEntries(portalRows.map((row) => [row.portal, Number(row.value)]))
-      items = fallback.map(({ job, sourcePortal, discoveredAt }) => ({
-        id: `historical:${run.id}:${job.id}`,
-        jobId: job.id,
-        candidateId: null,
-        title: job.title,
-        company: job.company,
-        locations: job.locations,
-        remote: job.remoteMode,
-        employmentType: job.employmentType,
-        sourcePortal,
-        status: 'scraped',
-        candidateStatus: null,
-        score: null,
-        skills: job.skills,
-        salary: salaryOf(job),
-        experience: experienceOf(job),
-        experienceMin: job.experienceMin,
-        experienceMax: job.experienceMax,
-        responsibilities: job.responsibilities,
-        jobUrl: job.canonicalUrl,
-        postedAt: job.postedAt.toISOString(),
-        discoveredAt: new Date(discoveredAt).toISOString(),
-      }))
-    }
-
-    ok(res, {
-      run: {
-        id: run.id,
-        status: run.status,
-        jobsScraped: run.jobsScraped,
-        jobsScored: run.jobsScored,
-        applicationsSubmitted: run.applicationsSubmitted,
-        createdAt: run.createdAt.toISOString(),
-        startedAt: run.startedAt?.toISOString() ?? null,
-        finishedAt: run.finishedAt?.toISOString() ?? null,
-      },
-      counts,
-      portals,
-      items,
-      historical,
-      pagination: {
-        page: query.page,
-        pageSize: query.pageSize,
-        total,
-        totalPages: total === 0 ? 0 : Math.ceil(total / query.pageSize),
-      },
-    })
-  }),
-)
+dashboardRouter.post('/jobs/apply', validate({ body: bulkApplySchema }), asyncHandler(async (req, res) => {
+  ok(res, await approveScrapedJobs(currentUser(req).id, (req.body as z.infer<typeof bulkApplySchema>).jobs))
+}))
 
 dashboardRouter.get(
   '/jobs/:jobId',
@@ -622,9 +314,12 @@ dashboardRouter.get(
 
     if (!row) throw notFound('Hunt run not found')
     const { run, job, runJob, candidate, source } = row
-    if (!runJob && !source) throw notFound('Job was not found in this hunt run')
+    if (!runJob) throw notFound('Job was not found in this hunt run')
 
     ok(res, {
+      runId: run.id,
+      runStatus: run.status,
+      eligibility: runJob?.eligibilityStatus ?? (candidate ? 'eligible' : runJob?.status ?? 'scraped'),
       id: runJob?.id ?? `historical:${run.id}:${job.id}`,
       jobId: job.id,
       candidateId: candidate?.id ?? null,

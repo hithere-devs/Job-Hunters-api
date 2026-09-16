@@ -32,7 +32,8 @@ export async function markWatching(attemptId: string, ttlSeconds = 60): Promise<
 
 export async function stopWatching(attemptId: string): Promise<void> {
   if (!hasRedis) return
-  await getRedis().del(watcherKey(attemptId)).catch(() => undefined)
+  // Other tabs can still be watching. Let the short TTL expire naturally;
+  // remaining viewers keep refreshing it.
 }
 
 export async function isWatched(attemptId: string): Promise<boolean> {
@@ -54,48 +55,67 @@ export async function startScreencast(params: {
   page: Page
   userId: string
   attemptId: string
+  /** Dependency seams for offline tests, never exposed by HTTP. */
+  watcherCheck?: typeof isWatched
+  emit?: typeof publishAttemptEvent
+  pollMs?: number
 }): Promise<Screencast> {
   const { page, userId, attemptId } = params
+  const watched = params.watcherCheck ?? isWatched
+  const emit = params.emit ?? publishAttemptEvent
   let stopped = false
+  let checking = false
+  let running = false
   let seq = 0
   let lastFrameAt = 0
-
-  try {
-    const session = await page.context().newCDPSession(page)
-
-    session.on('Page.screencastFrame', (frame: { data: string; sessionId: number }) => {
-      // Acknowledge every frame or Chrome stops sending them, even the ones
-      // we drop for pacing.
-      void session.send('Page.screencastFrameAck', { sessionId: frame.sessionId }).catch(() => undefined)
-      if (stopped) return
-
-      const now = Date.now()
-      if (now - lastFrameAt < MIN_FRAME_GAP_MS) return
-      lastFrameAt = now
-
-      seq += 1
-      publishAttemptEvent(userId, { type: 'frame', attemptId, seq, data: frame.data })
-    })
-
-    await session.send('Page.startScreencast', {
-      format: 'jpeg',
-      quality: 55,
-      maxWidth: 1000,
-      maxHeight: 720,
-      everyNthFrame: 1,
-    })
-
-    return {
-      async stop() {
-        stopped = true
-        await session.send('Page.stopScreencast').catch(() => undefined)
-        await session.detach().catch(() => undefined)
-      },
-    }
-  } catch (error) {
-    logger.debug({ err: error, attemptId }, 'could not start the screencast')
-    return { stop: async () => undefined }
+  let lastSnapshotAt = 0
+  const session = await page.context().newCDPSession(page).catch(() => null)
+  const publish = (data: string) => {
+    if (stopped) return
+    seq += 1
+    lastFrameAt = Date.now()
+    emit(userId, { type: 'frame', attemptId, seq, data })
   }
+  session?.on('Page.screencastFrame', (frame: { data: string; sessionId: number }) => {
+    void session.send('Page.screencastFrameAck', { sessionId: frame.sessionId }).catch(() => undefined)
+    if (running && Date.now() - lastFrameAt >= MIN_FRAME_GAP_MS) publish(frame.data)
+  })
+  const refresh = async () => {
+    if (stopped || checking) return
+    checking = true
+    try {
+      const shouldRun = await watched(attemptId)
+      if (stopped) return
+      if (!shouldRun) {
+        if (running) await session?.send('Page.stopScreencast').catch(() => undefined)
+        running = false
+        return
+      }
+      if (!running) {
+        running = true
+        await session?.send('Page.startScreencast', { format: 'jpeg', quality: 55, maxWidth: 1200, maxHeight: 900, everyNthFrame: 1 }).catch(() => undefined)
+        lastSnapshotAt = 0
+      }
+      // A late viewer must get a frame even if the page is completely static.
+      // Also provides a fallback for browser providers without CDP screencast.
+      if (!stopped && Date.now() - lastSnapshotAt >= 5_000) {
+        lastSnapshotAt = Date.now()
+        const image = await page.screenshot({ type: 'jpeg', quality: 55, timeout: 5_000 })
+        publish(image.toString('base64'))
+      }
+    } catch (error) {
+      if (!stopped) logger.debug({ err: error, attemptId }, 'live frame temporarily unavailable')
+    } finally { checking = false }
+  }
+  const timer = setInterval(() => void refresh(), params.pollMs ?? 1_000)
+  timer.unref()
+  void refresh()
+  return { async stop() {
+    stopped = true
+    clearInterval(timer)
+    await session?.send('Page.stopScreencast').catch(() => undefined)
+    await session?.detach().catch(() => undefined)
+  } }
 }
 
 /* ------------------------------------------------------------------ takeover */

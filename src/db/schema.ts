@@ -537,6 +537,8 @@ export const huntRunJobs = pgTable(
       .references(() => jobs.id, { onDelete: 'cascade' }),
     sourcePortal: text('source_portal').notNull(),
     status: huntRunJobStatusEnum('status').notNull().default('scraped'),
+    // Kept when queue/attempt status changes; null permits legacy inference.
+    eligibilityStatus: text('eligibility_status'),
     score: smallint('score'),
     scoreBreakdown: jsonb('score_breakdown'),
     reasons: text('reasons').array().notNull().default(sql`'{}'::text[]`),

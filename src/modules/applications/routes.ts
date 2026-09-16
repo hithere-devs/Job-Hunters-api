@@ -18,6 +18,7 @@ import { createSignedUrl } from '../../lib/storage.js'
 import { toRelativeLabel } from '../../lib/time.js'
 import { currentUser, requireAuth } from '../../middleware/auth.js'
 import { validate, validatedQuery } from '../../middleware/validate.js'
+import { reconcileApplicationRecords, applicationRuntimes } from './runtime.js'
 import { recordActivity } from '../../services/activity.js'
 
 export const applicationsRouter: Router = Router()
@@ -140,6 +141,7 @@ applicationsRouter.get(
   asyncHandler(async (req, res) => {
     const auth = currentUser(req)
     const query = validatedQuery<z.infer<typeof listQuerySchema>>(req)
+    await reconcileApplicationRecords(auth.id)
 
     const filters: SQL[] = [eq(applications.userId, auth.id)]
 
@@ -236,9 +238,10 @@ applicationsRouter.get(
     for (const [status, value] of Object.entries(statusCounts)) counts[status] = Number(value)
 
     const now = new Date()
+    const runtime = await applicationRuntimes(auth.id, rowsWithMeta.map(row=>row.application.id))
     ok(
       res,
-      rowsWithMeta.map((row) => serializeApplication(row.application, now)),
+      rowsWithMeta.map((row) => ({ ...serializeApplication(row.application, now), runtime: runtime.get(row.application.id) ?? null, notes: row.application.notes })),
       {
         total,
         limit: query.limit,

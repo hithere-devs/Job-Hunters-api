@@ -1,0 +1,1 @@
+ALTER TABLE "hunt_run_jobs" ADD COLUMN "eligibility_status" text;

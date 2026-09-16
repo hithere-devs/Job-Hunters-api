@@ -74,6 +74,7 @@ export async function rescoreHuntRun(userId: string, runId: string) {
         .update(huntRunJobs)
         .set({
           status: ranking.decision,
+          eligibilityStatus: ranking.decision,
           score: ranking.score,
           scoreBreakdown: ranking.breakdown,
           reasons: ranking.reasons,
