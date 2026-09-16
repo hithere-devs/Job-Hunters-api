@@ -7,7 +7,10 @@ import { asyncHandler, created, noContent, ok, pathParam } from '../../lib/http.
 import { buildObjectKey, createSignedUrl, removeObject, uploadObject } from '../../lib/storage.js'
 import { currentUser, requireAuth } from '../../middleware/auth.js'
 import { photoUpload } from '../../middleware/upload.js'
-import { connectTenant, disconnectTenant } from '../../browser/vm-client.js'
+import { disconnectTenant, ensureTenantConnected, getTenantScreenshot } from '../../browser/vm-client.js'
+import { PROVIDERS, providerById, verifyProviders } from '../../browser/providers.js'
+import { verifyFromScreen } from '../../browser/verify-screen.js'
+import { logger } from '../../lib/logger.js'
 import { env } from '../../config/env.js'
 import { validate } from '../../middleware/validate.js'
 import {
@@ -64,33 +67,90 @@ function accessTokenFromRequest(req: { headers: Record<string, string | string[]
 meRouter.post('/browser-session/connect', asyncHandler(async (req, res) => {
   const auth = currentUser(req)
   const session = await allocateBrowserSession(auth.id)
-  const info = await connectTenant(session.tenantIndex)
+  // Reconnect to the window that is already open; close anything in another
+  // mode first. See `ensureTenantConnected` for why that is the only sane
+  // policy for a slot owned by exactly one user.
+  const { expiresAt, outcome } = await ensureTenantConnected(session.tenantIndex)
   await db.update(userBrowserSessions).set({ status: 'connecting', updatedAt: new Date() }).where(eq(userBrowserSessions.id, session.id))
   const token = accessTokenFromRequest(req)
-  ok(res, { streamUrl: `/me/browser-session/stream?token=${encodeURIComponent(token)}&sessionId=${session.id}`, tenantIndex: session.tenantIndex, expiresAt: info.expiresAt })
+  ok(res, {
+    streamUrl: `/me/browser-session/stream?token=${encodeURIComponent(token)}&sessionId=${session.id}`,
+    tenantIndex: session.tenantIndex,
+    expiresAt,
+    outcome,
+  })
 }))
 
 meRouter.post('/browser-session/disconnect', asyncHandler(async (req, res) => {
   const auth = currentUser(req)
   const session = await browserSessionFor(auth.id)
-  if (!session) return ok(res, { connected: false, cookieDomains: [] })
+  if (!session) return ok(res, { connected: false, cookieDomains: [], providers: [] })
+
+  // The screen is captured *before* the browser stops — afterwards there is
+  // nothing left to photograph.
+  const expectedId = typeof req.query.provider === 'string' ? req.query.provider : null
+  const expected = expectedId ? providerById(expectedId) : null
+  const shot = expected ? await getTenantScreenshot(session.tenantIndex) : null
+
   const result = await disconnectTenant(session.tenantIndex)
   const domains = result.cookieDomains
+  // An older agent answers with hosts only. Fail closed rather than guessing:
+  // a host proves the page was loaded, not that anyone signed in.
+  const cookies = result.cookies ?? []
+  let providers = verifyProviders(cookies)
+
+  // Screen check, only where cookies came up short. It can rescue a
+  // verification, never overrule one — see `verify-screen.ts`.
+  if (expected && shot && !providers.find((p) => p.id === expected.id)?.verified) {
+    const verdict = await verifyFromScreen({ png: shot, provider: expected })
+    if (verdict?.signedIn) {
+      logger.info({ provider: expected.id, reason: verdict.reason }, 'verified from the screen, not cookies')
+      providers = providers.map((p) => (p.id === expected.id ? { ...p, verified: true } : p))
+    }
+    // The names we saw but did not recognise are how the registry gets fixed.
+    const seen = providers.find((p) => p.id === expected.id)?.unmatched ?? []
+    if (seen.length > 0) {
+      logger.info({ provider: expected.id, unmatched: seen }, 'cookie names on this provider that are not in the registry')
+    }
+  }
+
   const now = new Date()
   await db.update(userBrowserSessions).set({ status: 'ready', cookieDomains: domains, lastVerifiedAt: now, updatedAt: now }).where(eq(userBrowserSessions.id, session.id))
   const profileId = `vm:${session.vmId}:${session.tenantIndex}`
-  const providerDomains: Array<[string, string]> = [['google', '.google.com'], ['wellfound', '.wellfound.com'], ['instahyre', '.instahyre.com']]
-  for (const [portalId, domain] of providerDomains) {
-    if (!domains.some((d) => d === domain || d.endsWith(domain))) continue
-    await db.update(portalAccounts).set({ status: 'ready', browserProfileId: profileId, lastVerifiedAt: now, updatedAt: now }).where(and(eq(portalAccounts.userId, auth.id), eq(portalAccounts.portalId, portalId)))
+  for (const provider of providers) {
+    if (!provider.verified) continue
+    await db.update(portalAccounts).set({ status: 'ready', browserProfileId: profileId, lastVerifiedAt: now, updatedAt: now }).where(and(eq(portalAccounts.userId, auth.id), eq(portalAccounts.portalId, provider.id)))
   }
-  ok(res, { connected: false, cookieDomains: domains })
+  ok(res, { connected: false, cookieDomains: domains, providers })
 }))
 
 meRouter.get('/browser-session', asyncHandler(async (req, res) => {
   const auth = currentUser(req)
   const session = await browserSessionFor(auth.id)
-  ok(res, session ? { status: session.status, cookieDomains: session.cookieDomains, lastVerifiedAt: session.lastVerifiedAt, providers: ['google', 'wellfound', 'instahyre'].map((id) => ({ id, verified: (session.cookieDomains ?? []).some((d) => d.includes(id === 'google' ? 'google.com' : `${id}.com`)) })) } : { status: 'absent', cookieDomains: [], lastVerifiedAt: null, providers: [] })
+  // Verified state is read back from `portal_accounts`, which is where the
+  // disconnect handler recorded it after a real cookie or screen check. The
+  // stored cookie domains cannot be re-checked here — they carry no cookie
+  // names, and a domain alone proves nothing.
+  const connected = session
+    ? await db.select({ portalId: portalAccounts.portalId }).from(portalAccounts).where(and(eq(portalAccounts.userId, auth.id), eq(portalAccounts.status, 'ready')))
+    : []
+  const ready = new Set(connected.map((row) => row.portalId))
+  ok(res, {
+    status: session?.status ?? 'absent',
+    cookieDomains: session?.cookieDomains ?? [],
+    lastVerifiedAt: session?.lastVerifiedAt ?? null,
+    providers: PROVIDERS.map((provider) => ({
+      id: provider.id,
+      label: provider.label,
+      url: provider.url,
+      verified: ready.has(provider.id),
+      setup: provider.setup,
+      signupMethod: provider.signupMethod,
+      supportsScraping: provider.supportsScraping,
+      supportsApplying: provider.supportsApplying,
+      emailConfirmationRelevant: provider.emailConfirmationRelevant,
+    })),
+  })
 }))
 
 async function serializeKitResponse(kit: Kit | undefined) {

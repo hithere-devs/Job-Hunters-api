@@ -22,11 +22,89 @@ function validIndex(path: string): number | null { const m = path.match(/^\/tena
 function display(i: number) { return `:${10 + i}`; }
 function vncPort(i: number) { return 5900 + i; }
 function profile(i: number) { return `/home/huntly-u${i}/profile`; }
-function cookieDb(i: number) { return `${profile(i)}/Default/Network/Cookies`; }
+/**
+ * Where Chrome keeps its cookie store.
+ *
+ * Both paths are real. Chrome moved the store under `Default/Network/` around
+ * v96, but the build installed here still writes `Default/Cookies`, and which
+ * one you get varies by build and by how the profile was first created. Probing
+ * costs one `existsSync` and removes an entire class of silent failure — the
+ * first version hardcoded the `Network/` path, found nothing, and returned an
+ * empty list that was indistinguishable from "this user never signed in".
+ */
+const COOKIE_PATHS = ['Default/Cookies', 'Default/Network/Cookies'];
+
+function cookieDb(i: number): string | null {
+  for (const candidate of COOKIE_PATHS) {
+    const full = `${profile(i)}/${candidate}`;
+    if (existsSync(full)) return full;
+  }
+  return null;
+}
 function json(res: http.ServerResponse, status: number, body: unknown) { const data = JSON.stringify(body); res.writeHead(status, {'content-type':'application/json','content-length':Buffer.byteLength(data)}); res.end(data); }
+export interface CookieRow { host: string; name: string }
+
+/**
+ * The cookie store, as `(host, name)` pairs.
+ *
+ * Names, never values. A cookie *name* is what tells you whether somebody is
+ * signed in — `_wellfound` exists only after a Wellfound login — while the
+ * value is the credential itself and has no business leaving this machine.
+ *
+ * Returning only distinct hosts, as the first version did, cannot answer the
+ * question being asked. Visiting wellfound.com while logged out still sets
+ * `.wellfound.com` analytics cookies, so host presence is evidence of having
+ * *loaded the page*, not of having signed in.
+ */
+async function cookieRows(i: number): Promise<CookieRow[]> {
+  const db = cookieDb(i);
+  if (!db) {
+    // Never silent. An empty answer here fails verification in the UI, and a
+    // missing file is a very different problem from an empty profile.
+    console.error(`[tenant ${i}] no cookie store found under ${profile(i)} — tried ${COOKIE_PATHS.join(', ')}`);
+    return [];
+  }
+  try {
+    const { stdout } = await execFileAsync('sqlite3', [
+      '-readonly', '-separator', '\t', db,
+      'select distinct host_key, name from cookies;',
+    ]);
+    const rows = stdout.split(/\r?\n/).map(line => {
+      const [host, name] = line.split('\t');
+      return host && name ? { host: host.trim(), name: name.trim() } : null;
+    }).filter((row): row is CookieRow => row !== null);
+    console.log(`[tenant ${i}] read ${rows.length} cookies from ${db}`);
+    return rows;
+  } catch (error) {
+    console.error(`[tenant ${i}] could not read ${db}:`, error instanceof Error ? error.message : error);
+    return [];
+  }
+}
+
+/** Kept for callers that only want hosts. */
 async function cookies(i: number): Promise<string[]> {
-  const db = cookieDb(i); if (!existsSync(db)) return [];
-  try { const { stdout } = await execFileAsync('sqlite3', ['-readonly', db, 'select distinct host_key from cookies;']); return stdout.split(/\r?\n/).map(x=>x.trim()).filter(Boolean); } catch { return []; }
+  return [...new Set((await cookieRows(i)).map(row => row.host))];
+}
+
+/**
+ * A picture of the tenant's screen, straight off the X display.
+ *
+ * No CDP involved — that is the whole point of Flow A. `import` talks to the X
+ * server, so this works on a browser that has no debugging port and never will.
+ * It is the fallback for a platform whose session cookie we do not yet know.
+ */
+async function screenshot(i: number): Promise<Buffer | null> {
+  try {
+    const { stdout } = await execFileAsync(
+      'sudo',
+      ['-u', `huntly-u${i}`, 'env', `DISPLAY=${display(i)}`, 'import', '-window', 'root', 'png:-'],
+      { encoding: 'buffer', maxBuffer: 32 * 1024 * 1024 },
+    );
+    return stdout as unknown as Buffer;
+  } catch (error) {
+    console.error(`[tenant ${i}] could not capture the screen:`, error instanceof Error ? error.message : error);
+    return null;
+  }
 }
 function stopProcess(i: number): Promise<boolean> {
   const s = state(i); if (!s.child || !s.pid) { s.mode='idle'; s.expiresAt=null; return Promise.resolve(false); }
@@ -40,7 +118,16 @@ function stopProcess(i: number): Promise<boolean> {
 }
 async function launch(i: number, mode: Exclude<Mode,'idle'>) {
   const s = state(i); if (s.mode !== 'idle' && s.child) return null;
-  const args = ['--user-data-dir='+profile(i), '--no-first-run', '--no-default-browser-check', '--disable-dev-shm-usage', '--disable-features=TranslateUI', '--window-size=1440,900', '--window-position=0,0', '--start-maximized', 'about:blank'];
+  // `--hide-crash-restore-bubble`: any ungraceful stop — an agent restart, an
+  // OOM — makes Chrome greet the next launch with "Chrome didn't shut down
+  // correctly", a bubble that covers the top-right of the page and swallows the
+  // first click aimed at what is behind it. Nothing here wants the restore
+  // prompt: the profile is what we keep, not the tab list.
+  //
+  // No `--no-sandbox`, and no automation-hiding flags. Flow A's whole premise
+  // is that this browser is genuinely unautomated, and every such flag is
+  // detection surface arguing the opposite.
+  const args = ['--user-data-dir='+profile(i), '--no-first-run', '--no-default-browser-check', '--disable-dev-shm-usage', '--disable-features=TranslateUI', '--hide-crash-restore-bubble', '--window-size=1440,900', '--window-position=0,0', '--start-maximized', 'about:blank'];
   const child = spawn('sudo', ['-u', `huntly-u${i}`, 'env', `DISPLAY=${display(i)}`, 'google-chrome', ...args], {stdio:'ignore'});
   s.mode=mode; s.child=child; s.pid=child.pid ?? null; s.startedAt=Date.now(); s.lastActivity=Date.now(); s.expiresAt=new Date(Date.now()+IDLE_MS).toISOString();
   s.idleTimer = setTimeout(async () => { if (s.mode !== 'idle' && Date.now()-s.lastActivity >= IDLE_MS) await stopProcess(i); }, IDLE_MS + 100);
@@ -55,9 +142,16 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse) {
   const s=state(i); s.lastActivity=Date.now();
   if (method==='POST' && path.endsWith('/connect')) { if (s.mode!=='idle') return json(res,409,{error:'busy',mode:s.mode}); const x=await launch(i,'connect'); return json(res,200,{mode:'connect',display:display(i),vncPort:vncPort(i),pid:x?.pid ?? null,expiresAt:x?.expiresAt}); }
   if (method==='POST' && path.endsWith('/stop')) { await stopProcess(i); return json(res,200,{stopped:true}); }
-  if (method==='POST' && path.endsWith('/disconnect')) { await stopProcess(i); return json(res,200,{stopped:true,cookieDomains:await cookies(i)}); }
+  if (method==='POST' && path.endsWith('/disconnect')) { await stopProcess(i); return json(res,200,{stopped:true,cookieDomains:await cookies(i),cookies:await cookieRows(i)}); }
+  // Captured before the browser stops, so the caller can fall back to reading
+  // the screen when it cannot recognise a platform's session cookie.
+  if (method==='GET' && path.endsWith('/screenshot')) {
+    const png = await screenshot(i);
+    if (!png) return json(res,503,{error:'screenshot_failed'});
+    res.writeHead(200,{'content-type':'image/png','content-length':png.length}); return res.end(png);
+  }
   if (method==='GET' && path.endsWith('/status')) { let bytes=0; try { const {stdout}=await execFileAsync('du',['-sb',profile(i)]); bytes=Number(stdout.split(/\s+/)[0])||0; } catch {} return json(res,200,{mode:s.mode,pid:s.pid,uptimeMs:s.startedAt?Date.now()-s.startedAt:0,profileBytes:bytes}); }
-  if (method==='GET' && path.endsWith('/cookies')) { if (s.mode!=='idle') return json(res,409,{error:'browser_running'}); return json(res,200,{domains:await cookies(i)}); }
+  if (method==='GET' && path.endsWith('/cookies')) { if (s.mode!=='idle') return json(res,409,{error:'browser_running'}); return json(res,200,{domains:await cookies(i),cookies:await cookieRows(i)}); }
   return json(res,404,{error:'not_found'});
 }
 if (!TOKEN) console.warn('VM_AGENT_TOKEN is empty; authentication disabled');
