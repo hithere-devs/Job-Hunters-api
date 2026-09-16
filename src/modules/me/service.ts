@@ -284,7 +284,13 @@ export async function completeOnboarding(userId: string, input: CompleteOnboardi
     : []
   const knownPortalIds = new Set(knownPortals.map((row) => row.id))
 
+  let completedNow = false
   const user = await db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`onboarding:${userId}`}))`)
+    const [existing] = await tx.select().from(users).where(eq(users.id, userId)).limit(1)
+    if (!existing) throw notFound('User not found')
+    if (existing.onboarded) return existing
+    completedNow = true
     await tx
       .insert(kits)
       .values({
@@ -310,9 +316,9 @@ export async function completeOnboarding(userId: string, input: CompleteOnboardi
       })
 
     const specValues = {
-      roles: splitList(input.roles),
-      locations: splitList(input.locations),
-      dreamCompanies: splitList(input.companies),
+      ...(input.roles !== undefined ? { roles: splitList(input.roles) } : {}),
+      ...(input.locations !== undefined ? { locations: splitList(input.locations) } : {}),
+      ...(input.companies !== undefined ? { dreamCompanies: splitList(input.companies) } : {}),
       ...(input.dailyTarget !== undefined ? { dailyTarget: input.dailyTarget } : {}),
     }
 
@@ -349,10 +355,10 @@ export async function completeOnboarding(userId: string, input: CompleteOnboardi
     return row
   })
 
-  await recordActivity({
+  if (completedNow) await recordActivity({
     userId,
     kind: 'onboarding_completed',
-    text: 'Setup finished — the first hunt runs tomorrow at 06:00.',
+    text: 'Setup saved. Review your sources and start a hunt when ready.',
     meta: { portals: [...knownPortalIds] },
   })
 

@@ -1,4 +1,6 @@
-import { and, eq } from 'drizzle-orm'
+import { withBrowserLifecycle } from '../../browser/lifecycle.js'
+import { providerCatalogue } from '../../browser/provider-catalogue.js'
+import { and, eq, sql } from 'drizzle-orm'
 import { Router } from 'express'
 import { db } from '../../db/client.js'
 import { kits, portalAccounts, resumes, userBrowserSessions, users, type Kit } from '../../db/schema.js'
@@ -7,10 +9,8 @@ import { asyncHandler, created, noContent, ok, pathParam } from '../../lib/http.
 import { buildObjectKey, createSignedUrl, downloadObject, removeObject, uploadObject } from '../../lib/storage.js'
 import { currentUser, requireAuth } from '../../middleware/auth.js'
 import { photoUpload } from '../../middleware/upload.js'
-import { disconnectTenant, ensureTenantConnected, getTenantScreenshot, uploadTenantResume } from '../../browser/vm-client.js'
-import { PROVIDERS, providerById, verifyProviders } from '../../browser/providers.js'
-import { verifyFromScreen } from '../../browser/verify-screen.js'
-import { logger } from '../../lib/logger.js'
+import { disconnectTenant, ensureTenantConnected, getTenantStatus, uploadTenantResume, VmAgentBusyError } from '../../browser/vm-client.js'
+import { PROVIDERS, hostMatchesDomain, sessionVerificationStatus, verifyProviders } from '../../browser/providers.js'
 import { env } from '../../config/env.js'
 import { validate } from '../../middleware/validate.js'
 import {
@@ -48,15 +48,24 @@ async function browserSessionFor(userId: string) {
 }
 
 async function allocateBrowserSession(userId: string) {
-  const existing = await browserSessionFor(userId)
-  if (existing) return existing
-  const occupied = await db.select({ tenantIndex: userBrowserSessions.tenantIndex }).from(userBrowserSessions).where(eq(userBrowserSessions.vmId, env.VM_ID))
-  const used = new Set(occupied.map((r) => r.tenantIndex))
-  const tenantIndex = Array.from({ length: 10 }, (_, n) => n + 1).find((n) => !used.has(n))
-  if (!tenantIndex) throw badRequest('All browser session slots are in use.')
-  const [createdRow] = await db.insert(userBrowserSessions).values({ userId, vmId: env.VM_ID, tenantIndex }).returning()
-  if (!createdRow) throw badRequest('Could not allocate a browser session slot.')
-  return createdRow
+  // Serialize slot assignment across API processes, not just this Node instance.
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`browser-slots:${env.VM_ID}`}))`)
+    const [existing] = await tx.select().from(userBrowserSessions).where(eq(userBrowserSessions.userId, userId)).limit(1)
+    if (existing) {
+      if (existing.vmId !== env.VM_ID) throw badRequest('Your browser host is unavailable. Contact support; your profile has been preserved.')
+      return existing
+    }
+    const occupied = await tx.select({ tenantIndex: userBrowserSessions.tenantIndex }).from(userBrowserSessions).where(eq(userBrowserSessions.vmId, env.VM_ID))
+    const used = new Set(occupied.map((row) => row.tenantIndex))
+    // Tenant 3 has a protected human-created profile; never assign it automatically.
+    used.add(3)
+    const tenantIndex = Array.from({ length: 10 }, (_, n) => n + 1).find((n) => !used.has(n))
+    if (!tenantIndex) throw badRequest('All browser session slots are in use. Please contact support.')
+    const [row] = await tx.insert(userBrowserSessions).values({ userId, vmId: env.VM_ID, tenantIndex }).returning()
+    if (!row) throw badRequest('Could not allocate a browser session slot.')
+    return row
+  })
 }
 
 function accessTokenFromRequest(req: { headers: Record<string, string | string[] | undefined> }): string {
@@ -66,10 +75,9 @@ function accessTokenFromRequest(req: { headers: Record<string, string | string[]
 
 meRouter.post('/browser-session/connect', asyncHandler(async (req, res) => {
   const auth = currentUser(req)
+  return withBrowserLifecycle(auth.id, async () => {
   const session = await allocateBrowserSession(auth.id)
-  // Reconnect to the window that is already open; close anything in another
-  // mode first. See `ensureTenantConnected` for why that is the only sane
-  // policy for a slot owned by exactly one user.
+  // Reuse an interactive window; an active application returns 409 untouched.
   const { expiresAt, outcome } = await ensureTenantConnected(session.tenantIndex)
   await db.update(userBrowserSessions).set({ status: 'connecting', updatedAt: new Date() }).where(eq(userBrowserSessions.id, session.id))
   const token = accessTokenFromRequest(req)
@@ -79,63 +87,75 @@ meRouter.post('/browser-session/connect', asyncHandler(async (req, res) => {
     expiresAt,
     outcome,
   })
+  })
 }))
 
 meRouter.post('/browser-session/disconnect', asyncHandler(async (req, res) => {
   const auth = currentUser(req)
+  return withBrowserLifecycle(auth.id, async () => {
   const session = await browserSessionFor(auth.id)
   if (!session) return ok(res, { connected: false, cookieDomains: [], providers: [] })
 
-  // The screen is captured *before* the browser stops — afterwards there is
-  // nothing left to photograph.
-  const expectedId = typeof req.query.provider === 'string' ? req.query.provider : null
-  const expected = expectedId ? providerById(expectedId) : null
-  const shot = expected ? await getTenantScreenshot(session.tenantIndex) : null
-
+  if (session.vmId !== env.VM_ID) throw badRequest('Your browser host is unavailable.')
+  const live = await getTenantStatus(session.tenantIndex)
+  if (live.mode === 'apply') throw new VmAgentBusyError('apply')
   const result = await disconnectTenant(session.tenantIndex)
   const domains = result.cookieDomains
-  // An older agent answers with hosts only. Fail closed rather than guessing:
-  // a host proves the page was loaded, not that anyone signed in.
-  const cookies = result.cookies ?? []
-  let providers = verifyProviders(cookies)
-
-  // Screen check, only where cookies came up short. It can rescue a
-  // verification, never overrule one — see `verify-screen.ts`.
-  if (expected && shot && !providers.find((p) => p.id === expected.id)?.verified) {
-    const verdict = await verifyFromScreen({ png: shot, provider: expected })
-    if (verdict?.signedIn) {
-      logger.info({ provider: expected.id, reason: verdict.reason }, 'verified from the screen, not cookies')
-      providers = providers.map((p) => (p.id === expected.id ? { ...p, verified: true } : p))
-    }
-    // The names we saw but did not recognise are how the registry gets fixed.
-    const seen = providers.find((p) => p.id === expected.id)?.unmatched ?? []
-    if (seen.length > 0) {
-      logger.info({ provider: expected.id, unmatched: seen }, 'cookie names on this provider that are not in the registry')
-    }
-  }
-
+  const providers = verifyProviders(result.cookies ?? [])
   const now = new Date()
-  await db.update(userBrowserSessions).set({ status: 'ready', cookieDomains: domains, lastVerifiedAt: now, updatedAt: now }).where(eq(userBrowserSessions.id, session.id))
+  const status = sessionVerificationStatus(providers, session.lastVerifiedAt !== null)
   const profileId = `vm:${session.vmId}:${session.tenantIndex}`
-  for (const provider of providers) {
-    if (!provider.verified) continue
-    await db.update(portalAccounts).set({ status: 'ready', browserProfileId: profileId, lastVerifiedAt: now, updatedAt: now }).where(and(eq(portalAccounts.userId, auth.id), eq(portalAccounts.portalId, provider.id)))
-  }
-  ok(res, { connected: false, cookieDomains: domains, providers })
+  await db.transaction(async (tx) => {
+    await tx.update(userBrowserSessions).set({ status, cookieDomains: domains, lastVerifiedAt: now, updatedAt: now }).where(eq(userBrowserSessions.id, session.id))
+    const [user] = await tx.select({ email: users.email }).from(users).where(eq(users.id, auth.id)).limit(1)
+    for (const provider of providers) {
+      const state = {
+        status: provider.verified ? 'ready' as const : 'pending_verification' as const,
+        browserProfileId: profileId,
+        lastVerifiedAt: provider.verified ? now : null,
+        actionRequired: provider.verified ? null : 'Reconnect and verify this provider in your browser session.',
+        updatedAt: now,
+      }
+      await tx.insert(portalAccounts).values({ userId: auth.id, portalId: provider.id, email: user!.email, ...state }).onConflictDoUpdate({ target: [portalAccounts.userId, portalAccounts.portalId], set: state })
+    }
+  })
+  ok(res, { connected: false, status, cookieDomains: domains, providers })
+  })
+}))
+
+/** Disable Huntly access without deleting credentials or releasing a dirty tenant to another user. */
+meRouter.post('/browser-session/remove', asyncHandler(async (req, res) => {
+  const auth = currentUser(req)
+  return withBrowserLifecycle(auth.id, async () => {
+  if (req.body?.confirm !== true) throw badRequest('Confirm removal before disconnecting this session.')
+  const session = await browserSessionFor(auth.id)
+  if (!session) return ok(res, { removed: true, profileDeleted: false })
+  if (session.vmId !== env.VM_ID) throw badRequest('Your browser host is unavailable.')
+  const live = await getTenantStatus(session.tenantIndex)
+  if (live.mode === 'apply') throw new VmAgentBusyError('apply')
+  if (live.mode === 'connect') await disconnectTenant(session.tenantIndex)
+  const profileId = `vm:${session.vmId}:${session.tenantIndex}`
+  await db.transaction(async (tx) => {
+    await tx.update(userBrowserSessions).set({ status: 'absent', cookieDomains: [], lastVerifiedAt: null, updatedAt: new Date() }).where(eq(userBrowserSessions.id, session.id))
+    await tx.update(portalAccounts).set({ status: 'absent', browserProfileId: null, lastVerifiedAt: null, actionRequired: 'Session disconnected from Huntly. Reconnect to use it again.', updatedAt: new Date() }).where(and(eq(portalAccounts.userId, auth.id), eq(portalAccounts.browserProfileId, profileId)))
+  })
+  ok(res, { removed: true, profileDeleted: false, historyRetained: true })
+  })
 }))
 
 meRouter.get('/browser-session', asyncHandler(async (req, res) => {
   const auth = currentUser(req)
   const session = await browserSessionFor(auth.id)
   // Verified state is read back from `portal_accounts`, which is where the
-  // disconnect handler recorded it after a real cookie or screen check. The
+  // disconnect handler recorded it after a cookie-evidence check. The
   // stored cookie domains cannot be re-checked here — they carry no cookie
   // names, and a domain alone proves nothing.
   const connected = session
-    ? await db.select({ portalId: portalAccounts.portalId }).from(portalAccounts).where(and(eq(portalAccounts.userId, auth.id), eq(portalAccounts.status, 'ready')))
+    ? await db.select({ portalId: portalAccounts.portalId, lastVerifiedAt: portalAccounts.lastVerifiedAt }).from(portalAccounts).where(and(eq(portalAccounts.userId, auth.id), eq(portalAccounts.status, 'ready'), eq(portalAccounts.browserProfileId, `vm:${session.vmId}:${session.tenantIndex}`)))
     : []
   const ready = new Set(connected.map((row) => row.portalId))
   ok(res, {
+    catalogue: providerCatalogue(),
     status: session?.status ?? 'absent',
     cookieDomains: session?.cookieDomains ?? [],
     lastVerifiedAt: session?.lastVerifiedAt ?? null,
@@ -143,7 +163,13 @@ meRouter.get('/browser-session', asyncHandler(async (req, res) => {
       id: provider.id,
       label: provider.label,
       url: provider.url,
-      verified: ready.has(provider.id),
+      verified: session?.status !== 'absent' && ready.has(provider.id),
+      status: session?.status === 'absent' ? 'disconnected' : ready.has(provider.id) ? 'ready' : session?.lastVerifiedAt ? 'stale' : 'disconnected',
+      domain: provider.domain,
+      cookieDomains: (session?.cookieDomains ?? []).filter((host) => hostMatchesDomain(host, provider.domain)),
+      lastVerifiedAt: connected.find((row) => row.portalId === provider.id)?.lastVerifiedAt ?? null,
+      verificationEvidence: 'session_cookie_present',
+      verificationNote: 'Cookie evidence can expire or be rejected by the provider. Login challenges are checked again during application.',
       setup: provider.setup,
       signupMethod: provider.signupMethod,
       supportsScraping: provider.supportsScraping,
@@ -159,7 +185,10 @@ meRouter.get('/browser-session', asyncHandler(async (req, res) => {
 meRouter.post('/browser-session/resume', asyncHandler(async (req, res) => {
   const auth = currentUser(req)
   const session = await browserSessionFor(auth.id)
-  if (!session) throw badRequest('Connect your browser session before preparing a resume upload.')
+  if (!session || session.status === 'absent') throw badRequest('Connect your browser session before preparing a resume upload.')
+  if (session.vmId !== env.VM_ID) throw badRequest('Your browser host is unavailable.')
+  const live = await getTenantStatus(session.tenantIndex)
+  if (live.mode !== 'connect') throw new VmAgentBusyError(live.mode)
   const [resume] = await db.select().from(resumes).where(and(eq(resumes.userId, auth.id), eq(resumes.isBase, true))).limit(1)
   if (!resume) throw notFound('Upload a base resume to Huntly first.')
   const bytes = await downloadObject(resume.storagePath)

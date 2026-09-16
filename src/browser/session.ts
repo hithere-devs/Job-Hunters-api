@@ -1,3 +1,8 @@
+import { withBrowserLifecycle } from './lifecycle.js'
+import { and, eq } from 'drizzle-orm'
+import { db } from '../db/client.js'
+import { userBrowserSessions } from '../db/schema.js'
+import { assertTenantCdpUrl, assertVmProfileOwner, parseVmProfile, selectBrowserProvider } from './profile-policy.js'
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core'
 import { browserProvider, env } from '../config/env.js'
 import { serviceUnavailable } from '../lib/errors.js'
@@ -186,12 +191,18 @@ async function openLocal(options: SessionOptions, slot: Slot): Promise<AgentSess
 }
 
 async function openVm(options: SessionOptions, slot: Slot): Promise<AgentSession> {
-  const match = options.profileId?.match(/^vm:[^:]+:(\d+)$/)
-  if (!match) throw serviceUnavailable('A VM browser session requires a VM profile slot.')
-  const tenantIndex = Number(match[1])
+  if (!options.userId) throw serviceUnavailable('A user-owned browser profile is required.')
+  return withBrowserLifecycle(options.userId, () => openVmLocked(options, slot))
+}
+
+async function openVmLocked(options: SessionOptions, slot: Slot): Promise<AgentSession> {
+  const tenantIndex = parseVmProfile(options.profileId ?? '', env.VM_ID)
+  const [owner] = await db.select().from(userBrowserSessions).where(and(eq(userBrowserSessions.vmId, env.VM_ID), eq(userBrowserSessions.tenantIndex, tenantIndex))).limit(1)
+  assertVmProfileOwner(owner, options.userId, env.VM_ID, tenantIndex)
   const info = await applyTenant(tenantIndex)
   let browser: Browser
   try {
+    assertTenantCdpUrl(info.cdpUrl, tenantIndex)
     browser = await chromium.connectOverCDP(info.cdpUrl, { timeout: 60_000 })
   } catch (error) {
     await stopTenant(tenantIndex).catch(() => undefined)
@@ -223,9 +234,10 @@ export async function openSession(options: SessionOptions): Promise<AgentSession
 
   const slot = await browsers.acquire(options.label, options.maxWaitMs ?? DEFAULT_WAIT_MS)
   try {
-    return browserProvider === 'browser-use'
+    const provider = selectBrowserProvider(options.profileId, browserProvider)
+    return provider === 'browser-use'
       ? await openHosted(options, slot)
-      : browserProvider === 'vm'
+      : provider === 'vm'
         ? await openVm(options, slot)
         : await openLocal(options, slot)
   } catch (error) {
@@ -256,7 +268,7 @@ export async function withSession<T>(
 
 /** What a finished session cost. Null for local sessions, which cost nothing. */
 export async function sessionCost(sessionId: string | null): Promise<SessionCost | null> {
-  if (!sessionId) return null
+  if (!sessionId || sessionId.startsWith('vm:')) return null
   try {
     const info = await getBrowser(sessionId)
     return {

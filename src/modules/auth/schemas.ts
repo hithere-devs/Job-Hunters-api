@@ -55,3 +55,6 @@ export type RefreshInput = z.infer<typeof refreshSchema>
 export type LogoutInput = z.infer<typeof logoutSchema>
 export type ChangePasswordInput = z.infer<typeof changePasswordSchema>
 export type GoogleCallbackInput = z.infer<typeof googleCallbackSchema>
+
+export const forgotPasswordSchema = z.object({ email: emailSchema })
+export const resetPasswordSchema = z.object({ token: z.string().regex(/^[A-Za-z0-9_-]{43}$/), newPassword: passwordSchema })

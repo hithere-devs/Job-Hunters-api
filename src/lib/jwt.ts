@@ -19,6 +19,7 @@ export interface AccessTokenPayload {
   sub: string
   email: string
   type: 'access'
+  authVersion: number
 }
 
 export interface RefreshTokenPayload {
@@ -28,8 +29,8 @@ export interface RefreshTokenPayload {
   type: 'refresh'
 }
 
-export function signAccessToken(payload: { userId: string; email: string }): string {
-  return jwt.sign({ email: payload.email, type: 'access' }, env.JWT_ACCESS_SECRET, {
+export function signAccessToken(payload: { userId: string; email: string; authVersion?: number }): string {
+  return jwt.sign({ email: payload.email, type: 'access', authVersion: payload.authVersion ?? 0 }, env.JWT_ACCESS_SECRET, {
     subject: payload.userId,
     issuer: env.JWT_ISSUER,
     expiresIn: env.JWT_ACCESS_TTL as jwt.SignOptions['expiresIn'],
@@ -54,7 +55,7 @@ export function verifyAccessToken(token: string): AccessTokenPayload {
     if (decoded.type !== 'access' || typeof decoded.sub !== 'string') {
       throw unauthorized('Malformed access token')
     }
-    return { sub: decoded.sub, email: String(decoded.email ?? ''), type: 'access' }
+    return { sub: decoded.sub, email: String(decoded.email ?? ''), type: 'access', authVersion: typeof decoded.authVersion === 'number' ? decoded.authVersion : 0 }
   } catch (error) {
     if (error instanceof jwt.TokenExpiredError) {
       throw unauthorized('Access token expired', { reason: 'token_expired' })

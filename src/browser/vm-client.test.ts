@@ -64,33 +64,19 @@ describe('ensureTenantConnected', () => {
     assert.deepEqual(calls, ['/tenants/1/connect', '/tenants/1/status'])
   })
 
-  it('closes a browser in another mode before starting a new one', async () => {
-    // Closing goes through disconnect, not a kill: a graceful stop is what
-    // flushes cookies to disk, and those cookies are the whole asset.
-    const { calls } = stubAgent([
-      { status: 409, body: { error: 'busy', mode: 'apply' } },
-      { status: 200, body: { stopped: true, cookieDomains: ['.google.com'] } },
-      { status: 200, body: { mode: 'connect', display: ':11', vncPort: 6101, pid: 2, expiresAt: null } },
-    ])
-    const result = await ensureTenantConnected(1)
-    assert.equal(result.outcome, 'replaced')
-    assert.deepEqual(calls, [
-      '/tenants/1/connect',
-      '/tenants/1/disconnect',
-      '/tenants/1/connect',
-    ])
+  it('preserves an active application and returns its busy mode without stopping it', async () => {
+    const { calls } = stubAgent([{ status: 409, body: { error: 'busy', mode: 'apply' } }])
+    await assert.rejects(() => ensureTenantConnected(1), (error: unknown) => error instanceof VmAgentBusyError && error.status === 409 && error.currentMode === 'apply')
+    assert.deepEqual(calls, ['/tenants/1/connect'])
   })
 
-  it('reports a busy slot as a 409 ApiError, never a bare Error', async () => {
-    stubAgent([{ status: 409, body: { error: 'busy', mode: 'apply' } }])
-    // Force the replace path to fail so the original error surfaces.
-    await assert.rejects(
-      async () => {
-        stubAgent([{ status: 409, body: { error: 'busy', mode: 'apply' } }, { status: 503, body: { error: 'down' } }])
-        await ensureTenantConnected(1)
-      },
-      (error: unknown) => error instanceof ApiError && error.status === 503,
-    )
+  it('does not reuse a browser that changed mode during reconnect', async () => {
+    const { calls } = stubAgent([
+      { status: 409, body: { error: 'busy', mode: 'connect' } },
+      { status: 200, body: { mode: 'apply', pid: 2, uptimeMs: 1, profileBytes: 1 } },
+    ])
+    await assert.rejects(() => ensureTenantConnected(1), VmAgentBusyError)
+    assert.deepEqual(calls, ['/tenants/1/connect', '/tenants/1/status'])
   })
 
   it('names the tunnel when the agent cannot be reached at all', async () => {

@@ -1,5 +1,5 @@
 import crypto from 'node:crypto'
-import { and, eq, isNull, lt, or } from 'drizzle-orm'
+import { and, eq, isNull, lt, or, sql } from 'drizzle-orm'
 import { db } from '../../db/client.js'
 import { huntSpecs, kits, refreshTokens, users, type User } from '../../db/schema.js'
 import { badRequest, conflict, serviceUnavailable, unauthorized } from '../../lib/errors.js'
@@ -211,7 +211,15 @@ export async function completeGoogleSignIn(
   return issueSession(user, context)
 }
 
-async function issueSession(user: User, context: RequestContext): Promise<AuthSession> {
+async function issueSession(user: User, context: RequestContext, connection?: Pick<typeof db, 'insert'>): Promise<AuthSession> {
+  if (!connection) {
+    return db.transaction(async (tx) => {
+      const [current] = await tx.select().from(users).where(eq(users.id, user.id)).for('update').limit(1)
+      if (!current || current.authVersion !== user.authVersion || current.passwordHash !== user.passwordHash) throw unauthorized('Your account changed during sign-in. Please sign in again.')
+      return issueSession(current, context, tx)
+    })
+  }
+
   // The id is generated here rather than by the database, which breaks the
   // chicken-and-egg the previous version worked around with an insert followed
   // by an update: the token needs the row id, and the row needs the token's
@@ -221,7 +229,7 @@ async function issueSession(user: User, context: RequestContext): Promise<AuthSe
   const refreshToken = signRefreshToken({ userId: user.id, tokenId })
 
   const [insert, dto] = await Promise.all([
-    db.insert(refreshTokens).values({
+    connection.insert(refreshTokens).values({
       id: tokenId,
       userId: user.id,
       tokenHash: hashToken(refreshToken),
@@ -235,7 +243,7 @@ async function issueSession(user: User, context: RequestContext): Promise<AuthSe
 
   return {
     user: dto,
-    accessToken: signAccessToken({ userId: user.id, email: user.email }),
+    accessToken: signAccessToken({ userId: user.id, email: user.email, authVersion: user.authVersion }),
     refreshToken,
     expiresIn: accessTokenExpiresInSeconds(),
     tokenType: 'Bearer',
@@ -323,42 +331,19 @@ export async function refreshSession(
   const payload = verifyRefreshToken(token)
   const presentedHash = hashToken(token)
 
-  const [row] = await db
-    .select()
-    .from(refreshTokens)
-    .where(and(eq(refreshTokens.id, payload.jti), eq(refreshTokens.userId, payload.sub)))
-    .limit(1)
-
-  if (!row) throw unauthorized('Refresh token is not recognised.')
-
-  if (row.tokenHash !== presentedHash) {
-    throw unauthorized('Refresh token does not match.')
-  }
-
-  if (row.revokedAt) {
-    // Reuse of a rotated token: either replay of a stolen token or a badly
-    // behaved client. Either way, drop every session for this account.
-    logger.warn({ userId: row.userId, tokenId: row.id }, 'revoked refresh token replayed')
-    await revokeAllForUser(row.userId)
-    throw unauthorized('This session was already ended. Sign in again.')
-  }
-
-  if (row.expiresAt.getTime() <= Date.now()) {
-    throw unauthorized('Refresh token expired. Sign in again.')
-  }
-
-  const [user] = await db.select().from(users).where(eq(users.id, row.userId)).limit(1)
-  if (!user) throw unauthorized('Account no longer exists.')
-
-  const session = await issueSession(user, context)
-
-  const newPayload = verifyRefreshToken(session.refreshToken)
-  await db
-    .update(refreshTokens)
-    .set({ revokedAt: new Date(), replacedByTokenId: newPayload.jti })
-    .where(eq(refreshTokens.id, row.id))
-
-  return session
+  return db.transaction(async (tx) => {
+    // Lock the user first. Reset and rotation serialize on this row, so a reset
+    // cannot revoke tokens and then race a newly minted replacement.
+    const [user] = await tx.select().from(users).where(eq(users.id, payload.sub)).for('update').limit(1)
+    if (!user) throw unauthorized('Account no longer exists.')
+    const [row] = await tx.select().from(refreshTokens).where(and(eq(refreshTokens.id, payload.jti), eq(refreshTokens.userId, payload.sub))).for('update').limit(1)
+    if (!row || row.tokenHash !== presentedHash) throw unauthorized('Refresh token is not recognised.')
+    if (row.revokedAt || row.expiresAt.getTime() <= Date.now()) throw unauthorized('This session has ended. Sign in again.')
+    const session = await issueSession(user, context, tx)
+    const newPayload = verifyRefreshToken(session.refreshToken)
+    await tx.update(refreshTokens).set({ revokedAt: new Date(), replacedByTokenId: newPayload.jti }).where(eq(refreshTokens.id, row.id))
+    return session
+  })
 }
 
 export async function revokeRefreshToken(token: string): Promise<void> {
@@ -377,10 +362,10 @@ export async function revokeRefreshToken(token: string): Promise<void> {
 }
 
 export async function revokeAllForUser(userId: string): Promise<void> {
-  await db
-    .update(refreshTokens)
-    .set({ revokedAt: new Date() })
-    .where(and(eq(refreshTokens.userId, userId), isNull(refreshTokens.revokedAt)))
+  await db.transaction(async (tx) => {
+    await tx.update(users).set({ authVersion: sql`${users.authVersion} + 1`, updatedAt: new Date() }).where(eq(users.id, userId))
+    await tx.update(refreshTokens).set({ revokedAt: new Date() }).where(and(eq(refreshTokens.userId, userId), isNull(refreshTokens.revokedAt)))
+  })
 }
 
 export async function changePassword(
@@ -388,20 +373,13 @@ export async function changePassword(
   currentPassword: string,
   newPassword: string,
 ): Promise<void> {
-  const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1)
-  if (!user) throw unauthorized('Account no longer exists.')
-
-  const valid = await verifyPassword(currentPassword, user.passwordHash)
-  if (!valid) throw unauthorized('Current password is wrong.')
-
-  await db
-    .update(users)
-    .set({ passwordHash: await hashPassword(newPassword), updatedAt: new Date() })
-    .where(eq(users.id, userId))
-
-  // A password change ends every other session. That is the whole point of
-  // changing it.
-  await revokeAllForUser(userId)
+  await db.transaction(async (tx) => {
+    const [user] = await tx.select().from(users).where(eq(users.id, userId)).for('update').limit(1)
+    if (!user) throw unauthorized('Account no longer exists.')
+    if (!await verifyPassword(currentPassword, user.passwordHash)) throw unauthorized('Current password is wrong.')
+    await tx.update(users).set({ passwordHash: await hashPassword(newPassword), authVersion: sql`${users.authVersion} + 1`, updatedAt: new Date() }).where(eq(users.id, userId))
+    await tx.update(refreshTokens).set({ revokedAt: new Date() }).where(and(eq(refreshTokens.userId, userId), isNull(refreshTokens.revokedAt)))
+  })
 }
 
 /**

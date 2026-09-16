@@ -51,6 +51,7 @@ export async function requireAuth(req: Request, _res: Response, next: NextFuncti
     const [row] = await db
       .select({
         id: users.id,
+        authVersion: users.authVersion,
         email: users.email,
         name: users.name,
         avatar: users.avatar,
@@ -62,6 +63,7 @@ export async function requireAuth(req: Request, _res: Response, next: NextFuncti
       .limit(1)
 
     if (!row) throw unauthorized('Account no longer exists')
+    if (row.authVersion !== payload.authVersion) throw unauthorized('Session was revoked. Please sign in again.')
 
     req.user = row
     next()
@@ -79,6 +81,7 @@ export async function optionalAuth(req: Request, _res: Response, next: NextFunct
     const [row] = await db
       .select({
         id: users.id,
+        authVersion: users.authVersion,
         email: users.email,
         name: users.name,
         avatar: users.avatar,
@@ -88,7 +91,7 @@ export async function optionalAuth(req: Request, _res: Response, next: NextFunct
       .from(users)
       .where(eq(users.id, payload.sub))
       .limit(1)
-    if (row) req.user = row
+    if (row && row.authVersion === payload.authVersion) req.user = row
   } catch {
     // An invalid token on an optional route is simply "not signed in".
   }

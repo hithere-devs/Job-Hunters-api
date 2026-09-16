@@ -61,7 +61,7 @@ export const PROVIDERS: Provider[] = [
     domain: 'wellfound.com',
     setup: 'Use Sign in with Google after Google is connected.',
     signupMethod: 'google-or-email',
-    supportsScraping: true,
+    supportsScraping: false,
     supportsApplying: true,
     emailConfirmationRelevant: true,
     // Rails session cookie, set host-only on the apex — which is exactly the
@@ -78,10 +78,9 @@ export const PROVIDERS: Provider[] = [
     supportsScraping: true,
     supportsApplying: true,
     emailConfirmationRelevant: true,
-    // Django's default session cookie. Unconfirmed against a real login — if it
-    // is wrong, the screenshot fallback covers it and the correct name shows up
-    // in the `unmatched` list this module reports.
-    sessionCookies: ['sessionid', 'csrftoken'],
+    // Django session evidence only. CSRF cookies also exist when logged out.
+    // The application must still detect login challenges before filling.
+    sessionCookies: ['sessionid'],
   },
 ]
 
@@ -140,4 +139,10 @@ export function verifyProviders(cookies: CookieRow[]): ProviderVerdict[] {
  */
 export function verifyFromDomainsOnly(domains: string[]): ProviderVerdict[] {
   return verifyProviders(domains.map((host) => ({ host, name: '' })))
+}
+
+/** Readiness means matching session-cookie evidence, not guaranteed server-side authentication. */
+export function sessionVerificationStatus(verdicts: Pick<ProviderVerdict, 'verified'>[], hadVerification: boolean): 'ready' | 'stale' | 'absent' {
+  if (verdicts.length > 0 && verdicts.every((provider) => provider.verified)) return 'ready'
+  return hadVerification || verdicts.some((provider) => provider.verified) ? 'stale' : 'absent'
 }

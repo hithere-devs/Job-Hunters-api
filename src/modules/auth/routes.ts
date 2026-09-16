@@ -1,3 +1,4 @@
+import { recoveryConfigured, requestPasswordReset, resetPassword } from './recovery.js'
 import { Router } from 'express'
 import { asyncHandler, created, noContent, ok } from '../../lib/http.js'
 import { currentUser, optionalAuth, requireAuth } from '../../middleware/auth.js'
@@ -10,6 +11,8 @@ import { eq } from 'drizzle-orm'
 import { unauthorized } from '../../lib/errors.js'
 import {
   changePasswordSchema,
+  forgotPasswordSchema,
+  resetPasswordSchema,
   googleCallbackSchema,
   logoutSchema,
   refreshSchema,
@@ -144,3 +147,16 @@ authRouter.post(
     noContent(res)
   }),
 )
+
+
+authRouter.get('/recovery', authLimiter, asyncHandler(async (_req, res) => {
+  ok(res, { available: recoveryConfigured(), googleAlternative: true })
+}))
+authRouter.post('/forgot-password', authLimiter, validate({ body: forgotPasswordSchema }), asyncHandler(async (req, res) => {
+  await requestPasswordReset(req.body.email)
+  ok(res, { message: 'If this email has a password account, a reset link will be sent. Google accounts should use Sign in with Google.' })
+}))
+authRouter.post('/reset-password', authLimiter, validate({ body: resetPasswordSchema }), asyncHandler(async (req, res) => {
+  await resetPassword(req.body.token, req.body.newPassword)
+  noContent(res)
+}))

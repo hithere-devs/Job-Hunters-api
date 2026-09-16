@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { hostMatchesDomain, PROVIDERS, providerById, verifyProviders } from './providers.js'
+import { hostMatchesDomain, PROVIDERS, providerById, sessionVerificationStatus, verifyProviders } from './providers.js'
 
 /**
  * These guard two live failures, not hypotheticals.
@@ -105,5 +105,18 @@ describe('the registry', () => {
     assert.equal(new Set(PROVIDERS.map((p) => p.id)).size, PROVIDERS.length)
     assert.equal(providerById('wellfound')?.domain, 'wellfound.com')
     assert.equal(providerById('nope'), undefined)
+  })
+})
+
+
+describe('verification readiness', () => {
+  it('never verifies Instahyre from CSRF alone', () => {
+    assert.equal(verifyProviders([{ host: '.instahyre.com', name: 'csrftoken' }]).find((p) => p.id === 'instahyre')?.verified, false)
+  })
+  it('requires every onboarding provider for overall ready', () => {
+    assert.equal(sessionVerificationStatus(verifyProviders([]), false), 'absent')
+    assert.equal(sessionVerificationStatus(verifyProviders([]), true), 'stale')
+    assert.equal(sessionVerificationStatus(verifyProviders([{ host: '.google.com', name: 'SID' }]), false), 'stale')
+    assert.equal(sessionVerificationStatus([{ verified: true }, { verified: true }], true), 'ready')
   })
 })

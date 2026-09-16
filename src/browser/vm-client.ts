@@ -41,7 +41,7 @@ export interface VmTenantStatus {
 /** The slot already has a browser running, and `currentMode` says which kind. */
 export class VmAgentBusyError extends ApiError {
   constructor(readonly currentMode: VmMode) {
-    super(409, 'browser_busy', `A browser is already running on this slot (${currentMode}).`)
+    super(409, 'browser_busy', `A browser is already running on this slot (${currentMode}). Finish or stop the active task before changing modes.`, { mode: currentMode })
     this.name = 'VmAgentBusyError'
   }
 }
@@ -117,7 +117,7 @@ export function disconnectTenant(index: number): Promise<{
   /** `(host, name)` pairs. Names only — a value is the credential itself. */
   cookies?: CookieRow[]
 }> {
-  return call(`/tenants/${index}/disconnect`, { method: 'POST' })
+  return call(`/tenants/${index}/disconnect`, { method: 'POST', body: JSON.stringify({ expectedMode: 'connect' }) })
 }
 
 export function getTenantCookies(index: number): Promise<{ domains: string[]; cookies?: CookieRow[] }> {
@@ -146,39 +146,19 @@ export function getTenantStatus(index: number): Promise<VmTenantStatus> {
 export interface EnsureConnected {
   expiresAt: string | null
   /** `reused` means the user is returning to a window that was already open. */
-  outcome: 'started' | 'reused' | 'replaced'
+  outcome: 'started' | 'reused'
 }
 
-/**
- * Gets this slot into `connect` mode, whatever state it was in.
- *
- * The policy, in one place because every caller wants the same one:
- *
- * - already in `connect` → **reuse it**. A slot belongs to exactly one user, so
- *   "busy" here means *their own* window is still open. Reloading the page or
- *   coming back to a half-finished sign-in must land back in the same Chrome,
- *   with the same half-entered 2FA prompt, rather than failing.
- * - in any other mode → **close it, then start**. Closing goes through
- *   `disconnect` rather than a kill, because a graceful stop is what flushes
- *   cookies to disk, and those cookies are the entire asset.
- * - idle → start.
- */
+/** Reuse this user's interactive window, but never interrupt an application. */
 export async function ensureTenantConnected(index: number): Promise<EnsureConnected> {
   try {
     const info = await connectTenant(index)
     return { expiresAt: info.expiresAt, outcome: 'started' }
   } catch (error) {
-    if (!(error instanceof VmAgentBusyError)) throw error
-
-    if (error.currentMode === 'connect') {
-      const status = await getTenantStatus(index).catch(() => null)
-      logger.info({ index, pid: status?.pid, uptimeMs: status?.uptimeMs }, 'reusing an open browser')
-      return { expiresAt: null, outcome: 'reused' }
-    }
-
-    logger.info({ index, mode: error.currentMode }, 'closing a browser in the wrong mode before connecting')
-    await disconnectTenant(index)
-    const info = await connectTenant(index)
-    return { expiresAt: info.expiresAt, outcome: 'replaced' }
+    if (!(error instanceof VmAgentBusyError) || error.currentMode !== 'connect') throw error
+    const status = await getTenantStatus(index)
+    if (status.mode !== 'connect') throw new VmAgentBusyError(status.mode)
+    logger.info({ index, pid: status.pid }, 'reusing an open browser')
+    return { expiresAt: null, outcome: 'reused' }
   }
 }
