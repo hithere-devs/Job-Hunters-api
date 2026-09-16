@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { canonicalise, isAtsUrl } from './canonicalise.js'
+import { canonicalise, hasApplyableUrl, isAtsUrl } from './canonicalise.js'
 import type { ScrapedJob } from './types.js'
 
 function job(overrides: Partial<ScrapedJob>): ScrapedJob {
@@ -29,6 +29,10 @@ function job(overrides: Partial<ScrapedJob>): ScrapedJob {
 }
 
 describe('cross-source canonicalisation', () => {
+  it('identifies aggregator-only listings as not applyable', () => {
+    assert.equal(hasApplyableUrl(job({ url: 'https://jooble.org/jobs/backend-1' })), false)
+    assert.equal(hasApplyableUrl(job({ applyUrl: 'https://boards.greenhouse.io/acme/jobs/1' })), true)
+  })
   it('recognises the ATS hosts we can actually apply through', () => {
     assert.equal(isAtsUrl('https://boards.greenhouse.io/stripe/jobs/1'), true)
     assert.equal(isAtsUrl('https://jobs.lever.co/stripe/abc'), true)

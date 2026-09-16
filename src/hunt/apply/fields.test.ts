@@ -25,6 +25,10 @@ const profile = {
 } as unknown as PortalProfile
 
 describe('questions we refuse to answer', () => {
+  it('does not refuse consent or privacy acknowledgements', () => {
+    assert.equal(sensitiveReason('Candidate Privacy Policy*'), null)
+    assert.equal(sensitiveReason('By checking this box, I agree to allow you to store and process my data'), null)
+  })
   it('refuses demographic questions', () => {
     // Getting one of these wrong on someone's application is not a bug you can
     // apologise for afterwards.
