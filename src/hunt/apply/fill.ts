@@ -196,6 +196,8 @@ export async function postingIsClosed(page: Page): Promise<boolean> {
 
 export interface SubmitResult {
   submitted: boolean
+  /** Distinguishes a click whose server-side result could not be observed. */
+  result?: 'submitted' | 'submitted_unconfirmed' | 'not_submitted'
   /** Set when we deliberately did not submit. */
   heldBack?: 'dry_run' | 'kill_switch' | 'no_submit_control' | 'posting_closed'
   confirmation?: string
@@ -238,12 +240,19 @@ export async function submitForm(params: {
 
   if (dryRun) return { submitted: false, heldBack: 'dry_run' }
 
+  const beforeUrl = page.url()
   await submit.click()
-  await page.waitForLoadState('domcontentloaded', { timeout: 15_000 }).catch(() => undefined)
-
+  // XHR-backed ATS forms do not navigate. Give the DOM, URL and network a
+  // short window to settle before checking confirmation text.
+  await Promise.race([
+    page.waitForURL((url) => url.toString() !== beforeUrl, { timeout: 15_000 }).catch(() => undefined),
+    page.waitForSelector(plan.submit, { state: 'detached', timeout: 15_000 }).catch(() => undefined),
+    page.waitForLoadState('domcontentloaded', { timeout: 15_000 }).catch(() => undefined),
+    new Promise((resolve) => setTimeout(resolve, 2_000)),
+  ])
   const body = await page.locator('body').innerText().catch(() => '')
   if (!plan.success.test(body)) {
-    return { submitted: false, confirmation: body.slice(0, 200) }
+    return { submitted: false, result: 'submitted_unconfirmed', confirmation: body.slice(0, 200) }
   }
-  return { submitted: true, confirmation: body.slice(0, 200) }
+  return { submitted: true, result: 'submitted', confirmation: body.slice(0, 200) }
 }
