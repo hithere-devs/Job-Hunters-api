@@ -5,7 +5,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/huntly/vm-agent
-ExecStart=/usr/bin/node --import tsx /opt/huntly/vm-agent/server.ts
+ExecStart=/usr/bin/node --experimental-strip-types /opt/huntly/vm-agent/server.ts
 EnvironmentFile=/etc/huntly/vm-agent.env
 Restart=always
 RestartSec=2
