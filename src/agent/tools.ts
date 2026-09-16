@@ -1,3 +1,4 @@
+import { forbiddenQuestion } from '../hunt/apply/question-policy.js'
 import { beforeSubmission } from '../hunt/apply/submission-guard.js'
 import { browserFilePayload } from '../lib/file-payload.js'
 import type { Page } from 'playwright-core'
@@ -291,6 +292,8 @@ export async function runTool(
     case 'fill': {
       const element = elementFor(context, args.ref)
       if (!element) return { ok: false, message: `No element numbered ${String(args.ref)}.` }
+      const forbidden = forbiddenQuestion({label:element.label,type:element.kind})
+      if (forbidden) return {ok:false,message:forbidden}
       const credential = await page.locator(refSelector(element.ref)).evaluate(html => html instanceof HTMLInputElement && (html.type === 'password' || /^(current-password|new-password|one-time-code)$/.test(html.autocomplete)))
       if (credential) return {ok:false,message:'Credentials and verification codes must be entered by the account owner. Stop and report login_required.'}
       if (isContextualQuestion({label:element.label,type:element.kind,required:true})) return {ok:false,message:'This employer-specific answer requires the user to review and accept it. Do not invent or fill it; report this field as blocked.'}

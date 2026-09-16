@@ -193,6 +193,8 @@ export async function observe(page: Page, limit = 120): Promise<Observation> {
         label = label.replace(/\s+/g, ' ').slice(0, 160)
         if (!label && kind !== 'file') continue
 
+        if (/\b(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|private[_ -]?key|client[_ -]?secret|secret[_ -]?key|recovery[_ -]?(?:key|code|secret))\b/i.test(`${label} ${html.getAttribute('name') ?? ''}`)) continue
+
         ref += 1
         html.setAttribute(refAttribute, String(ref))
 

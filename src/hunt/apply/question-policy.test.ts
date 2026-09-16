@@ -25,3 +25,22 @@ it('freeform responses remain literal data, not agent instructions',()=>{
  assert.equal(validateLiveAnswer({label:'Why this role?',type:'textarea',required:true},{answer,skip:false,remember:false}),answer)
  assert.throws(()=>validateLiveAnswer({label:'Why this role?',type:'textarea',required:true},{answer:'x'.repeat(4001),skip:false,remember:false}),/4,000/)
 })
+
+import { incompleteLegacyField,looksLikeLegacyQuestion,mayRepairLegacyQuestion } from './question-policy.js'
+it('legacy summaries never manufacture required demographics or options',()=>{
+ assert.equal(incompleteLegacyField({label:'Gender',type:'text'}),true)
+ assert.equal(incompleteLegacyField({label:'Gender',type:'radio',name:'gender',required:true}),true)
+ assert.equal(incompleteLegacyField({label:'Gender',type:'radio',name:'gender',required:false,options:['Prefer not to disclose']}),false)
+})
+it('legacy repair never changes a saved answer or a current live question',()=>{
+ const createdAt=new Date('2026-09-16T06:00:00Z')
+ const row={fieldName:null,options:[],createdAt,expiresAt:createdAt,answer:null,status:'expired'}
+ assert.equal(mayRepairLegacyQuestion(row),true)
+ assert.equal(mayRepairLegacyQuestion({...row,answer:'Already provided'}),false)
+ assert.equal(mayRepairLegacyQuestion({...row,status:'answered'}),false)
+ assert.equal(mayRepairLegacyQuestion({...row,status:'pending',expiresAt:new Date(createdAt.getTime()+600_000)}),false)
+ assert.equal(looksLikeLegacyQuestion({...row,expiresAt:new Date(createdAt.getTime()+600_000)}),false)
+})
+it('API keys, tokens, and private/recovery secrets cannot be requested in chat',()=>{
+ for(const label of ['API key','access_token','Refresh token','Private key','Client secret','Recovery secret'])assert.ok(forbiddenQuestion({label,type:'text'}))
+})

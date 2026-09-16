@@ -76,3 +76,26 @@ Fixture browser and DB records removed; no provider login or application submiss
 ```
 
 This was an isolated browser/DB test using `fixture.invalid`, not a provider login or real application. Run it with `APPLICATION_QUEUE_NAME=hunt-apply-test-<unique> DATABASE_POOL_MAX=1 npx tsx src/scripts/verify-live-questions.ts`. The earlier failing gate reported `(EMAXCONNSESSION) max clients reached in session mode - max clients are limited to pool_size: 15`; cleanup verification found no residual users or referenced jobs from that failed attempt.
+
+### Legacy question metadata correction
+
+Older review summaries do not establish that a field was required, or even capture its true options. Incomplete summaries now use `required=false` and `blockedReason=legacy_metadata`. They are not presented as unconstrained sensitive questions. Known common profile fields can still be answered once, while provider-specific questions require a safe explicit recovery to read the real form.
+
+The repair touches only unanswered, expired rows with no field name/options and a legacy immediate-expiry timestamp. It does not overwrite saved answers, current live questions, field IDs, or in-flight answer submissions. Previously saved answers remain attached to their original attempt. On recapture, they are checked against the actual field/options; a mismatch asks for clarification with a saved-answer note rather than discarding the earlier record.
+
+LinkedIn URL/Profile/legacy “no fact provided” aliases share one profile question across applications. Explicit Remember writes the validated value into My Kit once, transactionally with the answer batch. Invalid profile values roll the batch back. Context-sensitive questions remain per application and are never grouped as general facts.
+
+The isolated `verify-legacy-questions.ts` gate passed:
+
+```text
+PASS incomplete legacy demographics hidden; only unanswered legacy metadata repaired; saved/live rows unchanged
+PASS three LinkedIn aliases across providers form one shared optional profile question
+PASS explicit remember updates My Kit once; invalid profile value rolls back; no uncaptured application autoqueued
+Fixture records and isolated queue removed; no live user answers changed
+```
+
+Conditional fields are also re-evaluated after each answer. The reader ignores controls in hidden sections, while keeping native radio/checkbox inputs that are merely visually hidden. During a live question wait, a field becomes inapplicable only when its control still exists inside the original connected, visible form, the URL has not changed, and its wrapper is now hidden. Its saved answer is retained with a “No longer required” note. The fixture verified that answering No to student status hides and removes the required start-date question without submitting.
+
+```text
+PASS answering No removes hidden conditional question in the same form without submitting
+```

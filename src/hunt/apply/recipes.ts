@@ -70,6 +70,19 @@ export async function readFields(page: Page, containerSelector?: string): Promis
       const input = element as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
       const type = (input as HTMLInputElement).type || input.tagName.toLowerCase()
       if (['hidden','password'].includes(type) || input.disabled || /^(current-password|new-password|one-time-code)$/.test(input.getAttribute('autocomplete') ?? '')) continue
+      // Conditional sections are not questions until the provider shows them.
+      // Do not mistake a visually hidden native radio for a hidden question.
+      let hiddenAncestor = false
+      for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+        const style = getComputedStyle(parent)
+        if (parent.hidden || parent.getAttribute('aria-hidden') === 'true' || style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') { hiddenAncestor = true; break }
+      }
+      if (hiddenAncestor) continue
+      if (!['radio','checkbox'].includes(type)) {
+        const style = getComputedStyle(element)
+        if (element.hidden || element.getAttribute('aria-hidden') === 'true' || style.display === 'none' || style.visibility === 'hidden') continue
+      }
+
 
       // Pair the control with its label the way a person would: an explicit
       // `for=`, then a wrapping label, then aria, then nearby text.

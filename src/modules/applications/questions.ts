@@ -1,10 +1,12 @@
 import crypto from 'node:crypto'
 import { and, asc, desc, eq, gt, inArray, sql } from 'drizzle-orm'
-import { db } from '../../db/client.js'
+import { db,runWithDatabase } from '../../db/client.js'
 import { applications, applyAttempts, attemptEvents, huntCandidates, pendingApplicationQuestions } from '../../db/schema.js'
 import { ApiError, badRequest, conflict, notFound, serviceUnavailable } from '../../lib/errors.js'
 import { fieldSignature, sensitiveReason, canReuseExplicitAnswer, type FormField } from '../../hunt/apply/fields.js'
-import { forbiddenQuestion, readableQuestionLabel, validateLiveAnswer, type liveAnswerSchema } from '../../hunt/apply/question-policy.js'
+import { canonicalCommonQuestionKey,APPLY_QUESTION_SPECS } from '../../persona/application-questions.js'
+import { saveCommonQuestionAnswer } from '../../persona/apply-fields.js'
+import { incompleteLegacyField,looksLikeLegacyQuestion,forbiddenQuestion, readableQuestionLabel, validateLiveAnswer, type liveAnswerSchema } from '../../hunt/apply/question-policy.js'
 import { safeRetryReason } from '../../hunt/application-policy.js'
 import { applicationJobInfo } from '../../hunt/application-queue.js'
 import { retryApplication } from './actions.js'
@@ -29,21 +31,34 @@ async function seedLegacyQuestions(userId:string,applicationId:string){
  let host:string;try{host=new URL(app.jobUrl).hostname}catch{return}
  const rows=unresolved.flatMap(raw=>{
   if(typeof raw.label!=='string'||typeof raw.type!=='string')return []
-  const field:FormField={label:raw.label,type:raw.type,name:raw.name,required:raw.required??true,options:Array.isArray(raw.options)?raw.options.filter(v=>typeof v==='string'):[]}
+  const field:FormField={label:raw.label,type:raw.type,name:raw.name,required:incompleteLegacyField(raw)?false:raw.required!,options:Array.isArray(raw.options)?raw.options.filter(v=>typeof v==='string'):[]}
   if(forbiddenQuestion(field)||!readableQuestionLabel(field.label,field.options)||['button','account','file'].includes(field.type))return []
-  return [{userId,applicationId,attemptId:attempt.id,host,fieldSignature:fieldSignature(field),fieldName:field.name??null,label:field.label,type:field.type,options:field.options??[],required:field.required,sensitive:Boolean(sensitiveReason(field.label,field.options)),status:'expired',expiresAt:new Date(),blockedReason:null}]
+  return [{userId,applicationId,attemptId:attempt.id,host,fieldSignature:fieldSignature(field),fieldName:field.name??null,label:field.label,type:field.type,options:field.options??[],required:field.required,sensitive:Boolean(sensitiveReason(field.label,field.options)),status:'expired',expiresAt:new Date(),blockedReason:incompleteLegacyField(raw)?'legacy_metadata':null}]
  })
  if(rows.length)await db.insert(pendingApplicationQuestions).values(rows).onConflictDoNothing()
 }
+async function repairLegacyMetadata(userId:string){
+ await db.update(pendingApplicationQuestions).set({required:false,blockedReason:'legacy_metadata',updatedAt:new Date()}).where(and(
+  eq(pendingApplicationQuestions.userId,userId),eq(pendingApplicationQuestions.status,'expired'),
+  sql`${pendingApplicationQuestions.answer} is null`,sql`${pendingApplicationQuestions.fieldName} is null`,
+  sql`${pendingApplicationQuestions.options} = '[]'::jsonb`,
+  sql`abs(extract(epoch from (${pendingApplicationQuestions.expiresAt}-${pendingApplicationQuestions.createdAt}))) <= 60`,
+  sql`${pendingApplicationQuestions.blockedReason} is distinct from 'legacy_metadata'`,
+ ))
+}
+function legacyNeedsCapture(q:Question){return q.blockedReason==='legacy_metadata'||looksLikeLegacyQuestion(q)}
+function mayShowQuestion(q:Question){return !legacyNeedsCapture(q)||Boolean(canonicalCommonQuestionKey(questionField(q)))}
 export async function listApplicationQuestions(userId:string,applicationId:string){
  await seedLegacyQuestions(userId,applicationId)
+ await repairLegacyMetadata(userId)
  const {attempt,candidate}=await ownedLatest(userId,applicationId)
  if(!attempt||!candidate)return {attemptId:null,waiting:false,expiresAt:null,questions:[]}
  const rows=await db.select().from(pendingApplicationQuestions).where(and(eq(pendingApplicationQuestions.userId,userId),eq(pendingApplicationQuestions.attemptId,attempt.id))).orderBy(asc(pendingApplicationQuestions.createdAt))
  const runtime=await applicationJobInfo(userId,candidate.id,candidate.runId)
- return {attemptId:attempt.id,waiting:runtime.queueState==='active'&&rows.some(q=>q.status==='pending'),expiresAt:rows.find(q=>q.status==='pending')?.expiresAt.toISOString()??null,questions:rows.map(questionDto)}
+ return {attemptId:attempt.id,waiting:runtime.queueState==='active'&&rows.some(q=>q.status==='pending'),expiresAt:rows.find(q=>q.status==='pending')?.expiresAt.toISOString()??null,questions:rows.filter(mayShowQuestion).map(questionDto)}
 }
 export async function listQuestionInbox(userId:string){
+ await repairLegacyMetadata(userId)
  // One latest-attempt query replaces per-application reads on every inbox poll.
  const review=await db.selectDistinctOn([applications.id],{app:applications,attempt:applyAttempts}).from(applications)
   .innerJoin(huntCandidates,and(eq(huntCandidates.userId,userId),eq(huntCandidates.jobId,applications.jobId)))
@@ -57,9 +72,9 @@ export async function listQuestionInbox(userId:string){
   const unresolved=Array.isArray(attempt.unresolvedFields)?attempt.unresolvedFields as Array<Partial<FormField>>:[]
   return unresolved.flatMap(raw=>{
    if(typeof raw.label!=='string'||typeof raw.type!=='string')return []
-   const field:FormField={label:raw.label,type:raw.type,name:raw.name,required:raw.required??true,options:Array.isArray(raw.options)?raw.options.filter(v=>typeof v==='string'):[]}
+   const field:FormField={label:raw.label,type:raw.type,name:raw.name,required:incompleteLegacyField(raw)?false:raw.required!,options:Array.isArray(raw.options)?raw.options.filter(v=>typeof v==='string'):[]}
    if(forbiddenQuestion(field)||!readableQuestionLabel(field.label,field.options)||['button','account','file'].includes(field.type))return []
-   return [{userId,applicationId:app.id,attemptId:attempt.id,host,fieldSignature:fieldSignature(field),fieldName:field.name??null,label:field.label,type:field.type,options:field.options??[],required:field.required,sensitive:Boolean(sensitiveReason(field.label,field.options)),status:'expired',expiresAt:new Date()}]
+   return [{userId,applicationId:app.id,attemptId:attempt.id,host,fieldSignature:fieldSignature(field),fieldName:field.name??null,label:field.label,type:field.type,options:field.options??[],required:field.required,sensitive:Boolean(sensitiveReason(field.label,field.options)),status:'expired',expiresAt:new Date(),blockedReason:incompleteLegacyField(raw)?'legacy_metadata':null}]
   })
  })
  if(legacyRows.length)await db.insert(pendingApplicationQuestions).values(legacyRows).onConflictDoNothing()
@@ -67,8 +82,11 @@ export async function listQuestionInbox(userId:string){
   .where(and(eq(pendingApplicationQuestions.userId,userId),inArray(pendingApplicationQuestions.status,['pending','expired','failed','answered']),sql`${pendingApplicationQuestions.attemptId} = (select a.id from ${applyAttempts} a join ${huntCandidates} c on c.id=a.candidate_id where a.user_id=${userId} and c.job_id=${applications.jobId} order by a.created_at desc limit 1)`)).orderBy(asc(pendingApplicationQuestions.createdAt)).limit(300)
  const groups=new Map<string,ReturnType<typeof questionDto>&{key:string;host:string;questions:Array<{id:string;applicationId:string;attemptId:string;status:string;expiresAt:string;role:string;company:string}>;applicationIds:string[]}>()
  for(const {question:q,role,company} of rows){
-  const key=crypto.createHash('sha256').update(JSON.stringify([q.host,q.fieldSignature,q.options,q.required,q.sensitive,canReuseExplicitAnswer(questionField(q))?null:q.applicationId])).digest('hex').slice(0,24)
-  const group=groups.get(key)??{...questionDto(q),key,host:q.host,questions:[],applicationIds:[]}
+  if(!mayShowQuestion(q))continue
+  const commonKey=canonicalCommonQuestionKey(questionField(q))
+  const key=crypto.createHash('sha256').update(JSON.stringify(commonKey?['common-profile',commonKey]:[q.host,q.fieldSignature,q.options,q.required,q.sensitive,canReuseExplicitAnswer(questionField(q))?null:q.applicationId])).digest('hex').slice(0,24)
+  const group=groups.get(key)??{...questionDto(q),required:q.required&&!legacyNeedsCapture(q),label:commonKey?APPLY_QUESTION_SPECS.find(spec=>spec.id===commonKey)?.label??q.label:q.label,key,host:commonKey?'profile':q.host,questions:[],applicationIds:[]}
+  group.required ||= q.required && !legacyNeedsCapture(q)
   group.questions.push({id:q.id,applicationId:q.applicationId,attemptId:q.attemptId,status:q.status,expiresAt:q.expiresAt.toISOString(),role,company});group.applicationIds=[...new Set([...group.applicationIds,q.applicationId])];groups.set(key,group)
  }
  const blockedApplications:Array<{applicationId:string;reason:string;canRecoverQuestions:boolean}>=[]
@@ -76,7 +94,7 @@ export async function listQuestionInbox(userId:string){
  for(const {app,attempt} of review){
   const reason=safeRetryReason('needs_review',[attempt],events.filter(event=>event.attemptId===attempt.id))
   const appQuestions=rows.filter(row=>row.question.applicationId===app.id)
-  const needsCapture=!appQuestions.length||appQuestions.some(row=>['radio','select','select-one'].includes(row.question.type)&&row.question.options.length===0)
+  const needsCapture=!appQuestions.length||appQuestions.some(row=>legacyNeedsCapture(row.question)||(['radio','select','select-one'].includes(row.question.type)&&row.question.options.length===0))
   if(reason||needsCapture)blockedApplications.push({applicationId:app.id,reason:reason??'Readable questions and exact options need to be loaded from the provider browser.',canRecoverQuestions:!reason&&needsCapture})
  }
  return {groups:[...groups.values()],blockedApplications}
@@ -94,20 +112,28 @@ export async function answerQuestions(userId:string,answers:AnswerInput[],applic
  for(const q of rows){
   const input=answers.find(a=>a.questionId===q.id)!
   let value:string|null;try{value=validateLiveAnswer(questionField(q),input)}catch(error){throw badRequest(error instanceof Error?error.message:'Invalid answer')}
-  if(input.remember&&!canReuseExplicitAnswer(questionField(q)))throw badRequest('This answer can only be used for this application, not remembered for other applications.')
+  if(input.remember&&!canReuseExplicitAnswer(questionField(q)))input.remember=false // Retain the answer for this application; never replay a context-sensitive value globally.
   if(['applied','skipped'].includes(q.status)){if(q.answer===value&&q.remember===input.remember)continue;throw conflict('This answer has already been used by the runner.')}
   patches.push({q,input,value})
  }
+ const commonValues=new Map<string,string>()
+ for(const {q,input,value} of patches){
+  const key=canonicalCommonQuestionKey(questionField(q))
+  if(!key||!input.remember||value===null)continue
+  if(commonValues.has(key)&&commonValues.get(key)!==value)throw badRequest('Choose one consistent value for each shared profile field when remembering answers.')
+  commonValues.set(key,value)
+ }
  if(patches.length)try{
-  await db.transaction(async tx=>{
+  await db.transaction(tx=>runWithDatabase(tx,async()=>{
    const answerCases=sql.join(patches.map(({q,value})=>sql`when ${q.id}::uuid then ${value}::text`),sql` `)
    const rememberCases=sql.join(patches.map(({q,input})=>sql`when ${q.id}::uuid then ${input.remember}::boolean`),sql` `)
    const statusCases=sql.join(patches.map(({q,input})=>sql`when ${q.id}::uuid then ${input.skip?'skipped':'answered'}::text`),sql` `)
    const expected=sql.join(patches.map(({q})=>sql`(${pendingApplicationQuestions.id}=${q.id}::uuid and ${pendingApplicationQuestions.status}=${q.status})`),sql` or `)
-   const updated=await tx.update(pendingApplicationQuestions).set({answer:sql`case ${pendingApplicationQuestions.id} ${answerCases} end`,remember:sql`case ${pendingApplicationQuestions.id} ${rememberCases} end`,status:sql`case ${pendingApplicationQuestions.id} ${statusCases} end`,answeredAt:new Date(),updatedAt:new Date(),blockedReason:null})
+   const updated=await tx.update(pendingApplicationQuestions).set({answer:sql`case ${pendingApplicationQuestions.id} ${answerCases} end`,remember:sql`case ${pendingApplicationQuestions.id} ${rememberCases} end`,status:sql`case ${pendingApplicationQuestions.id} ${statusCases} end`,answeredAt:new Date(),updatedAt:new Date(),blockedReason:sql`case when ${pendingApplicationQuestions.blockedReason}='legacy_metadata' then 'legacy_metadata' else null end`})
     .where(and(eq(pendingApplicationQuestions.userId,userId),sql`(${expected})`)).returning({id:pendingApplicationQuestions.id})
    if(updated.length!==patches.length)throw conflict('A question changed while saving. Refresh before answering again.')
-  })
+   for(const [key,value] of commonValues){const {q}=patches.find(patch=>canonicalCommonQuestionKey(questionField(patch.q))===key)!;await saveCommonQuestionAnswer(userId,questionField(q),value)}
+  }))
  }catch(error){
   if(error instanceof ApiError)throw error
   // Driver errors include SQL parameters, which contain private answers.
@@ -119,6 +145,8 @@ export async function answerQuestions(userId:string,answers:AnswerInput[],applic
   if(!candidate)continue
   const runtime=await applicationJobInfo(userId,candidate.id,candidate.runId)
   if(runtime.queueState==='active'){continuedApplicationIds.push(id);continue}
+  const [uncaptured]=await db.select({id:pendingApplicationQuestions.id}).from(pendingApplicationQuestions).where(and(eq(pendingApplicationQuestions.applicationId,id),eq(pendingApplicationQuestions.attemptId,attempt!.id),eq(pendingApplicationQuestions.blockedReason,'legacy_metadata'))).limit(1)
+  if(uncaptured){blockedApplications.push({applicationId:id,reason:'Answers saved. Load the provider questions to verify the actual options before resuming.'});continue}
   const unanswered=await db.select({id:pendingApplicationQuestions.id}).from(pendingApplicationQuestions).where(and(eq(pendingApplicationQuestions.applicationId,id),eq(pendingApplicationQuestions.attemptId,attempt!.id),eq(pendingApplicationQuestions.required,true),inArray(pendingApplicationQuestions.status,['pending','expired','failed']))).limit(1)
   if(unanswered.length)continue
   try{await retryApplication(userId,id);queuedApplicationIds.push(id)}catch(error){blockedApplications.push({applicationId:id,reason:error instanceof Error?error.message:'This application cannot be safely resumed automatically.'})}
