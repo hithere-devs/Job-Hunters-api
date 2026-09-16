@@ -1527,6 +1527,8 @@ export const userSchedules = pgTable('user_schedules', {
   referralEnabled: boolean('referral_enabled').notNull().default(false),
   /** Outbound outreach is off until the user opts in. See docs/outreach.md. */
   outreachEnabled: boolean('outreach_enabled').notNull().default(false),
+  /** Maximum parallel application browsers for this user. One is safest. */
+  applyConcurrency: smallint('apply_concurrency').notNull().default(1),
 
   lastDiscoverAt: timestamp('last_discover_at', { withTimezone: true }),
   lastInboxAt: timestamp('last_inbox_at', { withTimezone: true }),

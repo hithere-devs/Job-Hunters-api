@@ -5,7 +5,7 @@ import { Queue, Worker, type Job as BullJob } from 'bullmq'
 import { and, count, eq, inArray, lt, notInArray, sql } from 'drizzle-orm'
 import { env, hasRedis } from '../config/env.js'
 import { db } from '../db/client.js'
-import { applications, applyAttempts, huntCandidates, huntRunJobs, huntRuns } from '../db/schema.js'
+import { applications, applyAttempts, huntCandidates, huntRunJobs, huntRuns, userSchedules } from '../db/schema.js'
 import { serviceUnavailable } from '../lib/errors.js'
 import { logger } from '../lib/logger.js'
 import { stopBrowser } from '../browser/client.js'
@@ -102,6 +102,27 @@ async function withPortalLock<T>(data: ApplyJobData, operation: () => Promise<T>
       key,
       token,
     )
+  }
+}
+
+async function withUserApplySlot<T>(data: ApplyJobData, operation: () => Promise<T>): Promise<T> {
+  const [schedule] = await db.select({ limit: userSchedules.applyConcurrency }).from(userSchedules).where(eq(userSchedules.userId, data.userId)).limit(1)
+  const limit = Math.max(1, Math.min(4, schedule?.limit ?? 1))
+  const key = `huntly:apply-slots:${data.userId}`
+  const token = crypto.randomUUID()
+  const deadline = Date.now() + 15 * 60_000
+  let acquired = false
+  while (!acquired && Date.now() < deadline) {
+    const result = await redis().eval(
+      "local n=tonumber(redis.call('get',KEYS[1]) or '0'); if n<tonumber(ARGV[1]) then redis.call('incr',KEYS[1]); redis.call('pexpire',KEYS[1],900000); return 1 end return 0",
+      1, key, String(limit), token,
+    )
+    acquired = result === 1
+    if (!acquired) await sleep(5_000)
+  }
+  if (!acquired) throw new Error(`User application slots stayed full for 15 minutes (limit ${limit}).`)
+  try { return await operation() } finally {
+    await redis().eval("local n=tonumber(redis.call('get',KEYS[1]) or '0'); if n<=1 then return redis.call('del',KEYS[1]) else return redis.call('decr',KEYS[1]) end", 1, key)
   }
 }
 
@@ -366,7 +387,7 @@ export function startApplicationWorker(): Worker<ApplyJobData> {
   const worker = new Worker<ApplyJobData>(
     QUEUE_NAME,
     async (job) => {
-      await withPortalLock(job.data, () => applyApprovedCandidate(job.data.userId, job.data.candidateId))
+      await withUserApplySlot(job.data, () => withPortalLock(job.data, () => applyApprovedCandidate(job.data.userId, job.data.candidateId)))
       await finishRunWhenSettled(job)
     },
     {

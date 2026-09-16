@@ -1,0 +1,1 @@
+ALTER TABLE "user_schedules" ADD COLUMN "apply_concurrency" smallint DEFAULT 1 NOT NULL;
