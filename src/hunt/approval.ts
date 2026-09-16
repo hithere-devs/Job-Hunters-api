@@ -32,7 +32,7 @@ export async function approveDailyBatch(userId: string, runId: string, selectedI
     .where(and(eq(huntRuns.id, runId), eq(huntRuns.userId, userId)))
     .limit(1)
   if (!run) throw notFound('Hunt run not found')
-  if (!['awaiting_approval', 'completed', 'stopped'].includes(run.status)) {
+  if (!['awaiting_approval', 'applying', 'paused', 'completed', 'stopped'].includes(run.status)) {
     throw badRequest('This hunt is still running and is not ready for approval.')
   }
 
