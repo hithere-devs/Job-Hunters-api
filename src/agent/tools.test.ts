@@ -1,3 +1,6 @@
+import { mkdtemp,writeFile,rm } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import type { Page } from 'playwright-core'
@@ -24,6 +27,7 @@ function stubPage(url = 'https://example.com/apply'): { page: Page; calls: Calls
   let current = url
   const page = {
     url: () => current,
+    locator: () => ({evaluate:async()=>false}),
     click: async (selector: string) => {
       calls.clicked.push(selector)
     },
@@ -161,8 +165,13 @@ describe('agent tools', () => {
   it('refers to a prepared file by keyword, never by path', async () => {
     const { page } = stubPage()
     const context = contextWith([element({ ref: 3, kind: 'file', label: 'Resume' })], true, page)
-    assert.equal((await runTool(context, 'upload', { ref: 3, name: 'resume' })).ok, true)
-    assert.equal((await runTool(context, 'upload', { ref: 3, name: '/etc/passwd' })).ok, false)
+    const dir = await mkdtemp(path.join(os.tmpdir(),'agent-upload-test-'))
+    try {
+      context.files.resume = path.join(dir,'resume.pdf')
+      await writeFile(context.files.resume,'%PDF fixture',{mode:0o600})
+      assert.equal((await runTool(context, 'upload', { ref: 3, name: 'resume' })).ok, true)
+      assert.equal((await runTool(context, 'upload', { ref: 3, name: '/etc/passwd' })).ok, false)
+    } finally { await rm(dir,{recursive:true,force:true}) }
   })
 
   it('rejects an element number that is not in the current observation', async () => {
@@ -202,4 +211,20 @@ describe('submit guard', () => {
     assert.equal(result.ok, false)
     assert.equal(calls.clicked.length, 0)
   })
+})
+
+it('refuses a credential field based on current DOM type even with an innocent label',async()=>{
+ const {page,calls}=stubPage()
+ page.locator=(()=>({evaluate:async()=>true})) as unknown as Page['locator']
+ const context=contextWith([element({ref:4,kind:'text',label:'Continue'})],true,page)
+ const result=await runTool(context,'fill',{ref:4,value:'not-a-real-secret'})
+ assert.equal(result.ok,false)
+ assert.equal(calls.filled.length,0)
+})
+it('refuses native default submit buttons in dry run even when snapshot mislabeled them',async()=>{
+ const {page,calls}=stubPage()
+ page.locator=(()=>({evaluate:async()=>true})) as unknown as Page['locator']
+ const context=contextWith([element({ref:1,kind:'button',label:'Continue',submits:false})],true,page)
+ assert.equal((await runTool(context,'click',{ref:1})).ok,false)
+ assert.equal(calls.clicked.length,0)
 })

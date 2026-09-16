@@ -7,6 +7,7 @@ import {
   applications,
   applicationStatusEnum,
   applyAttempts,
+  attemptEvents,
   huntCandidates,
   portals,
   type Application,
@@ -19,6 +20,10 @@ import { toRelativeLabel } from '../../lib/time.js'
 import { currentUser, requireAuth } from '../../middleware/auth.js'
 import { validate, validatedQuery } from '../../middleware/validate.js'
 import { reconcileApplicationRecords, applicationRuntimes } from './runtime.js'
+import { safeRetryReason } from '../../hunt/application-policy.js'
+import { applicationPreflight } from './preflight.js'
+import { applicationQueueHealth } from '../../hunt/application-queue.js'
+import { cancelApplication, retryApplication, flagApplication } from './actions.js'
 import { recordActivity } from '../../services/activity.js'
 
 export const applicationsRouter: Router = Router()
@@ -134,6 +139,31 @@ const STATUS_TIMESTAMP: Record<ApplicationStatus, keyof Application | null> = {
   failed: null,
   closed: null,
 }
+
+applicationsRouter.get('/active', asyncHandler(async(req,res) => {
+  const userId=currentUser(req).id
+  const rows=await db.select({application:applications}).from(applications).innerJoin(huntCandidates,and(eq(huntCandidates.userId,userId),eq(huntCandidates.jobId,applications.jobId),eq(huntCandidates.runId,applications.huntRunId)))
+    .where(and(eq(applications.userId,userId),eq(huntCandidates.status,'applying'))).orderBy(asc(applications.queuedAt)).limit(4)
+  const runtimes=await applicationRuntimes(userId,rows.map(row=>row.application.id))
+  ok(res,rows.map(row=>({...serializeApplication(row.application),runtime:runtimes.get(row.application.id)??null})).filter(row=>row.runtime?.active))
+}))
+
+applicationsRouter.get('/health', asyncHandler(async (_req, res) => { ok(res, await applicationQueueHealth()) }))
+applicationsRouter.get('/preflight', asyncHandler(async (req, res) => {
+  const portals = typeof req.query.portals === 'string' ? req.query.portals.split(',').filter(Boolean).slice(0, 30) : []
+  ok(res, await applicationPreflight(currentUser(req).id, portals))
+}))
+applicationsRouter.post('/:id/cancel', validate({params:idParamSchema}), asyncHandler(async(req,res) => {
+  ok(res, await cancelApplication(currentUser(req).id,pathParam(req,'id')))
+}))
+applicationsRouter.post('/:id/retry', validate({params:idParamSchema,body:z.object({confirmedNotSubmitted:z.literal(true)})}), asyncHandler(async(req,res) => {
+  const preflight = await applicationPreflight(currentUser(req).id)
+  if (!preflight.canApply) throw badRequest('Resolve application readiness issues before retrying.', {gaps:preflight.gaps})
+  ok(res, await retryApplication(currentUser(req).id,pathParam(req,'id')))
+}))
+applicationsRouter.post('/:id/flag', validate({params:idParamSchema,body:z.object({note:z.string().trim().max(1000).optional()})}), asyncHandler(async(req,res) => {
+  ok(res, await flagApplication(currentUser(req).id,pathParam(req,'id'),req.body.note))
+}))
 
 applicationsRouter.get(
   '/',
@@ -279,8 +309,16 @@ applicationsRouter.get(
         : Promise.resolve([]),
     ])
 
+    const [latestAttempt] = row.jobId ? await db.select({id:applyAttempts.id,status:applyAttempts.status,submitStartedAt:applyAttempts.submitStartedAt,error:applyAttempts.error}).from(applyAttempts)
+      .innerJoin(huntCandidates,and(eq(huntCandidates.id,applyAttempts.candidateId),eq(huntCandidates.userId,auth.id),eq(huntCandidates.jobId,row.jobId)))
+      .where(eq(applyAttempts.userId,auth.id)).orderBy(desc(applyAttempts.createdAt)).limit(1) : []
+    const phases = latestAttempt ? await db.select({state:attemptEvents.state,reason:attemptEvents.reason,at:attemptEvents.at,detail:attemptEvents.detail}).from(attemptEvents).where(eq(attemptEvents.attemptId,latestAttempt.id)).orderBy(asc(attemptEvents.at)) : []
     ok(res, {
       ...serializeApplication(row),
+      attemptId: latestAttempt?.id ?? null,
+      retryBlockedReason: safeRetryReason(row.status,latestAttempt?[latestAttempt]:[],phases),
+      canCancel: row.status === 'queued' && !(await applicationRuntimes(auth.id,[row.id])).get(row.id)?.active,
+      attemptTimeline: phases.map(phase=>({state:phase.state,reason:phase.reason,at:phase.at.toISOString()})),
       jobDescription: row.jobDescription,
       notes: row.notes,
       portalDetail: portalRow[0] ?? null,
@@ -375,6 +413,9 @@ applicationsRouter.patch(
       .limit(1)
 
     if (!existing) throw notFound('Application not found')
+
+    if (status === 'queued' && existing.status !== 'queued') throw badRequest('Use Retry so previous submission evidence and queue state are checked.')
+    if (existing.huntRunId && existing.status === 'queued' && status === 'closed') throw badRequest('Use Cancel so the waiting queue job is removed safely.')
 
     if (existing.status === status) {
       return ok(res, serializeApplication(existing))

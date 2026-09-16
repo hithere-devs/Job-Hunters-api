@@ -55,9 +55,7 @@ void reconcileInterruptedPlaygroundRuns().catch((error: unknown) => {
   logger.error({ err: error }, 'could not reconcile interrupted playground runs')
 })
 
-void reconcileInterruptedApplications().catch((error: unknown) => {
-  logger.error({ err: error }, 'could not reconcile interrupted applications in runner')
-})
+// Application recovery is serialized with dispatch inside startApplicationWorker().
 
 startWorker<ReferralSyncJobData>(
   QUEUE.referralSync,
@@ -189,8 +187,7 @@ async function shutdown(signal: string): Promise<void> {
   force.unref()
 
   try {
-    await closeQueues()
-    await closeApplicationQueue()
+    await Promise.all([closeQueues(), closeApplicationQueue()])
     await closeRedis()
     await closeDatabase()
   } catch (error) {

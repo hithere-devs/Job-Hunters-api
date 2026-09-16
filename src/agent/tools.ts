@@ -1,3 +1,5 @@
+import { beforeSubmission } from '../hunt/apply/submission-guard.js'
+import { browserFilePayload } from '../lib/file-payload.js'
 import type { Page } from 'playwright-core'
 import { env } from '../config/env.js'
 import { logger } from '../lib/logger.js'
@@ -262,13 +264,19 @@ export async function runTool(
     case 'click': {
       const element = elementFor(context, args.ref)
       if (!element) return { ok: false, message: `No element numbered ${String(args.ref)}.` }
-      if (context.dryRun && element.submits) {
+      const nativeSubmit = await page.locator(refSelector(element.ref)).evaluate(html =>
+        (html instanceof HTMLButtonElement && html.type === 'submit' && Boolean(html.form)) ||
+        (html instanceof HTMLInputElement && ['submit','image'].includes(html.type) && Boolean(html.form)),
+      )
+      const submits = element.submits || nativeSubmit
+      if ((context.dryRun || env.APPLY_DRY_RUN || env.APPLY_KILL_SWITCH) && submits) {
         return {
           ok: false,
           message:
             'This is a submit control and this is a dry run. Fill the form and call done; do not submit.',
         }
       }
+      if (submits) await beforeSubmission()
       await page.click(refSelector(element.ref), { timeout: 15_000 })
       await page.waitForLoadState('domcontentloaded', { timeout: 15_000 }).catch(() => undefined)
       if (!hostAllowed(page.url(), context.allowedDomains)) {
@@ -283,6 +291,8 @@ export async function runTool(
     case 'fill': {
       const element = elementFor(context, args.ref)
       if (!element) return { ok: false, message: `No element numbered ${String(args.ref)}.` }
+      const credential = await page.locator(refSelector(element.ref)).evaluate(html => html instanceof HTMLInputElement && (html.type === 'password' || /^(current-password|new-password|one-time-code)$/.test(html.autocomplete)))
+      if (credential) return {ok:false,message:'Credentials and verification codes must be entered by the account owner. Stop and report login_required.'}
       if (sensitiveReason(element.label)) {
         return {
           ok: false,
@@ -316,7 +326,7 @@ export async function runTool(
           message: `No prepared file called "${String(args.name)}". Available: ${Object.keys(context.files).join(', ') || 'none'}.`,
         }
       }
-      await page.setInputFiles(refSelector(element.ref), path, { timeout: 20_000 })
+      await page.setInputFiles(refSelector(element.ref), await browserFilePayload(path), { timeout: 20_000 })
       return { ok: true, message: `Attached ${String(args.name)} to "${element.label}".` }
     }
 
@@ -358,6 +368,7 @@ export async function runTool(
       }
       const element = elementFor(context, args.ref)
       if (!element) return { ok: false, message: `No element numbered ${String(args.ref)}.` }
+      await beforeSubmission()
       await page.click(refSelector(element.ref), { timeout: 20_000 })
       await page.waitForLoadState('domcontentloaded', { timeout: 30_000 }).catch(() => undefined)
       return { ok: true, message: `Submitted via "${element.label}".` }

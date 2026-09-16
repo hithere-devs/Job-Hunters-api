@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { db } from '../db/client.js'
 import { kits, resumes } from '../db/schema.js'
 
@@ -78,6 +78,7 @@ export interface ApplyFieldsState {
   canApply: boolean
   /** Separate from the fields: applying needs something to attach. */
   hasBaseResume: boolean
+  resumeStatus: string
 }
 
 function valueOf(kit: Record<string, unknown> | undefined, id: ApplyFieldId): string | null {
@@ -90,7 +91,7 @@ function valueOf(kit: Record<string, unknown> | undefined, id: ApplyFieldId): st
 export async function readApplyFields(userId: string): Promise<ApplyFieldsState> {
   const [[kit], [baseResume]] = await Promise.all([
     db.select().from(kits).where(eq(kits.userId, userId)).limit(1),
-    db.select({ id: resumes.id }).from(resumes).where(eq(resumes.userId, userId)).limit(1),
+    db.select({ id: resumes.id, parseStatus: resumes.parseStatus }).from(resumes).where(and(eq(resumes.userId, userId), eq(resumes.isBase,true))).limit(1),
   ])
 
   const fields = SPECS.map((spec) => ({ ...spec, value: valueOf(kit, spec.id) }))
@@ -101,8 +102,9 @@ export async function readApplyFields(userId: string): Promise<ApplyFieldsState>
     fields,
     missingRequired,
     missingOptional,
-    canApply: missingRequired.length === 0 && Boolean(baseResume),
+    canApply: missingRequired.length === 0 && baseResume?.parseStatus === 'parsed',
     hasBaseResume: Boolean(baseResume),
+    resumeStatus: baseResume?.parseStatus ?? 'absent',
   }
 }
 

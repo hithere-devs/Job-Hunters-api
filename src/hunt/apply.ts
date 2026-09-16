@@ -7,6 +7,7 @@ import { db } from '../db/client.js'
 import {
   applications,
   applyAttempts,
+  attemptFlags,
   huntCandidates,
   huntRunJobs,
   huntRuns,
@@ -17,7 +18,7 @@ import {
   type HuntRunJob,
 } from '../db/schema.js'
 import { browserProvider, env, hasApplyAgent } from '../config/env.js'
-import { badRequest, notFound } from '../lib/errors.js'
+import { badRequest, notFound, ApiError } from '../lib/errors.js'
 import { logger } from '../lib/logger.js'
 import { buildObjectKey, downloadObject, uploadObject } from '../lib/storage.js'
 import { openSession } from '../browser/session.js'
@@ -30,7 +31,9 @@ import { normaliseHttpUrl } from './apply/urls.js'
 import { loadPortalProfile } from './portal-profile.js'
 import { provisionPortalAccount } from './portal-accounts.js'
 import { createMinimalResumeVariant } from './tailoring.js'
-import { fillForm, hasSubmitControl, submitForm } from './apply/fill.js'
+import { fillForm, hasSubmitControl, hasSubmissionConfirmation, submitForm } from './apply/fill.js'
+import { ApplicationDeferredError } from './application-policy.js'
+import { beforeSubmission, submissionWasAttempted, withSubmissionGuard } from './apply/submission-guard.js'
 import { transition } from './apply/state.js'
 import { awaitTakeover, isWatched, startScreencast } from './apply/screencast.js'
 
@@ -55,8 +58,12 @@ async function persistEvidence(userId: string, attemptId: string, page: Page): P
 export async function applyApprovedCandidate(
   userId: string,
   candidateId: string,
-  options?: { dryRun?: boolean },
+  options?: { dryRun?: boolean; signal?: AbortSignal },
 ): Promise<void> {
+  let fenceAttemptId: string | null = null
+  let submissionConfirmed = false
+  return withSubmissionGuard(async () => {
+  options?.signal?.throwIfAborted()
   const [candidateState] = await db
     .select({ resumeVariantId: huntCandidates.resumeVariantId, runId: huntCandidates.runId })
     .from(huntCandidates)
@@ -97,6 +104,7 @@ export async function applyApprovedCandidate(
     const portal = host.includes('wellfound.com') ? 'wellfound' : 'instahyre'
     const account = await provisionPortalAccount(userId, portal)
     if (account.status !== 'ready') {
+      await db.update(applications).set({status:'needs_review',notes:account.actionRequired ?? 'Connect and verify the provider account.',updatedAt:new Date()}).where(and(eq(applications.userId,userId),eq(applications.jobId,row.job.id)))
       await db
         .update(huntCandidates)
         .set({ status: 'needs_review', updatedAt: new Date() })
@@ -159,6 +167,7 @@ export async function applyApprovedCandidate(
     })
     .returning()
   if (!attempt) throw new Error('Could not create application intent')
+  fenceAttemptId = attempt.id
 
   await db.update(huntCandidates).set({ status: 'applying', updatedAt: new Date() }).where(eq(huntCandidates.id, candidateId))
   await setRunJobStatus(row.candidate.runId, row.candidate.jobId, 'applying')
@@ -191,9 +200,11 @@ export async function applyApprovedCandidate(
       profileId,
       proxyCountry: skill?.manifest.proxyCountry ?? null,
     })
+    options?.signal?.throwIfAborted()
+    options?.signal?.addEventListener('abort', () => { void session?.close().catch(error => logger.error({ err: error }, 'could not close browser after application lease loss')) }, { once: true })
     await transition({ attemptId: attempt.id, userId, state: 'opening', detail: { applyUrl, dryRun } })
 
-    const resumePath = path.join(scratch, row.variant.fileName)
+    const resumePath = path.join(scratch, path.basename(row.variant.fileName))
     await writeFile(resumePath, await downloadObject(row.variant.storagePath))
     const page = session.page
     try {
@@ -216,6 +227,15 @@ export async function applyApprovedCandidate(
         .where(eq(applyAttempts.id, attempt.id))
     }
     screencast = await startScreencast({ page, userId, attemptId: attempt.id })
+
+    if (await page.locator('input[type="password"]:visible, input[autocomplete="one-time-code"]:visible').count() > 0) {
+      await transition({attemptId:attempt.id,userId,state:'blocked',reason:'login_required'})
+      await db.update(applyAttempts).set({status:'needs_review',error:'Provider requires human sign-in or verification. Reconnect your browser session.',completedAt:new Date(),updatedAt:new Date()}).where(eq(applyAttempts.id,attempt.id))
+      await db.update(huntCandidates).set({status:'needs_review',updatedAt:new Date()}).where(eq(huntCandidates.id,candidateId))
+      await db.update(applications).set({status:'needs_review',notes:'Provider requires human sign-in or verification. Reconnect your browser session.',updatedAt:new Date()}).where(eq(applications.id,application.id))
+      await setRunJobStatus(row.candidate.runId,row.candidate.jobId,'needs_review')
+      return
+    }
 
     await transition({ attemptId: attempt.id, userId, state: 'filling' })
     const result = await fillForm({
@@ -290,7 +310,12 @@ export async function applyApprovedCandidate(
           { attemptId: attempt.id, skill: skill?.manifest.id ?? null, reached: agent.reached, filled: agent.filled.length, blocked: agent.blocked.length },
           'agent tier finished',
         )
-        agentSubmitted = agent.reached === 'submitted'
+        if (agent.reached === 'submitted') {
+          if (!submissionWasAttempted()) await beforeSubmission()
+          agentSubmitted = await hasSubmissionConfirmation(page,applyUrl)
+          if (!agentSubmitted) throw new Error('Agent reported a submit, but provider confirmation was not observed.')
+        }
+        submissionConfirmed = agentSubmitted
         if (agent.reached !== 'nothing') {
           audit = [
             ...audit,
@@ -327,6 +352,7 @@ export async function applyApprovedCandidate(
       } catch (error) {
         // A failed agent must not lose the deterministic tier's work — the
         // attempt falls through to review with whatever the ladder managed.
+        if (submissionWasAttempted()) throw error
         logger.warn({ err: error, attemptId: attempt.id }, 'agent tier failed; keeping ladder result')
       }
     }
@@ -348,7 +374,7 @@ export async function applyApprovedCandidate(
       // Hold the page open for a few minutes so the user can finish it in the
       // same browser. This is the difference between handing someone a broken
       // attempt afterwards and letting them rescue it while it is still live.
-      if (await isWatched(attempt.id)) {
+      if (session.provider !== 'vm' && await isWatched(attempt.id)) {
         const outcome = await awaitTakeover({
           page,
           attemptId: attempt.id,
@@ -369,6 +395,7 @@ export async function applyApprovedCandidate(
           if (recheck.unresolved.length === 0) {
             await transition({ attemptId: attempt.id, userId, state: 'submitting', detail: { dryRun, afterTakeover: true } })
             const retried = await submitForm({ page, url: applyUrl, dryRun })
+            submissionConfirmed = retried.submitted
             if (retried.submitted) {
               await transition({ attemptId: attempt.id, userId, state: 'submitted', detail: { afterTakeover: true } })
               await db.update(applyAttempts).set({
@@ -405,6 +432,7 @@ export async function applyApprovedCandidate(
     const outcome = agentSubmitted
       ? { submitted: true as const }
       : await submitForm({ page, url: applyUrl, dryRun })
+    submissionConfirmed = outcome.submitted
     const evidenceStoragePath = await persistEvidence(userId, attempt.id, page)
 
     if (!outcome.submitted) {
@@ -417,7 +445,7 @@ export async function applyApprovedCandidate(
         userId,
         state: heldBack ? 'skipped' : 'blocked',
         ...(heldBack ? {} : { reason: 'needs_input' as const }),
-        detail: { heldBack: outcome.heldBack ?? null, recipe: result.recipe },
+        detail: { heldBack: outcome.heldBack ?? null, result: outcome.result ?? null, recipe: result.recipe },
       })
       // `pending` is the attempt's own starting state — reusing it here left a
       // completed dry run indistinguishable from one that had not started,
@@ -425,7 +453,8 @@ export async function applyApprovedCandidate(
       // heard the attempt had finished at all. `unknown` is the honest label:
       // filled correctly, outcome deliberately never determined.
       await db.update(applyAttempts).set({
-        status: heldBack ? 'unknown' : 'needs_review',
+        status: heldBack || outcome.result === 'submitted_unconfirmed' ? 'unknown' : 'needs_review',
+        error: outcome.result === 'submitted_unconfirmed' ? 'Submit was clicked, but confirmation was not observed. Check the provider; do not retry automatically.' : heldBack ? `Not submitted: ${outcome.heldBack}` : null,
         submittedFields: audit,
         unresolvedFields: heldBack ? [] : [{ label: 'Submit control', type: 'button' }],
         evidenceStoragePath,
@@ -463,6 +492,22 @@ export async function applyApprovedCandidate(
     }).where(eq(huntRuns.id, row.candidate.runId))
     await setRunJobStatus(row.candidate.runId, row.candidate.jobId, 'applied')
   } catch (error) {
+    if (submissionWasAttempted() || submissionConfirmed) {
+      // A browser-side action cannot be rolled back. Failure to save a screenshot
+      // or event must never turn a submitted/uncertain attempt into retryable failure.
+      await db.update(applyAttempts).set({status:submissionConfirmed?'submitted':'unknown',error:submissionConfirmed?'Submitted; some evidence could not be saved.':'A submit may have reached the provider. Check the provider before taking further action.',completedAt:new Date(),updatedAt:new Date()}).where(eq(applyAttempts.id,attempt.id))
+      await db.update(huntCandidates).set({status:submissionConfirmed?'applied':'needs_review',updatedAt:new Date()}).where(eq(huntCandidates.id,candidateId))
+      await db.update(applications).set({status:submissionConfirmed?'applied':'needs_review',...(submissionConfirmed?{appliedAt:new Date()}:{}),updatedAt:new Date()}).where(eq(applications.id,application.id))
+      await setRunJobStatus(row.candidate.runId,row.candidate.jobId,submissionConfirmed?'applied':'needs_review')
+      logger.error({err:error,attemptId:attempt.id,submissionConfirmed},'application stopped after irreversible submission intent; never retry automatically')
+      return
+    }
+    if (!session && error instanceof ApiError && error.status === 409) {
+      await db.update(applyAttempts).set({status:'failed',error:'Browser is busy; deferred before opening application.',completedAt:new Date(),updatedAt:new Date()}).where(eq(applyAttempts.id,attempt.id))
+      await db.update(huntCandidates).set({status:'queued',updatedAt:new Date()}).where(eq(huntCandidates.id,candidateId))
+      await setRunJobStatus(row.candidate.runId,row.candidate.jobId,'queued')
+      throw new ApplicationDeferredError()
+    }
     await transition({
       attemptId: attempt.id,
       userId,
@@ -481,7 +526,14 @@ export async function applyApprovedCandidate(
     await screencast?.stop().catch(() => undefined)
     // Closing the session also stops the hosted browser. Skipping that would
     // leave it billing until its own timeout expires.
-    await session?.close()
-    await rm(scratch, { recursive: true, force: true })
+    try { await session?.close() } finally { await rm(scratch, { recursive: true, force: true }) }
   }
+  }, async () => {
+    options?.signal?.throwIfAborted()
+    if (!fenceAttemptId) throw new Error('Application intent is missing; refusing submission.')
+    const [flag] = await db.select({id:attemptFlags.id}).from(attemptFlags).where(and(eq(attemptFlags.userId,userId),eq(attemptFlags.status,'open'))).limit(1)
+    if (flag) throw new Error('Application flagged for review. Stopped before final submission.')
+    const [intent] = await db.update(applyAttempts).set({submitStartedAt:new Date(),status:'submitting',updatedAt:new Date()}).where(and(eq(applyAttempts.id,fenceAttemptId),eq(applyAttempts.userId,userId))).returning({id:applyAttempts.id})
+    if (!intent) throw new Error('Application intent disappeared; refusing submission.')
+  })
 }

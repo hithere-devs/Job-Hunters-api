@@ -1,6 +1,6 @@
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { db } from '../../db/client.js'
-import { applyAttempts, attemptEvents } from '../../db/schema.js'
+import { applications, applicationEvents, huntCandidates, applyAttempts, attemptEvents } from '../../db/schema.js'
 import { logger } from '../../lib/logger.js'
 import { publishAttemptEvent } from './events.js'
 
@@ -73,6 +73,20 @@ export async function transition(input: TransitionInput): Promise<void> {
   } catch (error) {
     logger.warn({ err: error, attemptId, state }, 'could not record an attempt event')
   }
+
+  // Persist the human-readable application timeline as well as the attempt trail.
+  // Browser frames are ephemeral; these phase markers survive runner shutdown.
+  try {
+    const [application] = await db.select({id: applications.id, status: applications.status}).from(applyAttempts)
+      .innerJoin(huntCandidates, eq(huntCandidates.id, applyAttempts.candidateId))
+      .innerJoin(applications, and(eq(applications.userId, userId), eq(applications.jobId, huntCandidates.jobId)))
+      .where(and(eq(applyAttempts.id, attemptId), eq(applyAttempts.userId, userId))).limit(1)
+    if (application) await db.insert(applicationEvents).values({applicationId: application.id,
+      fromStatus: application.status,
+      toStatus: state === 'submitted' ? 'applied' : ['blocked','failed','skipped'].includes(state) ? 'needs_review' : application.status,
+      note: `${state}${reason ? `: ${reason}` : ''}${detail?.dryRun === true ? ' (preparation mode, no final submission)' : ''}${detail?.heldBack ? `: ${String(detail.heldBack)}` : ''}`,
+    })
+  } catch (error) { logger.warn({err:error,attemptId}, 'could not record application phase') }
 
   const status = STATUS_FOR[state]
   if (status) {

@@ -76,7 +76,7 @@ export async function observe(page: Page, limit = 120): Promise<Observation> {
     ({ refAttribute, maxElements, submitPattern }) => {
       const submitRe = new RegExp(submitPattern, 'i')
       const selector = [
-        'input:not([type="hidden"])',
+        'input:not([type="hidden"]):not([type="password"]):not([autocomplete="one-time-code"]):not([autocomplete="current-password"]):not([autocomplete="new-password"])',
         'textarea',
         'select',
         'button',
@@ -116,6 +116,8 @@ export async function observe(page: Page, limit = 120): Promise<Observation> {
 
         const tag = html.tagName.toLowerCase()
         const type = (html.getAttribute('type') ?? '').toLowerCase()
+        // Never read credentials, even if a provider/browser autofilled them.
+        if (type === 'password' || /^(current-password|new-password|one-time-code)$/.test(html.getAttribute('autocomplete') ?? '')) continue
 
         let kind = 'button'
         if (tag === 'textarea' || html.getAttribute('contenteditable') === 'true') kind = 'textarea'
@@ -209,6 +211,7 @@ export async function observe(page: Page, limit = 120): Promise<Observation> {
           // or a button inside a form whose label says so. Anything outside a
           // form navigates, however it is labelled.
           submits:
+            ((html instanceof HTMLButtonElement && html.type === 'submit') || (html instanceof HTMLInputElement && ['submit','image'].includes(html.type))) && Boolean((html as HTMLButtonElement | HTMLInputElement).form) ||
             type === 'submit' ||
             (kind === 'button' && Boolean(html.closest('form')) && submitRe.test(label)),
         }

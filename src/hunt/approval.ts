@@ -1,27 +1,19 @@
 import { and, eq, inArray, sql } from 'drizzle-orm'
-import { db, getPool } from '../db/client.js'
+import { db } from '../db/client.js'
 import { applications, huntCandidates, huntRunJobs, huntRuns } from '../db/schema.js'
 import { badRequest, conflict, notFound } from '../lib/errors.js'
 import { ACTIVE_CANDIDATE_STATUSES, eligibilityOf, ownedJobSelection, REVIEWABLE_RUNS, selectionBlockedReason } from '../modules/dashboard/job-policy.js'
 import { assertApplicationQueueConfigured, enqueueApprovedCandidates } from './application-queue.js'
+import { applicationPreflight } from '../modules/applications/preflight.js'
 import { describeMissing, readApplyFields } from '../persona/apply-fields.js'
 
-async function withApprovalLock<T>(userId: string, operation: () => Promise<T>): Promise<T> {
-  const client = await getPool().connect()
-  let locked = false
-  try {
-    const result = await client.query('select pg_try_advisory_lock(hashtextextended($1, 0)) as locked', [`application-approval:${userId}`])
-    locked = result.rows[0]?.locked === true
-    if (!locked) throw conflict('Another batch is being queued. Wait for it to finish and retry.')
-    return await operation()
-  } finally {
-    if (locked) await client.query('select pg_advisory_unlock(hashtextextended($1, 0))', [`application-approval:${userId}`])
-    client.release()
-  }
-}
+import { withApprovalLock } from './approval-lock.js'
+export { withApprovalLock } from './approval-lock.js'
 
 async function checkProfile(userId: string) {
   assertApplicationQueueConfigured()
+  const readiness = await applicationPreflight(userId)
+  if (!readiness.canApply) throw badRequest('Resolve application readiness issues before applying.', {gaps:readiness.gaps})
   const fields = await readApplyFields(userId)
   if (!fields.hasBaseResume) throw badRequest('Upload a resume before applying — every application needs one attached.')
   if (fields.missingRequired.length) throw badRequest(`Before applying, Hunty needs your ${describeMissing(fields.missingRequired)}. Every application form asks for it.`)
@@ -37,17 +29,13 @@ async function approveBatch(userId: string, runId: string, selectedIds: string[]
     eq(huntCandidates.userId, userId), eq(huntCandidates.runId, runId),
     inArray(huntCandidates.id, uniqueIds), inArray(huntCandidates.status, ['discovered', 'rejected']),
   ))
+  const readiness = await applicationPreflight(userId, selected.map(row => row.sourcePortal))
+  if (!readiness.canApply) throw badRequest('Resolve application readiness issues before applying.', {gaps:readiness.gaps})
   if (selected.length !== uniqueIds.length) throw badRequest('One or more selected jobs are already being processed. Refresh the list.')
   const existing = await db.select({ id: applications.id }).from(applications).where(and(eq(applications.userId, userId), inArray(applications.jobId, selected.map(r => r.jobId)))).limit(1)
   if (existing.length) throw conflict('One or more selected jobs are already in Applications. Refresh the list.')
 
-  // Preserve match decisions before advancing application state. Crucially, do
-  // not reject the rest of the hunt just because this batch did not select it.
-  await db.update(huntRunJobs).set({
-    eligibilityStatus: sql`coalesce(${huntRunJobs.eligibilityStatus}, case when ${huntRunJobs.status}::text in ('scraped','eligible','below_threshold','deal_breaker','role_mismatch','seniority_mismatch','experience_mismatch','insufficient_skills','location_mismatch') then ${huntRunJobs.status}::text else 'eligible' end)`,
-    status: 'approved', updatedAt: new Date(),
-  }).where(and(eq(huntRunJobs.userId, userId), eq(huntRunJobs.runId, runId), inArray(huntRunJobs.jobId, selected.map(r => r.jobId))))
-  await db.update(huntCandidates).set({ status: 'approved', updatedAt: new Date() }).where(and(eq(huntCandidates.userId, userId), inArray(huntCandidates.id, uniqueIds)))
+  // Queue read model, candidate state, and dispatch intent commit together.
   const queued = await enqueueApprovedCandidates(userId, runId, uniqueIds)
   return { selected: uniqueIds.length, ...queued }
 }
@@ -93,10 +81,16 @@ export async function approveScrapedJobs(userId: string, input: SelectedScrapedJ
     const queuedJobIds: string[] = []
     let capped = false
     for (const [runId, ids] of groups) {
-      const result = await approveBatch(userId, runId, ids)
-      queuedJobIds.push(...result.queuedJobIds)
-      skipped.push(...result.skipped)
-      capped ||= result.capped
+      try {
+        const result = await approveBatch(userId, runId, ids)
+        queuedJobIds.push(...result.queuedJobIds)
+        skipped.push(...result.skipped)
+        capped ||= result.capped
+      } catch (error) {
+        // Earlier hunts may already be committed. Never hide their queued IDs
+        // behind a batch-level error that invites the user to submit again.
+        for (const entry of owned) if (entry.row.runId === runId) skipped.push({jobId:entry.row.jobId,reason:error instanceof Error ? error.message : 'This hunt could not be queued. Other queued jobs are saved.'})
+      }
     }
     return { selected: requested.length, queued: queuedJobIds.length, queuedJobIds, capped, skipped }
   })

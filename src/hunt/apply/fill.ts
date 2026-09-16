@@ -1,3 +1,5 @@
+import { beforeSubmission } from './submission-guard.js'
+import { browserFilePayload } from '../../lib/file-payload.js'
 import type { Page } from 'playwright-core'
 import { env } from '../../config/env.js'
 import { logger } from '../../lib/logger.js'
@@ -83,7 +85,7 @@ async function setValue(page: Page, field: FormField, value: string): Promise<bo
 }
 
 /** Attaches the résumé to whichever file input is asking for one. */
-async function attachResume(page: Page, resumePath: string): Promise<boolean> {
+export async function attachResume(page: Page, resumePath: string): Promise<boolean> {
   const inputs = page.locator('input[type="file"]')
   const count = await inputs.count()
   for (let index = 0; index < count; index += 1) {
@@ -94,8 +96,13 @@ async function attachResume(page: Page, resumePath: string): Promise<boolean> {
     // only take the one that says so — the others are cover letters and
     // portfolios, and attaching a CV to those looks careless.
     if (/resume|cv/i.test(name) || /pdf|document|word/i.test(accept) || count === 1) {
-      await input.setInputFiles(resumePath).catch(() => undefined)
-      return true
+      try {
+        await input.setInputFiles(await browserFilePayload(resumePath))
+        return true
+      } catch (error) {
+        logger.warn({ err: error }, 'resume upload failed')
+        return false
+      }
     }
   }
   return false
@@ -194,6 +201,11 @@ export async function postingIsClosed(page: Page): Promise<boolean> {
   return inputs === 0
 }
 
+export async function hasSubmissionConfirmation(page: Page, url: string) {
+  const plan = recipeFor(url) ?? GENERIC
+  return plan.success.test(await page.locator('body').innerText().catch(() => ''))
+}
+
 export interface SubmitResult {
   submitted: boolean
   /** Distinguishes a click whose server-side result could not be observed. */
@@ -241,15 +253,21 @@ export async function submitForm(params: {
   if (dryRun) return { submitted: false, heldBack: 'dry_run' }
 
   const beforeUrl = page.url()
+  // Register before clicking so an immediate XHR response is not lost. A load
+  // state that already happened must not win the race on a single-page form.
+  const confirmation = page.waitForFunction(({source, flags}) => new RegExp(source, flags).test(document.body.innerText), {source:plan.success.source,flags:plan.success.flags}, {timeout:15_000})
+  const signals = Promise.any([
+    page.waitForURL((url) => url.toString() !== beforeUrl, {timeout:15_000}),
+    page.waitForSelector(plan.submit, {state:'detached',timeout:15_000}),
+    page.waitForResponse(response => response.request().method() === 'POST' && response.status() >= 200 && response.status() < 300 && new URL(response.url()).hostname === new URL(beforeUrl).hostname && /apply|application|submit/i.test(new URL(response.url()).pathname), {timeout:15_000}),
+    confirmation,
+  ]).catch(() => undefined)
+  await beforeSubmission()
   await submit.click()
-  // XHR-backed ATS forms do not navigate. Give the DOM, URL and network a
-  // short window to settle before checking confirmation text.
-  await Promise.race([
-    page.waitForURL((url) => url.toString() !== beforeUrl, { timeout: 15_000 }).catch(() => undefined),
-    page.waitForSelector(plan.submit, { state: 'detached', timeout: 15_000 }).catch(() => undefined),
-    page.waitForLoadState('domcontentloaded', { timeout: 15_000 }).catch(() => undefined),
-    new Promise((resolve) => setTimeout(resolve, 2_000)),
-  ])
+  await signals
+  // URL/response changes are useful signals, but not proof. Give confirmation
+  // text its bounded window before storing an uncertain submission outcome.
+  await confirmation.catch(() => undefined)
   const body = await page.locator('body').innerText().catch(() => '')
   if (!plan.success.test(body)) {
     return { submitted: false, result: 'submitted_unconfirmed', confirmation: body.slice(0, 200) }
