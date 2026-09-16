@@ -127,3 +127,17 @@ PASS native OpenClaw upload: guarded hidden file input received synthetic PDF fr
 The fixture obtained a real snapshot ref while the input was visible, hid it, and then attached a synthetic PDF. The guard no longer requires upload-input visibility, but still requires exact approved path, input ref, enabled input, and DOM type `file`. Inputs hidden before every snapshot may expose no usable ref; the deterministic uploader remains responsible for those cases. No general CSS-selector or file-chooser permission was added.
 
 Both fixtures removed their own synthetic state, closed their pages and stopped test Chrome processes through the VM agent.
+
+### Ashby Yes/No controls
+
+The observed Ashby DOM uses plain native buttons with no role or explicit type. Its Yes/No container is `.ashby-application-form-input-yesno`, inside `.ashby-application-form-field-entry` with a single question label. The guard recognizes only that bounded structure: exactly one group, exactly two Yes/No buttons, one local label, no competing input/link, no form-action override and no submission-bearing question.
+
+That known control is represented as the application's logical `checkbox` field. Yes proposes exactly `true`, No proposes exactly `false`. It does not toggle an unchecked boolean when the chosen button is No. Sensitive choices still require the exact approved label, type and value; a `No` string is not silently substituted for stored `false`.
+
+Native fixture gate:
+
+```text
+PASS native Ashby boolean guard: exact approved false clicked No; unapproved Yes and final submit denied; no submit event fired.
+```
+
+`verify-ashby-choices.mjs` uses a synthetic field with the observed wrapper structure in tenant 9. It calls the actual hook and native OpenClaw click after obtaining native snapshot refs. It does not inspect or change a real applicant's page.

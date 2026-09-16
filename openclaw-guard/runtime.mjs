@@ -17,7 +17,22 @@ export async function loadRuntime(root) {
 export function describeElement(element) {
   const name = element.getAttribute('aria-label') || (element.getAttribute('aria-labelledby') || '').split(/\s+/).map(id => element.ownerDocument.getElementById(id)?.textContent || '').join(' ').trim() || element.textContent?.trim().slice(0, 1000) || ''
   const group = element.closest('fieldset,[role="radiogroup"],[role="group"]')
-  const groupName = group?.getAttribute('aria-label') || group?.querySelector('legend')?.textContent?.trim() || ''
+  let groupName = group?.getAttribute('aria-label') || group?.querySelector('legend')?.textContent?.trim() || ''
+  // Ashby implements one logical boolean as two plain buttons. Match only
+  // its observed field-entry/yesno structure, never an arbitrary ancestor.
+  let ashbyBoolean = false
+  if (element.tagName === 'BUTTON' && /^(?:Yes|No)$/i.test(name.trim())) {
+    const choices = element.closest('.ashby-application-form-input-yesno')
+    const entry = choices?.closest('.ashby-application-form-field-entry')
+    const buttons = Array.from(choices?.querySelectorAll('button') || [])
+    const labels = Array.from(entry?.querySelectorAll('label') || []).filter(label => label.closest('.ashby-application-form-field-entry') === entry && !label.querySelector('input,select,textarea,button'))
+    const optionNames = buttons.map(button => (button.textContent || '').trim().toLowerCase())
+    const label = labels.length === 1 ? labels[0].textContent?.trim() || '' : ''
+    if (entry && choices && buttons.length === 2 && buttons.includes(element) && optionNames.includes('yes') && optionNames.includes('no') && entry.querySelectorAll('.ashby-application-form-input-yesno').length === 1 && !choices.querySelector('input,select,textarea,a') && buttons.every(button => !button.hasAttribute('form') && !button.hasAttribute('formaction') && !['submit', 'reset'].includes(button.getAttribute('type'))) && label.length > 5 && label.length <= 600 && !/\b(?:submit|submission|finish|complete|send|confirm)\b/i.test(label)) {
+      groupName = label
+      ashbyBoolean = true
+    }
+  }
   const ownLabels = Array.from(element.labels || []).map(label => label.textContent?.trim() || '').join(' ')
   const label = groupName || ownLabels || element.getAttribute('aria-label') || element.getAttribute('placeholder') || name
   const role = element.getAttribute('role') || ''
@@ -25,8 +40,9 @@ export function describeElement(element) {
   const box = element.getBoundingClientRect()
   const style = element.ownerDocument.defaultView.getComputedStyle(element)
   return {
-    tag: element.tagName.toLowerCase(), type: element.getAttribute('type')?.toLowerCase() || (element.tagName === 'TEXTAREA' ? 'textarea' : element.tagName === 'SELECT' ? 'select' : ['radio', 'checkbox', 'option'].includes(role) ? role : 'text'),
+    tag: element.tagName.toLowerCase(), type: ashbyBoolean ? 'checkbox' : element.getAttribute('type')?.toLowerCase() || (element.tagName === 'TEXTAREA' ? 'textarea' : element.tagName === 'SELECT' ? 'select' : ['radio', 'checkbox', 'option'].includes(role) ? role : 'text'),
     role, name: name || ownLabels, label, choiceContext,
+    ...(ashbyBoolean ? { choiceValue: String(name.trim().toLowerCase() === 'yes') } : {}),
     visible: box.width > 0 && box.height > 0 && style.visibility !== 'hidden' && style.display !== 'none',
     disabled: Boolean(element.disabled) || element.getAttribute('aria-disabled') === 'true',
     checked: Boolean(element.checked) || element.getAttribute('aria-checked') === 'true',

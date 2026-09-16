@@ -80,3 +80,11 @@ test('policy session belongs to the exact attempt, never another run or missing 
  assert.doesNotThrow(()=>assertRunContext(policy(),{sessionKey:'agent:main:huntly-apply-attempt'}))
  for(const context of [{},{sessionKey:'agent:main:huntly-apply-other'},undefined]) assert.throws(()=>assertRunContext(policy(),context),/policy_session_mismatch/)
 })
+test('proven Ashby No uses explicit false, never toggles an unchecked boolean to true',async()=>{
+ const p=policy(),label='Are you legally authorized to work in the United States?'
+ p.approvedFields=[{label,type:'checkbox',value:'false'}]
+ const no={...node(),tag:'button',type:'checkbox',label,name:'No',choiceContext:true,choiceValue:'false',checked:false}
+ assert.equal((await check(event({kind:'click',ref:'e1'}),p,facts(),no)).block,undefined)
+ assert.equal((await check(event({kind:'click',ref:'e1'}),p,facts(),{...no,name:'Yes',choiceValue:'true'})).block,true)
+ assert.equal((await check(event({kind:'click',ref:'e1'}),{...p,approvedFields:[{label,type:'checkbox',value:'No'}]},facts(),no)).block,true)
+})

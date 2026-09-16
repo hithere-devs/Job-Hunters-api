@@ -27,3 +27,26 @@ test('hidden off-host iframe is neither inspected nor included; visible off-host
  assert.deepEqual(facts.frameUrls,['https://example.com','https://foreign.example/frame'])
  assert.equal(hiddenReads,0)
 })
+
+import { describeElement } from './runtime.mjs'
+function ashbyChoice({labelText='Are you legally authorized to work in the United States?',extraButton=false,extraLabel=false,type=null}={}) {
+ const labels=[],buttons=[]
+ const entry={querySelectorAll:s=>s==='label'?labels:s==='.ashby-application-form-input-yesno'?[choices]:[],querySelector:()=>null}
+ const choices={closest:()=>entry,querySelectorAll:s=>s==='button'?buttons:[],querySelector:()=>null}
+ const makeButton=text=>({tagName:'BUTTON',textContent:text,labels:[],getAttribute:k=>k==='type'?type:null,hasAttribute:()=>false,closest:s=>s==='.ashby-application-form-input-yesno'?choices:null,ownerDocument:{getElementById:()=>null,defaultView:{getComputedStyle:()=>({visibility:'visible',display:'block'})}},getBoundingClientRect:()=>({width:80,height:30})})
+ buttons.push(makeButton('Yes'),makeButton('No'));if(extraButton)buttons.push(makeButton('Submit application'))
+ const makeLabel=text=>({textContent:text,closest:()=>entry,querySelector:()=>null})
+ labels.push(makeLabel(labelText));if(extraLabel)labels.push(makeLabel('Different question?'))
+ return buttons.map(describeElement)
+}
+test('Ashby native Yes/No buttons carry their sole local label and strict boolean choice',()=>{
+ const [yes,no]=ashbyChoice()
+ assert.equal(yes.type,'checkbox');assert.equal(yes.choiceValue,'true');assert.equal(no.choiceValue,'false')
+ assert.equal(no.label,'Are you legally authorized to work in the United States?');assert.equal(no.choiceContext,true)
+})
+test('unproven or submit-bearing Ashby-like groups cannot become choices',()=>{
+ for(const options of [{extraButton:true},{extraLabel:true},{labelText:'Confirm submission?'},{type:'submit'}]){
+  const [button]=ashbyChoice(options)
+  assert.equal(button.choiceValue,undefined);assert.equal(button.choiceContext,false)
+ }
+})

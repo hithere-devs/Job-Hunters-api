@@ -100,7 +100,7 @@ export async function decide(event, policy, facts, resolveRef, now = Date.now())
     if (credential.test(`${node.label} ${node.name}`) || never.test(`${node.label} ${node.name}`)) return deny('credential_or_legal_control')
     if (['checkbox', 'radio', 'option'].includes(node.type) || ['checkbox', 'radio', 'option'].includes(node.role)) {
       if (!node.choiceContext) return deny('choice_question_context_unknown')
-      const value = node.type === 'checkbox' ? String(!node.checked) : node.name
+      const value = node.choiceValue ?? (node.type === 'checkbox' ? String(!node.checked) : node.name)
       const reason = fieldCheck(node, value, policy)
       if (reason) return deny(reason)
     } else if ((node.tag === 'button' || node.role === 'button') && /^(?:next|continue|next step)$/i.test(node.name.trim()) && facts.wizardStep && facts.wizardStep.current < facts.wizardStep.total && !final.test(node.name)) {
