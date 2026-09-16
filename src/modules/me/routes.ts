@@ -1,13 +1,13 @@
 import { and, eq } from 'drizzle-orm'
 import { Router } from 'express'
 import { db } from '../../db/client.js'
-import { kits, portalAccounts, userBrowserSessions, users, type Kit } from '../../db/schema.js'
+import { kits, portalAccounts, resumes, userBrowserSessions, users, type Kit } from '../../db/schema.js'
 import { badRequest, notFound } from '../../lib/errors.js'
 import { asyncHandler, created, noContent, ok, pathParam } from '../../lib/http.js'
-import { buildObjectKey, createSignedUrl, removeObject, uploadObject } from '../../lib/storage.js'
+import { buildObjectKey, createSignedUrl, downloadObject, removeObject, uploadObject } from '../../lib/storage.js'
 import { currentUser, requireAuth } from '../../middleware/auth.js'
 import { photoUpload } from '../../middleware/upload.js'
-import { disconnectTenant, ensureTenantConnected, getTenantScreenshot } from '../../browser/vm-client.js'
+import { disconnectTenant, ensureTenantConnected, getTenantScreenshot, uploadTenantResume } from '../../browser/vm-client.js'
 import { PROVIDERS, providerById, verifyProviders } from '../../browser/providers.js'
 import { verifyFromScreen } from '../../browser/verify-screen.js'
 import { logger } from '../../lib/logger.js'
@@ -151,6 +151,20 @@ meRouter.get('/browser-session', asyncHandler(async (req, res) => {
       emailConfirmationRelevant: provider.emailConfirmationRelevant,
     })),
   })
+}))
+
+/** Copy the user's stored base resume to the VM profile's private run folder.
+ * The browser UI can then choose this file in a native upload dialog; the API
+ * never exposes the storage object publicly or stores a second credential. */
+meRouter.post('/browser-session/resume', asyncHandler(async (req, res) => {
+  const auth = currentUser(req)
+  const session = await browserSessionFor(auth.id)
+  if (!session) throw badRequest('Connect your browser session before preparing a resume upload.')
+  const [resume] = await db.select().from(resumes).where(and(eq(resumes.userId, auth.id), eq(resumes.isBase, true))).limit(1)
+  if (!resume) throw notFound('Upload a base resume to Huntly first.')
+  const bytes = await downloadObject(resume.storagePath)
+  const uploaded = await uploadTenantResume(session.tenantIndex, bytes)
+  ok(res, { ...uploaded, fileName: resume.fileName })
 }))
 
 async function serializeKitResponse(kit: Kit | undefined) {

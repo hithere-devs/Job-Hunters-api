@@ -96,6 +96,21 @@ export function stopTenant(index: number): Promise<{ stopped: boolean }> {
   return call(`/tenants/${index}/stop`, { method: 'POST' })
 }
 
+export async function uploadTenantResume(index: number, bytes: Buffer): Promise<{ path: string; bytes: number }> {
+  const response = await fetch(`${env.VM_AGENT_URL}/tenants/${index}/resume`, {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${env.VM_AGENT_TOKEN ?? ''}`,
+      'content-type': 'application/pdf',
+    },
+    body: new Uint8Array(bytes),
+    signal: AbortSignal.timeout(45_000),
+  })
+  const body = (await response.json().catch(() => ({}))) as { path?: string; bytes?: number; error?: string }
+  if (!response.ok || !body.path || typeof body.bytes !== 'number') throw new ApiError(response.status >= 500 ? 503 : response.status, 'vm_resume_upload_failed', body.error ?? 'Could not copy the resume to the browser host.')
+  return { path: body.path, bytes: body.bytes }
+}
+
 export function disconnectTenant(index: number): Promise<{
   stopped: boolean
   cookieDomains: string[]

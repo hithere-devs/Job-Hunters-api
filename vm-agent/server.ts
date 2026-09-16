@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, statSync, mkdirSync, writeFileSync, chownSync } from 'node:fs';
 
 const execFileAsync = promisify(execFile);
 const PORT = Number(process.env.VM_AGENT_PORT ?? 18900);
@@ -23,6 +23,7 @@ function display(i: number) { return `:${10 + i}`; }
 function vncPort(i: number) { return 5900 + i; }
 function cdpPort(i: number) { return 9200 + i; }
 function profile(i: number) { return `/home/huntly-u${i}/profile`; }
+function resumePath(i: number) { return `/home/huntly-u${i}/run/huntly-resume.pdf`; }
 /**
  * Where Chrome keeps its cookie store.
  *
@@ -145,6 +146,17 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse) {
   const s=state(i); s.lastActivity=Date.now();
   if (method==='POST' && path.endsWith('/connect')) { if (s.mode!=='idle') return json(res,409,{error:'busy',mode:s.mode}); const x=await launch(i,'connect'); return json(res,200,{mode:'connect',display:display(i),vncPort:vncPort(i),pid:x?.pid ?? null,expiresAt:x?.expiresAt}); }
   if (method==='POST' && path.endsWith('/apply')) { if (s.mode!=='idle') return json(res,409,{error:'busy',mode:s.mode}); const x=await launch(i,'apply'); return json(res,200,{mode:'apply',cdpUrl:`http://127.0.0.1:${cdpPort(i)}`,pid:x?.pid ?? null,expiresAt:x?.expiresAt}); }
+  if (method==='PUT' && path.endsWith('/resume')) {
+    const chunks: Buffer[] = []
+    for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+    const bytes = Buffer.concat(chunks)
+    if (bytes.length === 0 || bytes.length > 12 * 1024 * 1024) return json(res, 400, { error: 'invalid_resume_size' })
+    const target = resumePath(i)
+    mkdirSync(`/home/huntly-u${i}/run`, { recursive: true })
+    writeFileSync(target, bytes, { mode: 0o600 })
+    try { chownSync(target, `huntly-u${i}`, `huntly-u${i}`) } catch {}
+    return json(res, 200, { path: target, bytes: bytes.length })
+  }
   if (method==='POST' && path.endsWith('/stop')) { await stopProcess(i); return json(res,200,{stopped:true}); }
   if (method==='POST' && path.endsWith('/disconnect')) { await stopProcess(i); return json(res,200,{stopped:true,cookieDomains:await cookies(i),cookies:await cookieRows(i)}); }
   // Captured before the browser stops, so the caller can fall back to reading
