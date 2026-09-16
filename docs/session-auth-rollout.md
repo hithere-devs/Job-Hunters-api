@@ -68,3 +68,21 @@ Passwords, OTPs, CAPTCHA answers, verification/recovery codes, legal commitments
 `POST /applications/questions/:questionId/draft` checks both question and application ownership and returns `{draft, needsInfo, reason?}` without persisting an answer or restarting work. Drafts use saved kit/employment/job-skill facts, never a model-generated achievement or motivation, and are limited to 60 words. Where a motivation or example is missing, `needsInfo` asks the user to supply it. Sensitive and credential questions never receive generated drafts. The user must review and approve a draft before it becomes an application answer.
 
 VM apply sessions now heartbeat the agent every 30 seconds until close. Heartbeats stop on mode loss and never launch or replace a browser themselves.
+
+## Evidence-checked AI answer resolution
+
+`src/persona/answer-resolver.ts` uses a real, metered `muse-spark-1.3-contributor` call through the existing model gateway. This alias is explicit; it does not silently fall back to a cheaper model or another provider. The resolver reads only the current user's kit, structured/parsed resume facts, employment records, explicit saved field answers, and eligible previous human answers. It never reads Gmail or browser credentials.
+
+The caller can resolve at most 30 questions. Prompts contain bounded, topic-specific source selections and exact source IDs. Demographic, salary, and authorisation records are excluded from professional-essay source sets. No model tools or browser actions are available. Unknown source IDs, fabricated quotes, unavailable options, low confidence, country mismatches, and salary currency/pay-period mismatches produce `ask`, not a guessed answer. Total years cannot become skill-specific experience. Country-conditioned statements such as “India no; USA yes” can answer a US sponsorship question, but not UK sponsorship or citizenship.
+
+Known answers require confidence ≥0.95 plus evidence/field/context validation. Professional drafts are assembled only from exact verified quotations, limited to 60 words; unsupported motivations, promises, achievements and personal stories are not invented. Both known and validated draft results carry `autoApply`; persistence/execution belongs to the question workflow. Generated output is recorded as `profile_ai`, never `explicit_user`, and never becomes evidence for another AI answer until a human explicitly accepts it.
+
+Historical `remember=false` answers are usable only within the same application by default. A user-authorised `includePreviousResponses` action can opt that user's earlier human answers into cross-application reuse. Other users' opt-outs are not changed. All credential/authentication fields and application-specific legal commitments stay outside model resolution.
+
+Actual model fixture executed successfully (synthetic facts only):
+
+```
+PASS actual muse-spark-1.3-contributor: LinkedIn wording resolved, conditional US sponsorship resolved, unknown UK sponsorship not inferred; successful metered calls=2
+```
+
+The resolver deadline stops using late results; the current shared model gateway does not expose cancellation for an already-issued provider request. Large historical answer stores also need indexed semantic retrieval before their growth makes loading all owned records expensive. These are production scaling/operational limits, not a claim that an unverified answer was filled.

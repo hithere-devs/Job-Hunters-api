@@ -87,7 +87,8 @@ const NEVER_AUTO: Array<[RegExp, string]> = [
 
 /** Login/verification secrets never enter the question/chat/cache pipeline. */
 export function credentialFieldReason(field: FormField): string | null {
-  if (field.type.toLowerCase() === 'password' || /\b(?:password|passphrase|passcode|captcha|otp|2fa|mfa|secret|recovery\s+code|(?:verification|security|authentication|login|one[- ]time|two[- ]factor)\s+code)\b/i.test(`${field.label} ${field.name ?? ''}`)) return 'Complete sign-in or verification yourself in browser setup. Never send credentials in chat.'
+  const identity = `${field.label} ${field.name ?? ''}`.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[_-]/g, ' ')
+  if (field.type.toLowerCase() === 'password' || /\b(?:password|passphrase|passcode|captcha|recaptcha|otp|2fa|mfa|secret|authenticator|(?:api|private|recovery|secret)\s+key|(?:access|refresh|authentication|bearer)\s+token|recovery\s+(?:code|phrase)|(?:verification|security|authentication|login|one time|two factor)\s+code)\b/i.test(identity)) return 'Complete sign-in or verification yourself in browser setup. Never send credentials in chat.'
   return null
 }
 

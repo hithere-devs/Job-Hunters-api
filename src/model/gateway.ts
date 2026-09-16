@@ -37,6 +37,8 @@ export class ModelUnavailableError extends Error {
 }
 
 export interface CallOptions {
+  /** Explicit deployment alias when a product flow requires a particular model. */
+  model?: string
   purpose: Purpose
   /** Null for platform-level work not attributable to one user. */
   userId: string | null
@@ -98,7 +100,7 @@ async function anthropicStructured<T extends z.ZodType>(
   schema: T,
   options: CallOptions,
 ): Promise<z.infer<T>> {
-  const model = modelFor(options.purpose)
+  const model = options.model ?? modelFor(options.purpose)
   await assertWithinBudget(options.userId)
 
   const startedAt = Date.now()
@@ -144,7 +146,7 @@ async function anthropicStructured<T extends z.ZodType>(
 
 /** Streamed, so a long answer cannot trip the SDK's request timeout. */
 async function anthropicText(options: CallOptions): Promise<string> {
-  const model = modelFor(options.purpose)
+  const model = options.model ?? modelFor(options.purpose)
   await assertWithinBudget(options.userId)
 
   const startedAt = Date.now()
@@ -204,7 +206,7 @@ export async function structured<T extends z.ZodType>(
 ): Promise<z.infer<T>> {
   if (!hasModelAccess) throw new ModelUnavailableError()
   return env.MODEL_PROVIDER === 'muse'
-    ? museStructured(schema, { ...options, model: modelFor(options.purpose) })
+    ? museStructured(schema, { ...options, model: options.model ?? modelFor(options.purpose) })
     : anthropicStructured(schema, options)
 }
 
@@ -212,7 +214,7 @@ export async function structured<T extends z.ZodType>(
 export async function text(options: CallOptions): Promise<string> {
   if (!hasModelAccess) throw new ModelUnavailableError()
   return env.MODEL_PROVIDER === 'muse'
-    ? museText({ ...options, model: modelFor(options.purpose) })
+    ? museText({ ...options, model: options.model ?? modelFor(options.purpose) })
     : anthropicText(options)
 }
 
