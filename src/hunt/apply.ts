@@ -1,13 +1,15 @@
 import os from 'node:os'
 import path from 'node:path'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
-import { and, eq, sql } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { Page } from 'playwright-core'
 import { db } from '../db/client.js'
 import {
   applications,
   applyAttempts,
   attemptFlags,
+  attemptEvents,
+  pendingApplicationQuestions,
   huntCandidates,
   huntRunJobs,
   huntRuns,
@@ -26,6 +28,8 @@ import { profileFor } from '../browser/profiles.js'
 import { applyWithAgent } from '../agent/apply.js'
 import { factsForAgent } from '../agent/apply.js'
 import { skillForUrl } from '../skills/registry.js'
+import type { ProvidedFormAnswer } from '../agent/provided-answers.js'
+import { forbiddenQuestion } from './apply/question-policy.js'
 import { normaliseLabel } from './apply/fields.js'
 import { normaliseHttpUrl } from './apply/urls.js'
 import { loadPortalProfile } from './portal-profile.js'
@@ -33,6 +37,7 @@ import { provisionPortalAccount } from './portal-accounts.js'
 import { createMinimalResumeVariant } from './tailoring.js'
 import { fillForm, hasSubmitControl, hasSubmissionConfirmation, submitForm } from './apply/fill.js'
 import { ApplicationDeferredError } from './application-policy.js'
+import { publishAttemptEvent } from './apply/events.js'
 import { waitForApplicationAnswers } from './apply/live-questions.js'
 import { beforeSubmission, submissionWasAttempted, withSubmissionGuard } from './apply/submission-guard.js'
 import { transition } from './apply/state.js'
@@ -65,6 +70,7 @@ export async function applyApprovedCandidate(
   let submissionConfirmed = false
   return withSubmissionGuard(async () => {
   options?.signal?.throwIfAborted()
+  if(!(options?.dryRun??env.APPLY_DRY_RUN)&&!hasApplyAgent)throw badRequest('The autonomous browser model is not configured. No live application can be submitted until it is available.')
   const [candidateState] = await db
     .select({ resumeVariantId: huntCandidates.resumeVariantId, runId: huntCandidates.runId })
     .from(huntCandidates)
@@ -255,15 +261,20 @@ export async function applyApprovedCandidate(
     }))
     let unresolved = result.unresolved
     let agentSubmitted = false
-    const submitControlAvailable = await hasSubmitControl({ page, url: applyUrl })
-    const needsAgent = result.fields.length === 0 || unresolved.length > 0 || !submitControlAvailable
+    let agentElapsedMs=0
+    let agentCanSubmit=!hasApplyAgent
+    for(let round=0;round<(hasApplyAgent?3:1);round++){
+      options?.signal?.throwIfAborted()
+      if(submissionWasAttempted()||agentElapsedMs>=600_000)break
+      unresolved=await waitForApplicationAnswers({page,userId,applicationId:application.id,attemptId:attempt.id,unresolved,
+        optionalLabels:result.fields.filter(field=>!field.filled&&field.via==='skipped').map(field=>field.label),signal:options?.signal,waitForHuman:false})
+      const providedRows=await db.select().from(pendingApplicationQuestions).where(and(eq(pendingApplicationQuestions.userId,userId),eq(pendingApplicationQuestions.attemptId,attempt.id),eq(pendingApplicationQuestions.status,'applied')))
+      const providedAnswers:ProvidedFormAnswer[]=providedRows.filter(q=>q.answer!==null&&!forbiddenQuestion({label:q.label,type:q.type,name:q.fieldName??undefined})).map(q=>({label:q.label,name:q.fieldName??undefined,type:q.type,host:q.host,value:q.answer!,source:q.answerMeta.source==='profile_ai'?'profile_ai':'user'}))
 
-    // The agent tier, second and only when the deterministic one fell short:
-    // either it never found a form to fill (an aggregator listing, a portal
-    // with no recipe) or it filled what it could and left required questions
-    // behind. Recipes stay first because they are faster, cheaper and exact
-    // where they apply.
-    if (hasApplyAgent && needsAgent && unresolved.length === 0) {
+    // Muse reviews every page after cheap profile filling and semantic answer
+    // resolution. Missing facts are questions, never a reason to skip reasoning.
+    const agentRoundStarted=Date.now()
+    if (hasApplyAgent) {
       await transition({
         attemptId: attempt.id,
         userId,
@@ -282,31 +293,13 @@ export async function applyApprovedCandidate(
         // A site skill knows things the generic path cannot: that Work at a
         // Startup's application *is* a message to the founders, for instance.
         // Without one, the generic agent runs on the same session.
-        const agent = skill?.apply
-          ? await skill.apply({
-              session,
-              userId,
-              applyUrl,
-              dryRun,
-              facts: {
-                candidate: factsForAgent(profile),
-                job: {
-                  title: row.job.title,
-                  company: row.job.company,
-                  description: row.job.descriptionText ?? '',
-                },
-              },
-              files: { resume: resumePath },
-            })
-          : await applyWithAgent({
-              session,
-              userId,
-              applyUrl,
-              dryRun,
-              profile,
-              resumePath,
-              job: { title: row.job.title, company: row.job.company },
-            })
+        const agent = await applyWithAgent({
+          session,userId,applyUrl,dryRun,profile,resumePath,
+          job:{title:row.job.title,company:row.job.company},providedAnswers,
+          resumeCurrentPage:true,playbook:skill?await skill.playbook():undefined,
+          maxSteps:Math.min(env.APPLY_AGENT_MAX_STEPS,18),maxDurationMs:Math.max(1,600_000-agentElapsedMs),
+        })
+        agentCanSubmit=agent.canSubmit===true
         logger.info(
           { attemptId: attempt.id, skill: skill?.manifest.id ?? null, reached: agent.reached, filled: agent.filled.length, blocked: agent.blocked.length },
           'agent tier finished',
@@ -345,7 +338,7 @@ export async function applyApprovedCandidate(
           unresolved = [
             ...stillBlocked,
             ...agent.blocked
-              .filter((field) => !known.has(normaliseLabel(field.label)))
+              .filter((field) => !known.has(normaliseLabel(field.label))&&!providedAnswers.some(answer=>normaliseLabel(answer.label)===normaliseLabel(field.label)))
               .map((field) => ({ label: field.label, type: 'text', why: field.why as never })),
           ]
           if (agentSubmitted) unresolved = []
@@ -358,9 +351,20 @@ export async function applyApprovedCandidate(
       }
     }
 
+    agentElapsedMs+=Date.now()-agentRoundStarted
+    if(submissionWasAttempted()&&!agentSubmitted)throw new Error('Submission was attempted without confirmed completion; refusing another browser reasoning round.')
+    const needsPostAnswerReview=unresolved.length>0
     if (!submissionWasAttempted()) {
       unresolved = await waitForApplicationAnswers({page,userId,applicationId:application.id,attemptId:attempt.id,unresolved,
         optionalLabels:result.fields.filter(field=>!field.filled&&field.via==='skipped').map(field=>field.label),signal:options?.signal})
+    }
+
+      if(agentSubmitted||unresolved.length>0)break
+      if(needsPostAnswerReview&&hasApplyAgent){agentCanSubmit=false;continue}
+      if(!hasApplyAgent||agentCanSubmit)break
+    }
+    if(hasApplyAgent&&!agentSubmitted&&!agentCanSubmit&&unresolved.length===0){
+      unresolved=[{label:'The browser agent could not complete this page within its bounded reasoning budget. No final submission was attempted.',type:'automation',why:'automation_limit'}]
     }
 
     if (unresolved.length > 0) {
@@ -399,7 +403,7 @@ export async function applyApprovedCandidate(
             resumePath,
           })
           if (recheck.unresolved.length === 0) {
-            await transition({ attemptId: attempt.id, userId, state: 'submitting', detail: { dryRun, afterTakeover: true } })
+            await transition({ attemptId: attempt.id, userId, state: 'filling', detail: { dryRun, afterTakeover: true, stage:'validating_submission' } })
             const retried = await submitForm({ page, url: applyUrl, dryRun })
             submissionConfirmed = retried.submitted
             if (retried.submitted) {
@@ -434,7 +438,7 @@ export async function applyApprovedCandidate(
       return
     }
 
-    await transition({ attemptId: attempt.id, userId, state: 'submitting', detail: { dryRun } })
+    await transition({ attemptId: attempt.id, userId, state: 'filling', detail: { dryRun, stage:'validating_submission' } })
     const outcome = agentSubmitted
       ? { submitted: true as const }
       : await submitForm({ page, url: applyUrl, dryRun })
@@ -460,7 +464,7 @@ export async function applyApprovedCandidate(
       // filled correctly, outcome deliberately never determined.
       await db.update(applyAttempts).set({
         status: heldBack || outcome.result === 'submitted_unconfirmed' ? 'unknown' : 'needs_review',
-        error: outcome.result === 'submitted_unconfirmed' ? 'Submit was clicked, but confirmation was not observed. Check the provider; do not retry automatically.' : heldBack ? `Not submitted: ${outcome.heldBack}` : null,
+        error: outcome.result === 'submitted_unconfirmed' ? 'Submit was clicked, but confirmation was not observed. Check the provider; do not retry automatically.' : outcome.heldBack ? `Not submitted: ${outcome.heldBack}` : null,
         submittedFields: audit,
         unresolvedFields: heldBack ? [] : [{ label: 'Submit control', type: 'button' }],
         evidenceStoragePath,
@@ -541,5 +545,7 @@ export async function applyApprovedCandidate(
     if (flag) throw new Error('Application flagged for review. Stopped before final submission.')
     const [intent] = await db.update(applyAttempts).set({submitStartedAt:new Date(),status:'submitting',updatedAt:new Date()}).where(and(eq(applyAttempts.id,fenceAttemptId),eq(applyAttempts.userId,userId))).returning({id:applyAttempts.id})
     if (!intent) throw new Error('Application intent disappeared; refusing submission.')
+    void db.insert(attemptEvents).values({attemptId:fenceAttemptId,state:'submitting',detail:{dryRun:false}}).catch(()=>undefined)
+    publishAttemptEvent(userId,{type:'state',attemptId:fenceAttemptId,state:'submitting',reason:null,detail:{dryRun:false},at:new Date().toISOString()})
   })
 }

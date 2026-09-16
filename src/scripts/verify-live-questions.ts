@@ -37,7 +37,7 @@ try{
  const radio=fields.find(f=>f.type==='radio')!
  assert.equal(radio.label,'What is your gender identity?');assert.deepEqual(radio.options,['Male','Prefer not to disclose'])
  console.log('PASS radio group exposes readable question, not opaque UUID or option label')
- const pending=waitForApplicationAnswers({page,userId,applicationId:app!.id,attemptId:attempt!.id,unresolved:fields.filter(f=>f.required).map(f=>({...f,why:'needs_input' as const})),optionalLabels:['Subscribe to news'],timeoutMs:30_000})
+ const pending=waitForApplicationAnswers({page,userId,applicationId:app!.id,attemptId:attempt!.id,unresolved:fields.filter(f=>f.required).map(f=>({...f,why:'needs_input' as const})),optionalLabels:['Subscribe to news'],resolveWithProfile:false,timeoutMs:30_000})
  let questions:typeof pendingApplicationQuestions.$inferSelect[]=[]
  for(let i=0;i<80;i++){questions=await db.select().from(pendingApplicationQuestions).where(eq(pendingApplicationQuestions.attemptId,attempt!.id));if(questions.length===5)break;await new Promise(r=>setTimeout(r,100))}
  assert.equal(questions.length,5)

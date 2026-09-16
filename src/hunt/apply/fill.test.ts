@@ -6,7 +6,7 @@ import { submitForm } from './fill.js'
 function fixturePage(confirmed:boolean) {
  let clicks=0; let observedBeforeClick=false
  const body={innerText:async()=>confirmed ? 'Thank you for applying' : 'Application form'}
- const submit={count:async()=>1,isVisible:async()=>true,click:async()=>{clicks++}}
+ const submit={count:async()=>1,isVisible:async()=>true,evaluate:async()=>true,click:async()=>{clicks++}}
  const page={
   url:()=> 'https://fixture.invalid/apply',
   locator:(selector:string)=>selector==='body' ? body : {...submit,first:()=>submit},

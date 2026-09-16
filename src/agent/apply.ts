@@ -1,3 +1,4 @@
+import type { ProvidedFormAnswer } from './provided-answers.js'
 import { runAgent } from './loop.js'
 import { sensitiveReason } from '../hunt/apply/fields.js'
 import { normaliseHttpUrl } from '../hunt/apply/urls.js'
@@ -14,7 +15,8 @@ import type { ApplyOutcome } from '../skills/types.js'
  * a portal with no recipe, a multi-step flow. Those were half the attempts on
  * the last live run.
  *
- * It runs *after* the ladder, never instead of it.
+ * It reviews every application after cheap profile filling and grounded answer
+ * resolution, and can resume the current page across bounded reasoning rounds.
  */
 
 /** Everywhere an application can legitimately continue. */
@@ -73,6 +75,8 @@ export function domainsForApplyUrl(applyUrl: string): string[] {
 
 export async function applyWithAgent(params: {
   session: AgentSession
+  providedAnswers?: ProvidedFormAnswer[]
+  resumeCurrentPage?: boolean
   userId: string
   applyUrl: string
   dryRun: boolean
@@ -81,6 +85,8 @@ export async function applyWithAgent(params: {
   job?: { title?: string; company?: string }
   onAsk?: (question: string) => Promise<string | null>
   maxSteps?: number
+  maxDurationMs?: number
+  playbook?:string
   onStep?: (step: { index: number; tool: string; result: string; ok: boolean }) => void | Promise<void>
 }): Promise<ApplyOutcome> {
   const { session, dryRun } = params
@@ -88,7 +94,7 @@ export async function applyWithAgent(params: {
   const page = session.page
 
   let initialNavigationError: string | undefined
-  if (page.url() !== applyUrl) {
+  if (page.url() !== applyUrl && !params.resumeCurrentPage) {
     try {
       await page.goto(applyUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 })
     } catch (error) {
@@ -106,7 +112,10 @@ export async function applyWithAgent(params: {
         ? 'Stop when the form is filled. Do not submit.'
         : 'Submit once every required field is filled.',
     ].join(' '),
-    facts: { candidate: factsForAgent(params.profile), job: params.job ?? {} },
+    facts: { candidate: factsForAgent(params.profile), job: params.job ?? {}, providedAnswers:params.providedAnswers??[] },
+    providedAnswers:params.providedAnswers,
+    maxDurationMs:params.maxDurationMs,
+    playbook:params.playbook,
     allowedDomains: domainsForApplyUrl(applyUrl),
     dryRun,
     files: { resume: params.resumePath },
@@ -127,12 +136,12 @@ export async function applyWithAgent(params: {
     reached: result.submitted ? 'submitted' : result.reachedForm ? 'form' : 'nothing',
     canSubmit: result.canSubmit,
     filled: result.filled
-      .filter((label) => !sensitiveReason(label))
+      .filter((label) => !sensitiveReason(label)||params.providedAnswers?.some(answer=>answer.label===label))
       .map((label) => ({ label, value: '[agent]' })),
     blocked: [
       ...result.blocked.map((label) => ({ label, why: sensitiveReason(label) ?? 'unknown_field' })),
       ...result.filled
-        .filter((label) => sensitiveReason(label))
+        .filter((label) => sensitiveReason(label)&&!params.providedAnswers?.some(answer=>answer.label===label))
         .map((label) => ({ label, why: sensitiveReason(label) as string })),
     ],
     note: result.note,

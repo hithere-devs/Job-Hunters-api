@@ -213,9 +213,10 @@ export async function observe(page: Page, limit = 120): Promise<Observation> {
           // or a button inside a form whose label says so. Anything outside a
           // form navigates, however it is labelled.
           submits:
+            !(['radio','option','checkbox'].includes(html.getAttribute('role')??'') && Boolean(html.closest('[role="radiogroup"],[role="listbox"],[role="group"],fieldset'))) && (
             ((html instanceof HTMLButtonElement && html.type === 'submit') || (html instanceof HTMLInputElement && ['submit','image'].includes(html.type))) && Boolean((html as HTMLButtonElement | HTMLInputElement).form) ||
             type === 'submit' ||
-            (kind === 'button' && Boolean(html.closest('form')) && submitRe.test(label)),
+            (kind === 'button' && Boolean(html.closest('form')) && submitRe.test(label))),
         }
 
         if (tag === 'select') {

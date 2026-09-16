@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import type { FormField } from './fields.js'
 
-export const liveAnswerSchema = z.object({answer:z.string().trim().max(4000).optional(),remember:z.boolean().default(false),skip:z.boolean().default(false)}).strict()
+export const liveAnswerSchema = z.object({answer:z.string().trim().max(4000).optional(),remember:z.boolean().default(true),skip:z.boolean().default(false)}).strict()
 export function forbiddenQuestion(field:Pick<FormField,'label'|'type'|'name'>):string|null {
   if (/^(password|file|hidden)$/i.test(field.type)) return 'This field must be completed in the provider browser, not in chat.'
   if (/\b(password|passcode|one[- ]time|otp|verification\s+code|security\s+code|captcha|recaptcha|authenticator|2fa|two[- ]factor)\b/i.test(`${field.label} ${field.name??''}`)) return 'Sign-in, verification codes, and CAPTCHA must be handled by the account owner in browser setup.'

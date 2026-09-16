@@ -15,6 +15,7 @@ import { publishAttemptEvent } from './events.js'
  */
 
 export type AttemptState =
+  | 'resolving_answers'
   | 'waiting_for_input'
   | 'queued'
   | 'opening'
@@ -27,6 +28,7 @@ export type AttemptState =
 
 /** Why an attempt is blocked. Each one needs a different response. */
 export type BlockedReason =
+  | 'automation_limit'
   /** A required field we could not answer. The user can answer it. */
   | 'needs_input'
   /** A CAPTCHA. Only a human can pass it, and that is by design. */

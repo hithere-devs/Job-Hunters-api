@@ -13,3 +13,11 @@ export async function beforeSubmission() {
   scope.attempted = true
 }
 export function submissionWasAttempted() { return submissionScope.getStore()?.attempted ?? false }
+
+/** Unexpected provider confirmation after a step/choice is irreversible evidence too. */
+export async function noteUnexpectedSubmission() {
+  const scope=submissionScope.getStore()
+  if(!scope||scope.attempted)return
+  scope.attempted=true
+  await scope.before()
+}

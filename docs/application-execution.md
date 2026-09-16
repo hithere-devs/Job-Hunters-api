@@ -99,3 +99,29 @@ Conditional fields are also re-evaluated after each answer. The reader ignores c
 ```text
 PASS answering No removes hidden conditional question in the same form without submitting
 ```
+
+## LLM-led VM applications and semantic answer reuse
+
+The VM queue now runs Muse reasoning for every application, after cheap profile filling and one grounded answer-resolution batch. It preserves the current page between at most three reasoning rounds, with at most 18 actions per round and a shared ten-minute reasoning budget. After new human answers, Muse reviews the page again. Missing model configuration blocks live submission rather than silently replacing the requested engine with a deterministic submit.
+
+The profile resolver checks up to 30 questions per batch. Validated high-confidence facts and grounded, non-sensitive professional drafts can be applied automatically. Source quotes and provenance are stored as profile_ai, never as explicit_user. Previous AI answers are excluded as new human evidence. A source fingerprint prevents repeated automatic calls against unchanged information; sensitive/contextual cached answers remain application-scoped. A human answer arriving during resolution cannot be overwritten by the resolver.
+
+POST /applications/questions/resolve accepts optional question IDs and explicit retry. includePreviousResponses:true records the signed-in user's authorization to reuse their previous human replies; it does not change another user's opt-out. Future human replies default to saved, while context-specific answers are still checked in context rather than blindly copied.
+
+The question DTO distinguishes answerPresent, answerValid, and requiresNewAnswer. A valid boolean saved before a browser failure is known information, even when its question row expired. It is an automation recovery or submission-verification issue, not a reason to ask the user the same question again.
+
+### Final-submit classification correction
+
+A native type=submit alone is not proof of final submission. Accessible question choices with positive group semantics do not create an irreversible-submit fence. Explicit Next/Back/Save-and-continue steps require positive DOM progression evidence. Ambiguous Continue/Apply/Submit controls retain the final guard. Native form validity is checked before recording final-submit intent.
+
+The isolated control fixture passed:
+
+~~~text
+PASS Ashby-style submit-typed radio choice is not a final-submit fence
+PASS invalid native form does not create irreversible submission intent
+PASS actual final submit invokes the durable fence exactly once
+PASS explicit Next advances only with DOM step proof; ambiguous Continue has no exemption
+Fixture browser closed; no login or real application submitted
+~~~
+
+Existing uncertain historical attempts were not retried and their fences were not cleared. The fix prevents new false classifications; it does not establish whether an older provider request reached an employer. Unlabelled custom widgets and ambiguous wizard controls can still require a reviewed adapter. The fixture is not proof of a real employer submission.

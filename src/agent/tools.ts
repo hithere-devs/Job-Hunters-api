@@ -1,12 +1,15 @@
 import { forbiddenQuestion } from '../hunt/apply/question-policy.js'
-import { beforeSubmission } from '../hunt/apply/submission-guard.js'
+import { beforeSubmission,submissionWasAttempted,noteUnexpectedSubmission } from '../hunt/apply/submission-guard.js'
 import { browserFilePayload } from '../lib/file-payload.js'
 import type { Page } from 'playwright-core'
 import { env } from '../config/env.js'
 import { logger } from '../lib/logger.js'
-import { sensitiveReason, isContextualQuestion } from '../hunt/apply/fields.js'
+import { readFields } from '../hunt/apply/recipes.js'
+import { providedAnswerMatches,type ProvidedFormAnswer } from './provided-answers.js'
+import { sensitiveReason, isContextualQuestion, normaliseLabel } from '../hunt/apply/fields.js'
 import { normaliseHttpUrl } from '../hunt/apply/urls.js'
-import { refSelector, type Observation } from './observe.js'
+import { authenticationPage,hasStepProgression,isQuestionChoice,formAllowsSubmit } from './navigation-steps.js'
+import { refSelector, type Observation,type ObservedElement } from './observe.js'
 
 /**
  * The only things the agent can do.
@@ -27,6 +30,7 @@ import { refSelector, type Observation } from './observe.js'
  */
 
 export interface ToolContext {
+  providedAnswers?: ProvidedFormAnswer[]
   page: Page
   /** Hostnames the agent may reach, from the site skill's manifest. */
   allowedDomains: string[]
@@ -252,6 +256,21 @@ function elementFor(context: ToolContext, ref: unknown) {
   return element ?? null
 }
 
+async function protectedFieldFor(context:ToolContext,element:ObservedElement){
+ const fields=await readFields(context.page).catch(()=>[])
+ const locator=context.page.locator(refSelector(element.ref))
+ const name=await locator.getAttribute('name').catch(()=>null)
+ if(name){const field=fields.find(field=>field.name===name);if(field)return field}
+ const groupLabel=await locator.evaluate(node=>{
+  const group=node.closest('[role="radiogroup"],[role="listbox"],fieldset')
+  if(!group)return ''
+  const labelledBy=group.getAttribute('aria-labelledby')
+  return group.getAttribute('aria-label')||(labelledBy?labelledBy.split(/\s+/).map(id=>document.getElementById(id)?.textContent?.trim()??'').join(' '):'')||group.querySelector('legend')?.textContent?.trim()||''
+ }).catch(()=>'')
+ if(typeof groupLabel==='string'&&groupLabel){const field=fields.find(field=>normaliseLabel(field.label)===normaliseLabel(groupLabel));if(field)return field}
+ return fields.find(field=>field.label===element.label)
+}
+
 /* ----------------------------------------------------------------- execution */
 
 export async function runTool(
@@ -260,6 +279,7 @@ export async function runTool(
   args: Record<string, unknown>,
 ): Promise<ToolResult> {
   const { page } = context
+  if(!['done','screenshot'].includes(name)&&authenticationPage(page.url()))return {ok:false,message:'This is a sign-in page. Stop and report login_required; only the account owner may sign in.'}
 
   switch (name) {
     case 'click': {
@@ -269,7 +289,15 @@ export async function runTool(
         (html instanceof HTMLButtonElement && html.type === 'submit' && Boolean(html.form)) ||
         (html instanceof HTMLInputElement && ['submit','image'].includes(html.type) && Boolean(html.form)),
       )
-      const submits = element.submits || nativeSubmit
+      const protectedField=await protectedFieldFor(context,element)
+      if(protectedField&&sensitiveReason(protectedField.label,protectedField.options)){
+        const value=protectedField.type==='checkbox'&&!(protectedField.options?.length)?String(!await page.locator(refSelector(element.ref)).isChecked()):element.label
+        if(!providedAnswerMatches(context.providedAnswers,protectedField,new URL(page.url()).hostname,value))return {ok:false,message:'This choice needs a validated answer from the user or profile resolver. Report the full question as blocked.'}
+      }
+      if(/^(?:log\s*in|sign\s*in|sign\s*up|continue with google)\b/i.test(element.label.trim()))return {ok:false,message:'Only the account owner may sign in. Report login_required.'}
+      const navigationStep=await hasStepProgression(page,element.ref,element.label)
+      const questionChoice=await isQuestionChoice(page,element.ref)
+      const submits = (element.submits || nativeSubmit)&&!navigationStep&&!questionChoice
       if ((context.dryRun || env.APPLY_DRY_RUN || env.APPLY_KILL_SWITCH) && submits) {
         return {
           ok: false,
@@ -277,7 +305,9 @@ export async function runTool(
             'This is a submit control and this is a dry run. Fill the form and call done; do not submit.',
         }
       }
+      if(submits&&!await formAllowsSubmit(page,element.ref))return {ok:false,message:'The form has invalid or missing required fields. Inspect them before attempting final submission.'}
       if (submits) await beforeSubmission()
+      const beforeText=(navigationStep||questionChoice)?await page.locator('body').innerText().catch(()=>''):''
       await page.click(refSelector(element.ref), { timeout: 15_000 })
       await page.waitForLoadState('domcontentloaded', { timeout: 15_000 }).catch(() => undefined)
       if (!hostAllowed(page.url(), context.allowedDomains)) {
@@ -286,7 +316,12 @@ export async function runTool(
         await page.goBack({ timeout: 15_000 }).catch(() => undefined)
         return { ok: false, message: 'That led off this site. Went back.' }
       }
-      return { ok: true, message: `Clicked "${element.label}".` }
+      if(navigationStep||questionChoice){
+        const afterText=await page.locator('body').innerText().catch(()=>'')
+        const confirmation=/thank you for applying|application (?:has been |was |is )?(?:submitted|received)|successfully applied|we have received your application/i
+        if(!confirmation.test(beforeText)&&confirmation.test(afterText)){await noteUnexpectedSubmission();return {ok:true,message:'Unexpected application confirmation appeared. Do not click or submit again; report submitted.'}}
+      }
+      return { ok: true, message: navigationStep ? 'Advanced a verified multi-step form. Re-observe the next page before acting.' : `Clicked "${element.label}".` }
     }
 
     case 'fill': {
@@ -296,8 +331,10 @@ export async function runTool(
       if (forbidden) return {ok:false,message:forbidden}
       const credential = await page.locator(refSelector(element.ref)).evaluate(html => html instanceof HTMLInputElement && (html.type === 'password' || /^(current-password|new-password|one-time-code)$/.test(html.autocomplete)))
       if (credential) return {ok:false,message:'Credentials and verification codes must be entered by the account owner. Stop and report login_required.'}
-      if (isContextualQuestion({label:element.label,type:element.kind,required:true})) return {ok:false,message:'This employer-specific answer requires the user to review and accept it. Do not invent or fill it; report this field as blocked.'}
-      if (sensitiveReason(element.label)) {
+      const field=await protectedFieldFor(context,element)??{label:element.label,type:element.kind,required:true}
+      const provided=providedAnswerMatches(context.providedAnswers,field,new URL(page.url()).hostname,String(args.value??''))
+      if (isContextualQuestion(field)&&!provided) return {ok:false,message:'This employer-specific answer needs a grounded answer from the profile resolver. Do not invent it; report the full question as blocked.'}
+      if (sensitiveReason(field.label,field.options)&&!provided) {
         return {
           ok: false,
           message: `"${element.label}" is a question this system never answers on someone's behalf. Leave it blank and list it in "blocked".`,
@@ -310,14 +347,15 @@ export async function runTool(
     case 'select': {
       const element = elementFor(context, args.ref)
       if (!element) return { ok: false, message: `No element numbered ${String(args.ref)}.` }
-      if (sensitiveReason(element.label)) {
+      const field=await protectedFieldFor(context,element)??{label:element.label,type:'select',required:true}
+      if (sensitiveReason(field.label,field.options)&&!providedAnswerMatches(context.providedAnswers,field,new URL(page.url()).hostname,String(args.option??''))) {
         return {
           ok: false,
           message: `"${element.label}" is a question this system never answers on someone's behalf. Leave it and list it in "blocked".`,
         }
       }
       await page.selectOption(refSelector(element.ref), { label: String(args.option ?? '') }, { timeout: 15_000 })
-      return { ok: true, message: `Selected "${String(args.option)}" for "${element.label}".` }
+      return { ok: true, message: `Selected the provided option for "${element.label}".` }
     }
 
     case 'upload': {
@@ -336,6 +374,7 @@ export async function runTool(
 
     case 'goto': {
       const url = normaliseHttpUrl(String(args.url ?? ''))
+      if(authenticationPage(url))return {ok:false,message:'Only the account owner may open a sign-in flow. Report login_required.'}
       if (!hostAllowed(url, context.allowedDomains)) {
         return {
           ok: false,
@@ -372,6 +411,8 @@ export async function runTool(
       }
       const element = elementFor(context, args.ref)
       if (!element) return { ok: false, message: `No element numbered ${String(args.ref)}.` }
+      if(await isQuestionChoice(page,element.ref)||await hasStepProgression(page,element.ref,element.label))return {ok:false,message:'This is a question choice or verified intermediate step, not final submission. Use click.'}
+      if(!await formAllowsSubmit(page,element.ref))return {ok:false,message:'Required fields are invalid or incomplete. Do not submit yet.'}
       await beforeSubmission()
       await page.click(refSelector(element.ref), { timeout: 20_000 })
       await page.waitForLoadState('domcontentloaded', { timeout: 30_000 }).catch(() => undefined)

@@ -5,7 +5,7 @@ import { applicationQueueHealth } from '../../hunt/application-queue.js'
 import { dailyBudget, effectiveConcurrency } from '../../hunt/application-policy.js'
 import { readApplyFields } from '../../persona/apply-fields.js'
 import { providerCatalogue } from '../../browser/provider-catalogue.js'
-import { browserProvider, env } from '../../config/env.js'
+import { browserProvider, env, hasApplyAgent } from '../../config/env.js'
 
 export async function applicationPreflight(userId: string, portals: string[] = []) {
   const [health, fields, [session], [schedule], accounts, [used], [flag], [spec]] = await Promise.all([
@@ -20,6 +20,7 @@ export async function applicationPreflight(userId: string, portals: string[] = [
   const budget = dailyBudget(used?.value ?? 0,spec?.target??100)
   const gaps: Array<{code: string; message: string; href: string}> = []
   const warnings: typeof gaps = []
+  if(!env.APPLY_DRY_RUN&&!hasApplyAgent)gaps.push({code:'agent_unavailable',message:'The autonomous browser model is not configured. The deployment must be repaired before live applications can run.',href:'/app/live-applications'})
   if (!health.redisAvailable || !health.workerConnected || health.paused) gaps.push({code: 'runner_unavailable', message: health.paused ? 'The application runner is paused. Your existing jobs are saved.' : 'The application runner is offline. Your existing jobs are saved.', href: '/app/jobs'})
   if (!env.PORTAL_AUTOMATION_ENABLED) gaps.push({code: 'automation_disabled', message: 'Application automation is disabled by this deployment.', href: '/app/jobs'})
   if (!fields.hasBaseResume) gaps.push({code: 'resume_missing', message: 'Upload a resume before applying.', href: '/app/profile'})

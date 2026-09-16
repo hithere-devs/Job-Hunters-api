@@ -30,7 +30,7 @@ async function applyCapturedAnswer(page:Page,field:FormField,host:string,value:s
  return true
 }
 /** Form answers are data; no response is sent to a model or interpreted as a browser command. */
-export async function waitForApplicationAnswers(params:{page:Page;userId:string;applicationId:string;attemptId:string;unresolved:FillResult['unresolved'];optionalLabels?:string[];signal?:AbortSignal;timeoutMs?:number}):Promise<FillResult['unresolved']>{
+export async function waitForApplicationAnswers(params:{page:Page;userId:string;applicationId:string;attemptId:string;unresolved:FillResult['unresolved'];optionalLabels?:string[];signal?:AbortSignal;timeoutMs?:number;resolveWithProfile?:boolean;waitForHuman?:boolean}):Promise<FillResult['unresolved']>{
  const {page,userId,applicationId,attemptId}=params
  const captureUrl=page.url()
  const host=new URL(captureUrl).hostname
@@ -71,9 +71,17 @@ export async function waitForApplicationAnswers(params:{page:Page;userId:string;
   const prior=priorRows.find(q=>q.fieldSignature===signature || ((!q.fieldName&&q.options.length===0)&&(normaliseLabel(q.label).toLowerCase().replace(/\s*[-–—]\s*no fact provided$/i,'')===label || (commonKey&&canonicalCommonQuestionKey(capturedField(q))===commonKey))))
   let inherited:string|null=null
   if(prior?.answer){try{inherited=validateLiveAnswer(field,{answer:prior.answer,remember:prior.remember,skip:false})}catch{}}
-  await db.insert(pendingApplicationQuestions).values({userId,applicationId,attemptId,host,fieldSignature:signature,fieldName:field.name??null,label:field.label,type:field.type,options:field.options??[],required:field.required,sensitive:Boolean(sensitiveReason(field.label,field.options)),status:inherited?'answered':prior?.status==='skipped'&&!field.required?'skipped':'pending',answer:inherited,remember:prior?.remember??false,expiresAt,blockedReason:prior?.answer&&!inherited?'Your previous answer is saved, but does not match the provider’s current options. Please confirm a choice for this exact question.':null}).onConflictDoNothing()
+  await db.insert(pendingApplicationQuestions).values({userId,applicationId,attemptId,host,fieldSignature:signature,fieldName:field.name??null,label:field.label,type:field.type,options:field.options??[],required:field.required,sensitive:Boolean(sensitiveReason(field.label,field.options)),status:inherited?'answered':prior?.status==='skipped'&&!field.required?'skipped':'pending',answer:inherited,remember:prior?.answerMeta.source==='profile_ai'?false:(prior?.remember??false),answerMeta:inherited?(prior?.answerMeta??{}):{},expiresAt,blockedReason:prior?.answer&&!inherited?'Your previous answer is saved, but does not match the provider’s current options. Please confirm a choice for this exact question.':null}).onConflictDoNothing()
  }
- await transition({attemptId,userId,state:'waiting_for_input',detail:{pendingQuestions:captured.length,expiresAt:expiresAt.toISOString()}})
+ if(params.resolveWithProfile!==false){
+  await transition({attemptId,userId,state:'resolving_answers',detail:{questionCount:captured.length}})
+  const pending=await db.select({id:pendingApplicationQuestions.id}).from(pendingApplicationQuestions).where(and(eq(pendingApplicationQuestions.attemptId,attemptId),eq(pendingApplicationQuestions.status,'pending')))
+  if(pending.length){
+   const {resolvePendingQuestions}=await import('../../modules/applications/question-resolution.js')
+   await resolvePendingQuestions(userId,pending.map(q=>q.id),{autoResume:false}).catch(()=>undefined)
+  }
+ }
+ if(params.waitForHuman!==false)await transition({attemptId,userId,state:'waiting_for_input',detail:{pendingQuestions:captured.length,expiresAt:expiresAt.toISOString()}})
  while(Date.now()<expiresAt.getTime()){
   params.signal?.throwIfAborted()
   const [flag]=await db.select({id:attemptFlags.id}).from(attemptFlags).where(and(eq(attemptFlags.userId,userId),eq(attemptFlags.status,'open'))).limit(1)
@@ -83,7 +91,7 @@ export async function waitForApplicationAnswers(params:{page:Page;userId:string;
    const field=capturedField(q)
    if(await conditionalHidden(field)){await db.update(pendingApplicationQuestions).set({status:'skipped',blockedReason:'No longer required for your current answers.',updatedAt:new Date()}).where(eq(pendingApplicationQuestions.id,q.id));continue}
    const ok=q.answer!==null&&await applyCapturedAnswer(page,field,host,q.answer)
-   if(ok&&q.remember&&canReuseExplicitAnswer(field)){
+   if(ok&&q.remember&&q.answerMeta.source!=='profile_ai'&&canReuseExplicitAnswer(field)){
     try{await rememberAnswer(userId,host,field,q.answer!)}catch{await db.update(pendingApplicationQuestions).set({remember:false}).where(eq(pendingApplicationQuestions.id,q.id))}
    }
    await db.update(pendingApplicationQuestions).set({status:ok?'applied':'failed',blockedReason:ok?null:'The provider did not accept this answer or the field changed. Choose another answer.',updatedAt:new Date()}).where(and(eq(pendingApplicationQuestions.id,q.id),eq(pendingApplicationQuestions.status,'answered')))
@@ -94,9 +102,10 @@ export async function waitForApplicationAnswers(params:{page:Page;userId:string;
   }
   const remaining=await db.select().from(pendingApplicationQuestions).where(and(eq(pendingApplicationQuestions.attemptId,attemptId),inArray(pendingApplicationQuestions.status,['pending','answered','failed'])))
   if(!remaining.length){await transition({attemptId,userId,state:'filling',detail:{humanAnswersApplied:true}});break}
+  if(params.waitForHuman===false)break
   await sleep(1_000,undefined,{signal:params.signal})
  }
- await db.update(pendingApplicationQuestions).set({status:'expired',blockedReason:'The live browser wait ended. Save an answer in the question inbox to resume safely.',updatedAt:new Date()}).where(and(eq(pendingApplicationQuestions.attemptId,attemptId),inArray(pendingApplicationQuestions.status,['pending','failed'])))
+ if(params.waitForHuman!==false)await db.update(pendingApplicationQuestions).set({status:'expired',blockedReason:sql`coalesce(${pendingApplicationQuestions.blockedReason}, 'The live browser wait ended. Saved answers remain available for safe recovery.')`,updatedAt:new Date()}).where(and(eq(pendingApplicationQuestions.attemptId,attemptId),inArray(pendingApplicationQuestions.status,['pending','failed'])))
  const done=await db.select().from(pendingApplicationQuestions).where(and(eq(pendingApplicationQuestions.attemptId,attemptId),inArray(pendingApplicationQuestions.status,['applied','skipped'])))
  const resolved=new Set(done.map(q=>normaliseLabel(q.label)))
  for(const form of forms)await form.dispose().catch(()=>undefined)

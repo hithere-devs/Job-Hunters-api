@@ -63,7 +63,7 @@ export async function setValue(page: Page, field: FormField, value: string): Pro
     if (field.type === 'radio' || (field.type === 'checkbox' && (field.options?.length ?? 0) > 1)) {
       if (!field.options?.includes(value)) return false
       const option = page.getByLabel(value, {exact:true})
-      const exact = field.name ? option.and(page.locator(`[name="${escapeAttributeValue(field.name)}"]`)).first() : option.first()
+      const exact = field.name ? option.and(page.locator(`[name="${escapeAttributeValue(field.name)}"]`)).first() : page.getByRole('radiogroup',{name:field.label,exact:true}).getByRole('radio',{name:value,exact:true}).or(option).first()
       if (!await exact.isVisible()) return false
       await exact.check()
       return await exact.isChecked()
@@ -217,7 +217,7 @@ export interface SubmitResult {
   /** Distinguishes a click whose server-side result could not be observed. */
   result?: 'submitted' | 'submitted_unconfirmed' | 'not_submitted'
   /** Set when we deliberately did not submit. */
-  heldBack?: 'dry_run' | 'kill_switch' | 'no_submit_control' | 'posting_closed'
+  heldBack?: 'dry_run' | 'kill_switch' | 'no_submit_control' | 'posting_closed' | 'invalid_fields'
   confirmation?: string
 }
 
@@ -255,6 +255,9 @@ export async function submitForm(params: {
   if (!(await hasSubmitControl({ page, url }))) {
     return { submitted: false, heldBack: 'no_submit_control' }
   }
+
+  const valid=await submit.evaluate(element=>{const form=element instanceof HTMLButtonElement||element instanceof HTMLInputElement?element.form:element.closest('form');return !form||form.checkValidity()})
+  if(!valid)return {submitted:false,result:'not_submitted',heldBack:'invalid_fields'}
 
   if (dryRun) return { submitted: false, heldBack: 'dry_run' }
 

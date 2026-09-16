@@ -190,6 +190,18 @@ export async function readFields(page: Page, containerSelector?: string): Promis
       })
     }
 
+    // Accessible component-library radios may be buttons with no native input.
+    for (const group of Array.from(scope.querySelectorAll<HTMLElement>('[role="radiogroup"]'))) {
+      if (group.querySelector('input[type="radio"]')) continue
+      const rect=group.getBoundingClientRect()
+      if(!rect.width||!rect.height||getComputedStyle(group).display==='none')continue
+      let label=group.getAttribute('aria-label')??''
+      const labelledBy=group.getAttribute('aria-labelledby')
+      if(labelledBy)label=labelledBy.split(/\s+/).map(id=>document.getElementById(id)?.textContent?.trim()??'').join(' ')
+      if(!label)label=group.querySelector('legend,label,[role="heading"]')?.textContent?.trim()??''
+      const options=Array.from(group.querySelectorAll<HTMLElement>('[role="radio"]')).map(option=>option.getAttribute('aria-label')??option.textContent?.trim()??'').filter(Boolean)
+      if(label&&options.length)found.push({label:label.trim().slice(0,200),type:'radio',required:group.getAttribute('aria-required')==='true'||/(?:[✱*]|\(required\))\s*$/i.test(label),options})
+    }
     for (const field of found) if (field.type === 'checkbox' && field.options?.length === 1) field.options = []
     return found
   }, containerSelector ?? null)

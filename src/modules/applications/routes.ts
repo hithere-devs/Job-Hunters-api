@@ -20,6 +20,7 @@ import { toRelativeLabel } from '../../lib/time.js'
 import { currentUser, requireAuth } from '../../middleware/auth.js'
 import { validate, validatedQuery } from '../../middleware/validate.js'
 import { reconcileApplicationRecords, applicationRuntimes } from './runtime.js'
+import { resolvePendingQuestions } from './question-resolution.js'
 import { liveAnswerSchema } from '../../hunt/apply/question-policy.js'
 import { listApplicationQuestions,listQuestionInbox,answerQuestions } from './questions.js'
 import { safeRetryReason } from '../../hunt/application-policy.js'
@@ -144,6 +145,9 @@ const STATUS_TIMESTAMP: Record<ApplicationStatus, keyof Application | null> = {
 
 applicationsRouter.post('/:id/recover-questions',validate({params:idParamSchema}),asyncHandler(async(req,res)=>{
  ok(res,await retryApplication(currentUser(req).id,pathParam(req,'id')))
+}))
+applicationsRouter.post('/questions/resolve',validate({body:z.object({questionIds:z.array(z.string().uuid()).min(1).max(30).optional(),retry:z.boolean().optional(),includePreviousResponses:z.boolean().optional()}).strict()}),asyncHandler(async(req,res)=>{
+ ok(res,await resolvePendingQuestions(currentUser(req).id,req.body.questionIds,{retry:req.body.retry,includePreviousResponses:req.body.includePreviousResponses}))
 }))
 applicationsRouter.get('/questions',asyncHandler(async(req,res)=>{ok(res,await listQuestionInbox(currentUser(req).id))}))
 applicationsRouter.post('/questions/answers',validate({body:z.object({answers:z.array(liveAnswerSchema.extend({questionId:z.string().uuid()})).min(1).max(500)})}),asyncHandler(async(req,res)=>{ok(res,await answerQuestions(currentUser(req).id,req.body.answers))}))

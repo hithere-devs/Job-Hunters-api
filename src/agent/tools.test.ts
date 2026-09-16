@@ -27,7 +27,7 @@ function stubPage(url = 'https://example.com/apply'): { page: Page; calls: Calls
   let current = url
   const page = {
     url: () => current,
-    locator: () => ({evaluate:async()=>false}),
+    locator: () => ({evaluate:async()=>false,getAttribute:async()=>null}),
     click: async (selector: string) => {
       calls.clicked.push(selector)
     },
@@ -215,7 +215,8 @@ describe('submit guard', () => {
 
 it('refuses a credential field based on current DOM type even with an innocent label',async()=>{
  const {page,calls}=stubPage()
- page.locator=(()=>({evaluate:async()=>true})) as unknown as Page['locator']
+ let evaluations=0
+ page.locator=(()=>({evaluate:async()=>++evaluations===1,getAttribute:async()=>null})) as unknown as Page['locator']
  const context=contextWith([element({ref:4,kind:'text',label:'Continue'})],true,page)
  const result=await runTool(context,'fill',{ref:4,value:'not-a-real-secret'})
  assert.equal(result.ok,false)
@@ -223,7 +224,8 @@ it('refuses a credential field based on current DOM type even with an innocent l
 })
 it('refuses native default submit buttons in dry run even when snapshot mislabeled them',async()=>{
  const {page,calls}=stubPage()
- page.locator=(()=>({evaluate:async()=>true})) as unknown as Page['locator']
+ let evaluations=0
+ page.locator=(()=>({evaluate:async()=>++evaluations===1,getAttribute:async()=>null})) as unknown as Page['locator']
  const context=contextWith([element({ref:1,kind:'button',label:'Continue',submits:false})],true,page)
  assert.equal((await runTool(context,'click',{ref:1})).ok,false)
  assert.equal(calls.clicked.length,0)
