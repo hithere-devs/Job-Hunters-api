@@ -1,0 +1,7 @@
+{
+  "id": "huntly-application-guard",
+  "name": "Huntly application guard",
+  "description": "Fail-closed tenant, field, credential and submit policy for application runs.",
+  "activation": { "onStartup": true },
+  "configSchema": { "type": "object", "additionalProperties": false }
+}
