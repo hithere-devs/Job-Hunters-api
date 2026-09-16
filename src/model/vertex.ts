@@ -13,7 +13,7 @@ let cachedToken: { value: string; expiresAt: number } | undefined
 
 interface VertexResponse {
   choices?: Array<{ finish_reason?: string; message?: { content?: string | null; tool_calls?: ToolCall[] } }>
-  usage?: { prompt_tokens?: number; completion_tokens?: number }
+  usage?: { prompt_tokens?: number; completion_tokens?: number; completion_tokens_details?: { reasoning_tokens?: number } }
   error?: { message?: string; status?: string }
 }
 
@@ -60,8 +60,17 @@ export async function vertexCompletion(options: VertexOptions, dependencies: {
   const location = dependencies.location ?? env.GOOGLE_CLOUD_LOCATION
   const model = (options.model ?? env.MODEL_DEFAULT).replace(/^google-vertex\//, 'google/').replace(/^gemini-/, 'google/gemini-')
   const url = `https://aiplatform.googleapis.com/v1beta1/projects/${encodeURIComponent(project)}/locations/${encodeURIComponent(location)}/endpoints/openapi/chat/completions`
+  // Gemini 2.5 is a thinking model: reasoning tokens are drawn from the same
+  // budget as the reply, and they are spent first. A request capped tight
+  // enough comes back `finish_reason: "length"` with no `message` at all — a
+  // one-word "Say OK" measured 24 reasoning tokens and returned nothing under a
+  // 20-token cap. Floor the budget so a small caller cannot silently buy only
+  // thinking. `muse-spark.ts` documents the same failure on a different
+  // provider; this is that lesson applied here.
+  const MIN_THINKING_HEADROOM = 1024
+  const requested = options.maxTokens ?? env.APPLY_AGENT_MAX_TOKENS
   const body = {
-    model, messages: openRouterMessages(options.messages), max_tokens: options.maxTokens ?? env.APPLY_AGENT_MAX_TOKENS,
+    model, messages: openRouterMessages(options.messages), max_tokens: Math.max(requested, MIN_THINKING_HEADROOM),
     ...(options.tools?.length ? { tools: options.tools } : {}),
     ...(options.responseFormat ? { response_format: options.responseFormat } : {}),
     ...(options.temperature === undefined ? {} : { temperature: options.temperature }),
@@ -79,7 +88,16 @@ export async function vertexCompletion(options: VertexOptions, dependencies: {
       throw Object.assign(new Error(`Vertex AI request rejected (HTTP ${response.status}).`), { status: response.status })
     }
     const choice = data.choices?.[0]
-    if (!choice?.message || (!choice.message.content && !choice.message.tool_calls?.length)) throw new Error('Vertex AI returned no text or tool call.')
+    if (!choice?.message || (!choice.message.content && !choice.message.tool_calls?.length)) {
+      // Name the cause. "No text or tool call" is true of a content filter, a
+      // malformed request and an exhausted budget alike, and they need
+      // different fixes.
+      const reasoning = data.usage?.completion_tokens_details?.reasoning_tokens ?? 0
+      if (choice?.finish_reason === 'length') {
+        throw new Error(`Vertex AI spent its whole budget reasoning (${reasoning} reasoning tokens, cap ${body.max_tokens}) and returned nothing. Raise maxTokens.`)
+      }
+      throw new Error(`Vertex AI returned no text or tool call (finish_reason: ${choice?.finish_reason ?? 'absent'}).`)
+    }
     const result: ToolResult = { content: choice.message.content ?? null, toolCalls: choice.message.tool_calls ?? [], finishReason: choice.finish_reason ?? 'unknown' }
     await (dependencies.record ?? recordUsage)({ userId: options.userId, purpose, model, usage, durationMs: Date.now() - startedAt, ok: true })
     return result
