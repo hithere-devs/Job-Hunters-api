@@ -338,7 +338,10 @@ export async function applyApprovedCandidate(
           const targetInfo=await guardSession.send('Target.getTargetInfo')
           await guardSession.detach()
           const targetId=targetInfo.targetInfo.targetId
-          const approvalCandidates=[...providedAnswers.filter(field=>field.source==='user').map(field=>({label:field.label,type:field.type,value:field.value})),...dossier.answers.filter(answer=>answer.source==='explicit_user'&&['reusable','this_attempt'].includes(answer.scope)).map(answer=>({label:answer.label,type:answer.type,value:answer.value}))]
+          // Profile-AI answers reached this point only after server-side evidence,
+          // option and field validation. Authorize them for this attempt, but do
+          // not promote them to reusable user facts.
+          const approvalCandidates=[...providedAnswers.map(field=>({label:field.label,type:field.type,value:field.value})),...dossier.answers.filter(answer=>answer.source==='explicit_user'&&['reusable','this_attempt'].includes(answer.scope)).map(answer=>({label:answer.label,type:answer.type,value:answer.value}))]
           const approvedFields=[...new Map(approvalCandidates.map(field=>[JSON.stringify([field.label.trim().replace(/\s+/g,' ').toLowerCase(),field.type]),field])).values()]
           const policy=await installOpenClawPolicy(tenantIndex,{attemptId:attempt.id,targetId,deadlineEpoch:Date.now()+env.OPENCLAW_RUN_TIMEOUT_MS,allowedHosts:[...new Set([host,new URL(page.url()).hostname])],approvedFields:approvedFields.slice(0,200),resumePath:stagedResume.path})
           try {

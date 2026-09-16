@@ -78,6 +78,14 @@ export async function openEmbeddedApplication(page: Page): Promise<string | null
   return page.url()
 }
 
+/** Provider markup sometimes gives a consent checkbox the preceding upload label. */
+export function correctedFieldLabel(field: FormField): string {
+  if (field.type === 'checkbox' && /(?:gdpr|privacy|data).*consent|consent.*(?:gdpr|privacy|data)/i.test(field.name ?? '')) {
+    return 'Consent to processing applicant data'
+  }
+  return field.label
+}
+
 /**
  * The generic reader.
  *
@@ -92,7 +100,7 @@ export async function readFields(page: Page, containerSelector?: string): Promis
   // named function expressions, and that helper does not exist inside the
   // page. The result is `ReferenceError: __name is not defined` in dev and
   // silence under `tsc`, which is the worst kind of difference to debug.
-  return page.evaluate((selector) => {
+  const fields = await page.evaluate((selector) => {
     const scope: ParentNode = selector ? (document.querySelector(selector) ?? document) : document
     const controls = Array.from(scope.querySelectorAll<HTMLElement>('input, select, textarea'))
     const found: Array<{
@@ -242,6 +250,7 @@ export async function readFields(page: Page, containerSelector?: string): Promis
     for (const field of found) if (field.type === 'checkbox' && field.options?.length === 1) field.options = []
     return found
   }, containerSelector ?? null)
+  return fields.map(field => ({ ...field, label: correctedFieldLabel(field) }))
 }
 
 /**

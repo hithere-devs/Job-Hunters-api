@@ -9,12 +9,16 @@ import { forbiddenQuestion, looksLikeLegacyQuestion, validateLiveAnswer } from '
 import { canReuseExplicitAnswer, sensitiveReason } from '../../hunt/apply/fields.js'
 import { canonicalCommonQuestionKey } from '../../persona/application-questions.js'
 import { resolveApplicationAnswers, type ResolvedApplicationAnswer } from '../../persona/answer-resolver.js'
+import { DEFAULT_ANSWER_REASON, INFERRED_ANSWER_REASON } from '../../persona/answer-resolver-policy.js'
 import { answerQuestions, questionField } from './questions.js'
 
 type Question=typeof pendingApplicationQuestions.$inferSelect
 export function approvedResolvedAnswer(q:Question,result:ResolvedApplicationAnswer):boolean {
- if(!result.autoApply||!result.answer||!result.evidence.length||forbiddenQuestion(questionField(q)))return false
- if(result.decision==='known'&&result.confidence<.95)return false
+ if(!result.autoApply||!result.answer||forbiddenQuestion(questionField(q)))return false
+ const boundedInference=result.reason===INFERRED_ANSWER_REASON
+ const safeDefault=result.reason===DEFAULT_ANSWER_REASON
+ if(!result.evidence.length&&!safeDefault)return false
+ if(result.decision==='known'&&result.confidence<(boundedInference ? .8 : .95))return false
  if(result.decision==='draft'&&(q.sensitive||sensitiveReason(q.label,q.options)||result.answer.trim().split(/\s+/).length>60))return false
  if(!['known','draft'].includes(result.decision))return false
  try{validateLiveAnswer(questionField(q),{answer:result.answer,remember:false,skip:false});return true}catch{return false}

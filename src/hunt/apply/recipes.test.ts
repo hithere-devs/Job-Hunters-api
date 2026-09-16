@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { embeddedGreenhouseApplicationUrl } from './recipes.js'
+import { correctedFieldLabel, embeddedGreenhouseApplicationUrl } from './recipes.js'
 
 test('accepts the official embedded Greenhouse application URL', () => {
   const source = 'https://job-boards.greenhouse.io/embed/job_app?for=mongodb&token=8089859'
@@ -16,4 +16,8 @@ test('rejects lookalike, insecure, and unrelated iframe URLs', () => {
 test('rejects an absent or malformed iframe URL', () => {
   assert.equal(embeddedGreenhouseApplicationUrl(null), null)
   assert.equal(embeddedGreenhouseApplicationUrl('not a url'), null)
+})
+
+test('repairs a GDPR checkbox that inherited the resume upload label', () => {
+  assert.equal(correctedFieldLabel({ label: 'Resume/CV*', type: 'checkbox', name: 'gdpr_demographic_data_consent_given', required: true }), 'Consent to processing applicant data')
 })

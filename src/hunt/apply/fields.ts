@@ -351,7 +351,7 @@ export async function resolveField(
   const sensitive = sensitiveReason(field.label, field.options)
 
   // Only explicit country/topic answers qualify. Residence never establishes work rights.
-  if (sensitive && /visa or work authorisation/i.test(sensitive) && context.authorisation && !context.profile.workAuthorization) {
+  if (sensitive && /visa or work authorisation/i.test(sensitive) && context.authorisation) {
     const derived = deriveAuthorisation(field, context.authorisation)
     if (derived) {
       const value = answerForField(field, derived.answer)

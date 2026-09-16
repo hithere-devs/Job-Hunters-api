@@ -166,7 +166,7 @@ const schema = z.object({
   FIRECRAWL_API_BASE: z.string().url().default('https://api.firecrawl.dev/v2'),
 
   /** Explicit model route. Gemini through OpenRouter is the default; no automatic Anthropic fallback. */
-  MODEL_PROVIDER: z.enum(['openrouter', 'anthropic']).default('openrouter'),
+  MODEL_PROVIDER: z.enum(['openrouter', 'anthropic', 'vertex']).default('openrouter'),
   // Retained only so historical, unrouted Muse modules compile.
   MUSE_MODEL: z.string().default('retired'),
 
@@ -178,6 +178,8 @@ const schema = z.object({
   ANTHROPIC_API_KEY: optionalString,
   OPENROUTER_API_KEY: optionalString,
   OPENROUTER_API_BASE: z.string().url().default('https://openrouter.ai/api/v1'),
+  GOOGLE_CLOUD_PROJECT: optionalString,
+  GOOGLE_CLOUD_LOCATION: z.string().default('global'),
   /**
    * Required only for an identity-linked API key (one console account with
    * access to several workspaces) — it disambiguates which workspace the
@@ -210,7 +212,7 @@ const schema = z.object({
    * Low because the deterministic ladder has already filled most of the form
    * by the time the agent runs there; it only handles the leftovers.
    */
-  APPLY_AGENT_MAX_STEPS: z.coerce.number().int().positive().default(18),
+  APPLY_AGENT_MAX_STEPS: z.coerce.number().int().positive().default(200),
   /**
    * The same ceiling for a playground run, where the agent fills the whole
    * form itself.
@@ -220,7 +222,7 @@ const schema = z.object({
    * possible place to stop, because nothing was submitted and the work was
    * thrown away.
    */
-  PLAYGROUND_AGENT_MAX_STEPS: z.coerce.number().int().positive().default(45),
+  PLAYGROUND_AGENT_MAX_STEPS: z.coerce.number().int().positive().default(200),
   /**
    * Ceiling on a single agent step. Without one, a stalled `act()` parks the
    * application in `applying` forever: apply jobs are queued with
@@ -344,7 +346,9 @@ export const hasPortalCredentialVault = Boolean(env.PORTAL_CREDENTIALS_KEY)
  * feature reports itself available and then throws on first use.
  */
 export const hasModelAccess =
-  env.MODEL_PROVIDER === 'openrouter' ? Boolean(env.OPENROUTER_API_KEY) : Boolean(env.ANTHROPIC_API_KEY)
+  env.MODEL_PROVIDER === 'openrouter' ? Boolean(env.OPENROUTER_API_KEY)
+    : env.MODEL_PROVIDER === 'vertex' ? Boolean(env.GOOGLE_CLOUD_PROJECT)
+      : Boolean(env.ANTHROPIC_API_KEY)
 
 /** Discovery keeps its API connectors without this; only HTML sources need it. */
 export const hasFirecrawl = Boolean(env.FIRECRAWL_API_KEY)

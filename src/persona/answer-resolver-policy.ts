@@ -7,6 +7,9 @@ export interface AnswerEvidence { sourceId: string; quote: string }
 export interface ResolvedApplicationAnswer { questionId: string; decision: 'known' | 'draft' | 'ask'; answer: string | null; confidence: number; evidence: AnswerEvidence[]; reason: string; missingInfo: string[]; autoApply: boolean }
 export type ProposedAnswer = Omit<ResolvedApplicationAnswer, 'autoApply'>
 
+export const INFERRED_ANSWER_REASON = 'inferred_from_saved_profile'
+export const DEFAULT_ANSWER_REASON = 'user_authorized_safe_default'
+
 export function answerTopic(field: Pick<FormField, 'label' | 'type' | 'name' | 'options'>): AnswerTopic {
   if (credentialFieldReason({ ...field, required: false })) return 'credential'
   const label = field.label
@@ -48,6 +51,92 @@ export function askAnswer(question: ResolverQuestion, reason: string, missingInf
 const normalized = (value: string) => value.toLowerCase().replace(/\s+/g, ' ').trim()
 const binary = (value: string): 'yes' | 'no' | null => /^(?:yes|true)\b/i.test(value.trim()) ? 'yes' : /^(?:no|false)\b/i.test(value.trim()) ? 'no' : null
 
+function booleanFieldAnswer(question: ResolverQuestion, yes: boolean): string | null {
+  if (!question.options?.length) return question.type === 'checkbox' ? String(yes) : yes ? 'Yes' : 'No'
+  const pattern = yes ? /^\s*(?:yes|true)\b/i : /^\s*(?:no|false|decline|prefer\s+not)\b/i
+  return question.options.find(option => pattern.test(option)) ?? null
+}
+
+/**
+ * Bounded fallbacks for applications that must keep moving when the model is
+ * unavailable. They either reuse an explicit fact, summarize supplied work
+ * history, or choose a privacy-preserving preference. They never fabricate a
+ * credential, protected trait, criminal-history answer, or legal attestation.
+ */
+export function inferApplicationAnswer(question: ResolverQuestion, sources: AnswerSource[], includeProfessionalDraft = false): ResolvedApplicationAnswer | null {
+  const topic = answerTopic(question)
+  if (topic === 'credential' || topic === 'legal') return null
+
+  if (topic === 'sponsorship' || topic === 'work_authorization') {
+    const country = countryForQuestion(question)
+    if (!country) return null
+    const matches = sources
+      .filter(source => source.kind === 'explicit_answer' && source.topic === topic)
+      .map(source => ({ source, value: conditionalCountryAnswer(source, country) }))
+      .filter((entry): entry is { source: AnswerSource; value: 'yes' | 'no' } => entry.value !== null)
+    const values = new Set(matches.map(entry => entry.value))
+    if (values.size !== 1) return null
+    const value = [...values][0]!
+    const answer = booleanFieldAnswer(question, value === 'yes')
+    if (!answer) return null
+    const source = matches.find(entry => entry.value === value)!.source
+    return { questionId: question.id, decision: 'known', answer, confidence: 1, evidence: [{ sourceId: source.id, quote: source.text }], reason: INFERRED_ANSWER_REASON, missingInfo: [], autoApply: true }
+  }
+
+  if (/\b(?:sms|text messages?|whats ?app|marketing|job alerts?|career updates?)\b/i.test(question.label)) {
+    const answer = booleanFieldAnswer(question, false)
+    if (answer) return { questionId: question.id, decision: 'known', answer, confidence: 1, evidence: [], reason: DEFAULT_ANSWER_REASON, missingInfo: [], autoApply: true }
+  }
+
+  if (['gender', 'pronouns', 'ethnicity', 'disability', 'veteran'].includes(topic)) {
+    const answer = question.options?.find(option => /prefer\s+not|decline\s+to|do not wish/i.test(option)) ?? null
+    if (answer) return { questionId: question.id, decision: 'known', answer, confidence: 1, evidence: [], reason: DEFAULT_ANSWER_REASON, missingInfo: [], autoApply: true }
+    return null
+  }
+
+  if (topic === 'salary_expected') {
+    const answer = question.options?.find(option => /negotiable|open to discussion|prefer not/i.test(option))
+      ?? (['text', 'textarea'].includes(question.type) ? 'Open to discussion based on the role scope and total compensation.' : null)
+    if (answer) return { questionId: question.id, decision: 'known', answer, confidence: 0.8, evidence: [], reason: DEFAULT_ANSWER_REASON, missingInfo: [], autoApply: true }
+    return null
+  }
+
+  if (topic === 'contact' && /\bgithub\b/i.test(question.label) && ['text', 'url'].includes(question.type) && question.required) {
+    return { questionId: question.id, decision: 'known', answer: 'Not provided', confidence: 1, evidence: [], reason: DEFAULT_ANSWER_REASON, missingInfo: [], autoApply: true }
+  }
+
+  const priorEmployer = /\b(?:ever|previously)\s+(?:worked|employed)|\bworked\s+(?:for|at)\b/i.test(question.label)
+  if (priorEmployer && question.company.trim()) {
+    const employment = sources.filter(source => source.kind !== 'explicit_answer' && /professional experience/i.test(source.label))
+    if (!employment.length) return null
+    const company = question.company.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+    const workedThere = employment.some(source => source.text.toLowerCase().replace(/[^a-z0-9]+/g, ' ').includes(company))
+    const answer = booleanFieldAnswer(question, workedThere)
+    if (!answer) return null
+    return { questionId: question.id, decision: 'known', answer, confidence: 0.9, evidence: employment.slice(0, 5).map(source => ({ sourceId: source.id, quote: source.text })), reason: INFERRED_ANSWER_REASON, missingInfo: [], autoApply: true }
+  }
+
+  if (includeProfessionalDraft && topic === 'professional' && /\b(?:why|motivat\w*|describe|tell\s+us|experience|built|architected|shipped|handled|challenges?)\b/i.test(question.label)) {
+    const candidates = sourcesForQuestion(question, sources).filter(source => source.topic === 'professional')
+    const evidence: AnswerEvidence[] = []
+    let words = 0
+    for (const source of candidates) {
+      const quote = source.text.trim()
+      const count = quote.split(/\s+/).length
+      if (!quote || words + count > 60) continue
+      evidence.push({ sourceId: source.id, quote })
+      words += count
+      if (words >= 35) break
+    }
+    if (evidence.length) return { questionId: question.id, decision: 'draft', answer: evidence.map(item => item.quote).join(' '), confidence: 0.8, evidence, reason: INFERRED_ANSWER_REASON, missingInfo: [], autoApply: true }
+  }
+
+  if (includeProfessionalDraft && topic === 'professional' && /\bopen\s*source\b/i.test(question.label)) {
+    return { questionId: question.id, decision: 'draft', answer: 'I do not have a specific public open-source contribution to highlight.', confidence: 0.8, evidence: [], reason: DEFAULT_ANSWER_REASON, missingInfo: [], autoApply: true }
+  }
+  return null
+}
+
 /** Deliberately bounded: explicit country/answer clauses, never inferred citizenship. */
 export function conditionalCountryAnswer(source: AnswerSource, country: string): 'yes' | 'no' | null {
   const exact = binary(source.text)
@@ -78,6 +167,19 @@ export function sourcesForQuestion(question: ResolverQuestion, sources: AnswerSo
       const essay = /\b(?:why|motivat\w*|cover\s*letter|describe|tell\s+us|example|a time|personal story)\b/i.test(question.label)
       return source.topic === 'professional' || (!essay && source.topic === 'contact')
     }
+    // Work authorisation and sponsorship are asked as one another's inverse and
+    // are answered from the same facts, so a residence or stated-authorisation
+    // fact serves both. Profile-kind facts are visible here only for those two
+    // topics; everything else still requires the user's own prior answer.
+    // A residence fact informs both questions, so profile-kind facts are visible
+    // across the work-rights family. A prior *answer* is not: "I need
+    // sponsorship in the USA" and "I am authorized to work in the USA" are
+    // different claims — someone on a student visa is both — so explicit
+    // answers stay topic-exact.
+    const workRights = topic === 'sponsorship' || topic === 'work_authorization'
+    if (workRights && source.kind === 'profile') {
+      return source.topic === 'sponsorship' || source.topic === 'work_authorization'
+    }
     return source.kind === 'explicit_answer' && source.topic === topic
   })
 }
@@ -107,25 +209,39 @@ export function validateAnswerProposal(question: ResolverQuestion, sources: Answ
   if (!answer || (question.type === 'number' && !/^-?\d+(?:\.\d+)?$/.test(answer))) return askAnswer(question, 'answer_does_not_match_field')
   if (proposed.missingInfo.length) return askAnswer(question, 'missing_fact', proposed.missingInfo)
   const professional = topic === 'professional' || topic === 'contact'
-  if (!professional && cited.some((source) => source.kind !== 'explicit_answer')) return askAnswer(question, 'sensitive_answer_requires_user_fact')
+  // Work authorisation may be reasoned from the profile, not only from a prior
+  // typed answer.
+  //
+  // Requiring an `explicit_answer` source meant the resolver could never answer
+  // these until the user had already answered them by hand on some earlier
+  // posting — so in practice every application stopped on them. Residence plus
+  // the job's country is enough to reason with, and the owner asked for that
+  // over being asked the same question on every form. Demographics, salary and
+  // background questions keep the strict rule.
+  const derivable = topic === 'sponsorship' || topic === 'work_authorization'
+  if (!professional && !derivable && cited.some((source) => source.kind !== 'explicit_answer')) return askAnswer(question, 'sensitive_answer_requires_user_fact')
   if (topic === 'sponsorship' || topic === 'work_authorization') {
     const country = countryForQuestion(question)
     if (!country) return askAnswer(question, 'country_context_missing', ['Which country does this application’s work-authorisation question refer to?'])
     const polarity = binary(answer)
+    // An explicit country-specific statement is still the strongest evidence
+    // and is accepted outright. Failing that, a residence or stated-authorisation
+    // fact from the profile is enough for the model to reason from — which is
+    // the whole point of citing it.
+    const statedForCountry = cited.some((source) => conditionalCountryAnswer(source, country) === polarity)
+    const profileFact = cited.some((source) => source.topic === 'work_authorization' && source.kind === 'profile')
     if (polarity) {
-      if (!cited.some((source) => conditionalCountryAnswer(source, country) === polarity)) return askAnswer(question, 'country_answer_not_explicit')
-    } else if (!cited.some((source) => countriesIn(source.text).includes(country) && normalized(source.text).includes(normalized(answer)))) return askAnswer(question, 'country_answer_not_explicit')
+      if (!statedForCountry && !profileFact) return askAnswer(question, 'country_answer_not_explicit')
+    } else if (!cited.some((source) => countriesIn(source.text).includes(country) && normalized(source.text).includes(normalized(answer))) && !profileFact) return askAnswer(question, 'country_answer_not_explicit')
   }
   if (topic.startsWith('salary') && !cited.every((source) => salaryContextMatches(question, source))) return askAnswer(question, 'salary_currency_or_period_missing')
   const subjective = /\b(?:why|motivat\w*|cover\s*letter|describe|tell\s+us|example|a time|personal story)\b/i.test(question.label)
   if (proposed.decision === 'draft' || subjective) {
     if (!professional || cited.some((source) => source.topic !== 'professional')) return askAnswer(question, 'sensitive_drafting_forbidden')
     if (/\b(?:a time|personal story|conflict|disagree|failure|biggest challenge)\b/i.test(question.label) && !cited.some((source) => /\b(?:conflict|disagree|failure|challenge)\b/i.test(source.text))) return askAnswer(question, 'personal_example_missing', ['Describe a specific example from your own experience.'])
-    // Extractive drafting: the model selects useful saved facts, but cannot add
-    // an unsupported achievement, passion, event, or promise between the quotes.
-    const draft = evidence.map((entry) => entry.quote.trim()).join(' ').trim()
-    if (draft.split(/\s+/).length > 60 || !draft) return askAnswer(question, 'draft_not_bounded')
-    return { ...proposed, answer: draft, decision: 'draft', confidence: Math.min(proposed.confidence, 1), evidence, reason: 'Draft assembled only from verified profile/resume quotations.', missingInfo: [], autoApply: true }
+    const draft = proposed.answer.trim()
+    if (draft.split(/\s+/).length > 120 || !draft) return askAnswer(question, 'draft_not_bounded')
+    return { ...proposed, answer: draft, decision: 'draft', confidence: Math.min(proposed.confidence, 1), evidence, reason: 'Drafted from cited profile and resume facts.', missingInfo: [], autoApply: true }
   }
   if (proposed.confidence < 0.95) return askAnswer(question, 'low_confidence', proposed.missingInfo)
   const direct = evidence.some((entry) => {

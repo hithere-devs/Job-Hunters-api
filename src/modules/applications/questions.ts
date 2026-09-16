@@ -106,7 +106,11 @@ export async function listQuestionInbox(userId:string){
   const needsCapture=!appQuestions.length||appQuestions.some(row=>legacyNeedsCapture(row.question)||(['radio','select','select-one'].includes(row.question.type)&&row.question.options.length===0))
   if(reason||needsCapture)blockedApplications.push({applicationId:app.id,reason:reason??'Readable questions and exact options need to be loaded from the provider browser.',canRecoverQuestions:!reason&&needsCapture})
  }
- return {groups:[...groups.values()],blockedApplications}
+ const inferredAnswers=await db.select({id:pendingApplicationQuestions.id,label:pendingApplicationQuestions.label,answer:pendingApplicationQuestions.answer,answerMeta:pendingApplicationQuestions.answerMeta,updatedAt:pendingApplicationQuestions.updatedAt,company:applications.company,role:applications.role})
+  .from(pendingApplicationQuestions).innerJoin(applications,and(eq(applications.id,pendingApplicationQuestions.applicationId),eq(applications.userId,userId)))
+  .where(and(eq(pendingApplicationQuestions.userId,userId),sql`${pendingApplicationQuestions.answer} is not null`,sql`${pendingApplicationQuestions.answerMeta}->>'source'='profile_ai'`))
+  .orderBy(desc(pendingApplicationQuestions.updatedAt)).limit(20)
+ return {groups:[...groups.values()],blockedApplications,inferredAnswers:inferredAnswers.map(row=>({id:row.id,label:row.label,answer:row.answer!,company:row.company,role:row.role,reason:String(row.answerMeta.reason??'Inferred from your saved profile'),at:row.updatedAt.toISOString()}))}
 }
 export type AnswerInput=z.infer<typeof liveAnswerSchema>&{questionId:string}
 export interface AnswerWriteContext {source:'profile_ai';metadata:Record<string,Record<string,unknown>>;autoResume?:boolean}

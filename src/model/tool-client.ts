@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { openRouterCompletion } from './openrouter.js'
+import { vertexCompletion } from './vertex.js'
 import { env } from '../config/env.js'
 import { assertWithinBudget, recordUsage, type Purpose } from './meter.js'
 
@@ -59,6 +60,7 @@ export function anthropicHistory(history: ToolMessage[]): { system: string; mess
 let client: Anthropic | undefined
 export async function toolCompletion(params: { userId: string | null; messages: ToolMessage[]; tools?: unknown[]; maxTokens?: number; temperature?: number; purpose?: Purpose; model?: string; signal?: AbortSignal }): Promise<ToolResult> {
   if (env.MODEL_PROVIDER === 'openrouter') return openRouterCompletion({ ...params, model: params.model ?? env.APPLY_AGENT_MODEL })
+  if (env.MODEL_PROVIDER === 'vertex') return vertexCompletion({ ...params, model: params.model ?? env.APPLY_AGENT_MODEL })
   if (!env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is not set')
   await assertWithinBudget(params.userId)
   const purpose = params.purpose ?? 'apply-agent'

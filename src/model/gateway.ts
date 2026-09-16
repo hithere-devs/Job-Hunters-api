@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { openRouterStructured, openRouterText } from './openrouter.js'
+import { vertexStructured, vertexText } from './vertex.js'
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod'
 // The SDK's zod helper targets zod v4. The rest of this codebase validates
 // HTTP input with the v3 API, and zod 3.25 ships both under separate entry
@@ -16,7 +17,7 @@ export type { Purpose } from './meter.js'
 
 export class ModelUnavailableError extends Error {
   constructor() {
-    super(`${env.MODEL_PROVIDER === 'openrouter' ? 'OPENROUTER_API_KEY' : 'ANTHROPIC_API_KEY'} is not set. Model-backed features are disabled.`)
+    super(`${env.MODEL_PROVIDER === 'openrouter' ? 'OPENROUTER_API_KEY' : env.MODEL_PROVIDER === 'vertex' ? 'GOOGLE_CLOUD_PROJECT' : 'ANTHROPIC_API_KEY'} is not set. Model-backed features are disabled.`)
     this.name = 'ModelUnavailableError'
   }
 }
@@ -193,13 +194,17 @@ export async function structured<T extends z.ZodType>(
   options: CallOptions,
 ): Promise<z.infer<T>> {
   if (!hasModelAccess) throw new ModelUnavailableError()
-  return env.MODEL_PROVIDER === 'openrouter' ? openRouterStructured(schema, { ...options, model: options.model ?? modelFor(options.purpose) }) : anthropicStructured(schema, options)
+  if (env.MODEL_PROVIDER === 'openrouter') return openRouterStructured(schema, { ...options, model: options.model ?? modelFor(options.purpose) })
+  if (env.MODEL_PROVIDER === 'vertex') return vertexStructured(schema, { ...options, model: options.model ?? modelFor(options.purpose) })
+  return anthropicStructured(schema, options)
 }
 
 /** A call whose answer is prose — drafts, summaries. */
 export async function text(options: CallOptions): Promise<string> {
   if (!hasModelAccess) throw new ModelUnavailableError()
-  return env.MODEL_PROVIDER === 'openrouter' ? openRouterText({ ...options, model: options.model ?? modelFor(options.purpose) }) : anthropicText(options)
+  if (env.MODEL_PROVIDER === 'openrouter') return openRouterText({ ...options, model: options.model ?? modelFor(options.purpose) })
+  if (env.MODEL_PROVIDER === 'vertex') return vertexText({ ...options, model: options.model ?? modelFor(options.purpose) })
+  return anthropicText(options)
 }
 
 export const modelGateway = { structured, text, monthlySpendUsd, modelFor }
