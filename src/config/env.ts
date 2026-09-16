@@ -165,8 +165,8 @@ const schema = z.object({
   FIRECRAWL_API_KEY: optionalString,
   FIRECRAWL_API_BASE: z.string().url().default('https://api.firecrawl.dev/v2'),
 
-  /** Anthropic is the active provider. Historical Muse modules are not routed. */
-  MODEL_PROVIDER: z.enum(['anthropic']).default('anthropic'),
+  /** Explicit model route. Gemini through OpenRouter is the default; no automatic Anthropic fallback. */
+  MODEL_PROVIDER: z.enum(['openrouter', 'anthropic']).default('openrouter'),
   // Retained only so historical, unrouted Muse modules compile.
   MUSE_MODEL: z.string().default('retired'),
 
@@ -176,6 +176,8 @@ const schema = z.object({
    * throwing — the same posture the storage and queue checks take.
    */
   ANTHROPIC_API_KEY: optionalString,
+  OPENROUTER_API_KEY: optionalString,
+  OPENROUTER_API_BASE: z.string().url().default('https://openrouter.ai/api/v1'),
   /**
    * Required only for an identity-linked API key (one console account with
    * access to several workspaces) — it disambiguates which workspace the
@@ -183,7 +185,7 @@ const schema = z.object({
    */
   ANTHROPIC_WORKSPACE_ID: optionalString,
   /** Per-purpose overrides. All default to the general-purpose model. */
-  MODEL_DEFAULT: z.string().default('claude-sonnet-5'),
+  MODEL_DEFAULT: z.string().default('google/gemini-3.5-flash'),
   MODEL_RERANK: z.string().optional(),
   MODEL_CLASSIFY: z.string().optional(),
   MODEL_DRAFT: z.string().optional(),
@@ -193,7 +195,7 @@ const schema = z.object({
   /** Retired provider configuration retained only for historical code. */
   META_API_KEY: optionalString,
   META_API_BASE: z.string().url().default('https://api.meta.ai/v1'),
-  APPLY_AGENT_MODEL: z.string().default('claude-sonnet-5'),
+  APPLY_AGENT_MODEL: z.string().default('google/gemini-3.5-flash'),
   APPLY_DRIVER: z.enum(['custom', 'openclaw']).default('custom'),
   OPENCLAW_RUN_TIMEOUT_MS: z.coerce.number().int().min(10_000).max(600_000).default(300_000),
   OPENCLAW_GATEWAY_TOKENS: optionalString,
@@ -342,7 +344,7 @@ export const hasPortalCredentialVault = Boolean(env.PORTAL_CREDENTIALS_KEY)
  * feature reports itself available and then throws on first use.
  */
 export const hasModelAccess =
-  Boolean(env.ANTHROPIC_API_KEY)
+  env.MODEL_PROVIDER === 'openrouter' ? Boolean(env.OPENROUTER_API_KEY) : Boolean(env.ANTHROPIC_API_KEY)
 
 /** Discovery keeps its API connectors without this; only HTML sources need it. */
 export const hasFirecrawl = Boolean(env.FIRECRAWL_API_KEY)

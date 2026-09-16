@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk'
+import { openRouterCompletion } from './openrouter.js'
 import { env } from '../config/env.js'
 import { assertWithinBudget, recordUsage, type Purpose } from './meter.js'
 
@@ -8,9 +9,11 @@ export interface ToolMessage {
   content: unknown
   tool_call_id?: string
   tool_calls?: unknown
+  /** Provider-opaque thought signatures required to continue Gemini tool turns. */
+  reasoning_details?: unknown[]
 }
 export interface ToolCall { id: string; type: 'function'; function: { name: string; arguments: string } }
-export interface ToolResult { content: string | null; toolCalls: ToolCall[]; finishReason: string }
+export interface ToolResult { content: string | null; toolCalls: ToolCall[]; finishReason: string; reasoningDetails?: unknown[] }
 
 type Block = Anthropic.TextBlockParam | Anthropic.ImageBlockParam | Anthropic.ToolUseBlockParam | Anthropic.ToolResultBlockParam
 function contentBlocks(content: unknown): Block[] {
@@ -55,6 +58,7 @@ export function anthropicHistory(history: ToolMessage[]): { system: string; mess
 
 let client: Anthropic | undefined
 export async function toolCompletion(params: { userId: string | null; messages: ToolMessage[]; tools?: unknown[]; maxTokens?: number; temperature?: number; purpose?: Purpose; model?: string; signal?: AbortSignal }): Promise<ToolResult> {
+  if (env.MODEL_PROVIDER === 'openrouter') return openRouterCompletion({ ...params, model: params.model ?? env.APPLY_AGENT_MODEL })
   if (!env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is not set')
   await assertWithinBudget(params.userId)
   const purpose = params.purpose ?? 'apply-agent'

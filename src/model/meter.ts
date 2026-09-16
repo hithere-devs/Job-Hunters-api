@@ -57,6 +57,8 @@ export async function assertWithinBudget(userId: string | null): Promise<void> {
 }
 
 export interface RawUsage {
+  /** Provider-reported actual cost, including reasoning/cache routing charges. */
+  cost_usd?: number
   input_tokens?: number
   output_tokens?: number
   cache_read_input_tokens?: number | null
@@ -83,7 +85,7 @@ export async function recordUsage(params: {
       inputTokens,
       outputTokens,
       cachedInputTokens,
-      usd: String(costUsd(params.model, { inputTokens, outputTokens, cachedInputTokens })),
+      usd: String(reportedOrEstimatedCost(params.model, params.usage)),
       durationMs: params.durationMs,
       ok: params.ok,
       error: params.error ?? null,
@@ -92,4 +94,10 @@ export async function recordUsage(params: {
     // A metering write must never fail the work it was measuring.
     logger.error({ err: error, purpose: params.purpose }, 'could not record model usage')
   }
+}
+
+/** Trust only finite nonnegative numeric API cost; otherwise keep published-rate accounting. */
+export function reportedOrEstimatedCost(model: string, usage: RawUsage | undefined): number {
+  if (typeof usage?.cost_usd === 'number' && Number.isFinite(usage.cost_usd) && usage.cost_usd >= 0) return Number(usage.cost_usd.toFixed(6))
+  return costUsd(model, { inputTokens: usage?.input_tokens ?? 0, outputTokens: usage?.output_tokens ?? 0, cachedInputTokens: usage?.cache_read_input_tokens ?? 0 })
 }
