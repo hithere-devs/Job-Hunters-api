@@ -1,0 +1,1 @@
+ALTER TABLE "pending_application_questions" ADD COLUMN "answer_meta" jsonb DEFAULT '{}'::jsonb NOT NULL;

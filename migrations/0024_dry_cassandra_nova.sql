@@ -1,0 +1,1 @@
+ALTER TABLE "application_dispatches" ADD COLUMN "queue_name" text DEFAULT 'hunt-apply' NOT NULL;

@@ -1,0 +1,28 @@
+[Unit]
+Description=Huntly VM application runner
+After=network-online.target redis-server.service huntly-vm-agent.service
+Wants=network-online.target
+Requires=redis-server.service huntly-vm-agent.service
+
+[Service]
+Type=simple
+User=huntly-runner
+Group=huntly-runner
+WorkingDirectory=/opt/huntly/api
+EnvironmentFile=/etc/huntly/runner.env
+ExecStart=/usr/bin/node /opt/huntly/api/dist/application-runner.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=12min
+KillSignal=SIGTERM
+KillMode=mixed
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/huntly-runner
+LimitNOFILE=8192
+MemoryMax=4G
+
+[Install]
+WantedBy=multi-user.target

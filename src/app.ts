@@ -6,6 +6,8 @@ import { forbidden } from './lib/errors.js'
 import { errorHandler, notFoundHandler } from './middleware/error.js'
 import { globalLimiter } from './middleware/rateLimit.js'
 import { httpLogger, requestId, responseTime } from './middleware/requestId.js'
+import { adminFlagsRouter } from './modules/applications/admin-flags.js'
+import { questionDraftsRouter } from './modules/applications/question-drafts.js'
 import { applicationsRouter } from './modules/applications/routes.js'
 import { authRouter } from './modules/auth/routes.js'
 import { billingRouter } from './modules/billing/routes.js'
@@ -99,7 +101,9 @@ export function createApp(): Express {
   app.use('/portal-accounts', portalAccountsRouter)
   app.use('/hunt', huntRouter)
   app.use('/intake', intakeRouter)
+  app.use('/applications', questionDraftsRouter)
   app.use('/applications', applicationsRouter)
+  app.use('/admin', adminFlagsRouter)
   app.use('/referrals', referralsRouter)
   app.use('/notifications', notificationsRouter)
   app.use('/outreach', outreachRouter)

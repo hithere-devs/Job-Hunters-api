@@ -2,11 +2,12 @@ import type { Server } from 'node:http'
 import WebSocket, { WebSocketServer, type WebSocket as WebSocketLike } from 'ws'
 import { and, desc, eq } from 'drizzle-orm'
 import { db } from '../db/client.js'
-import { applyAttempts, attemptEvents, playgroundRuns, userBrowserSessions } from '../db/schema.js'
+import { applyAttempts, attemptEvents, playgroundRuns, userBrowserSessions, users } from '../db/schema.js'
+import { getTenantStatus } from '../browser/vm-client.js'
 import { env } from '../config/env.js'
 import { forwardAttemptInput } from './watch-policy.js'
 import { logger } from '../lib/logger.js'
-import { verifyAccessToken } from '../lib/jwt.js'
+import { verifyAccessToken, type AccessTokenPayload } from '../lib/jwt.js'
 import { subscribeToAttempts, type AttemptEventPayload } from '../hunt/apply/events.js'
 import { markWatching, sendTakeover, stopWatching, type TakeoverEvent } from '../hunt/apply/screencast.js'
 import { subscribeToPlayground, type PlaygroundEvent } from '../playground/events.js'
@@ -38,6 +39,11 @@ interface Client {
   refresh: NodeJS.Timeout
 }
 
+async function currentSocketIdentity(payload: AccessTokenPayload): Promise<boolean> {
+  const [user] = await db.select({authVersion:users.authVersion}).from(users).where(eq(users.id,payload.sub)).limit(1)
+  return Boolean(user && user.authVersion === payload.authVersion)
+}
+
 export function attachLiveGateway(server: Server): WebSocketServer {
   // `noServer` so the upgrade can be rejected before a socket exists — an
   // unauthenticated client should never reach an open WebSocket.
@@ -45,25 +51,38 @@ export function attachLiveGateway(server: Server): WebSocketServer {
 
   server.on('upgrade', (request, socket, head) => {
     const url = new URL(request.url ?? '', `http://${request.headers.host ?? 'localhost'}`)
+    if (request.headers.origin && !env.CORS_ORIGINS.includes(request.headers.origin)) { socket.destroy(); return }
     if (url.pathname === '/me/browser-session/stream') {
       const token = url.searchParams.get('token') ?? ''
       const sessionId = url.searchParams.get('sessionId') ?? ''
-      let userId: string
-      try { userId = verifyAccessToken(token).sub } catch { socket.destroy(); return }
+      let identity: AccessTokenPayload
+      try { identity = verifyAccessToken(token) } catch { socket.destroy(); return }
+      const userId = identity.sub
       void (async () => {
+        if (!await currentSocketIdentity(identity)) { socket.destroy(); return }
         const [session] = await db.select().from(userBrowserSessions).where(and(eq(userBrowserSessions.id, sessionId), eq(userBrowserSessions.userId, userId))).limit(1).catch(() => [])
-        if (!session) { socket.destroy(); return }
+        if (!session || session.status !== 'connecting') { socket.destroy(); return }
+        const mode = await getTenantStatus(session.tenantIndex)
+        if (mode.mode !== 'connect') { socket.destroy(); return }
         const upstream = new WebSocket(`ws://127.0.0.1:${6100 + session.tenantIndex}`)
         upstream.once('open', () => {
           wss.handleUpgrade(request, socket, head, (client) => {
             upstream.on('message', (data, isBinary) => { if (client.readyState === client.OPEN) client.send(data, { binary: isBinary }) })
             client.on('message', (data, isBinary) => { if (upstream.readyState === upstream.OPEN) upstream.send(data, { binary: isBinary }) })
-            const close = () => { if (upstream.readyState === upstream.OPEN) upstream.close(); if (client.readyState === client.OPEN) client.close() }
+            const guard = setInterval(() => {
+              void (async () => {
+                const valid = await currentSocketIdentity(verifyAccessToken(token));
+                const status = await getTenantStatus(session.tenantIndex);
+                if(!valid || status.mode !== 'connect') client.close(1008,'Browser is no longer in connect mode');
+              })().catch(()=>client.close(1008,'Session expired'));
+            },15000);
+            guard.unref();
+            const close = () => { clearInterval(guard); if (upstream.readyState === upstream.OPEN) upstream.close(); if (client.readyState === client.OPEN) client.close() }
             client.on('close', close); client.on('error', close); upstream.on('close', close); upstream.on('error', close)
           })
         })
         upstream.once('error', () => socket.destroy())
-      })()
+      })().catch(()=>socket.destroy())
       return
     }
     const playground = PLAYGROUND_PATH.exec(url.pathname)
@@ -78,16 +97,18 @@ export function attachLiveGateway(server: Server): WebSocketServer {
     // arrives as a query parameter. It is short-lived and the connection is
     // same-origin.
     const token = url.searchParams.get('token') ?? ''
-    let userId: string
+    let identity: AccessTokenPayload
     try {
-      userId = verifyAccessToken(token).sub
+      identity = verifyAccessToken(token)
     } catch {
       socket.destroy()
       return
     }
 
+    const userId = identity.sub
     if (playground) {
       void (async () => {
+        if (!await currentSocketIdentity(identity)) { socket.destroy(); return }
         // The run must belong to this user. Without this check any
         // authenticated user could watch anyone's application being filled in.
         const [run] = await db
@@ -105,11 +126,12 @@ export function attachLiveGateway(server: Server): WebSocketServer {
         wss.handleUpgrade(request, socket, head, (ws) => {
           acceptPlayground(ws, userId, attemptId!)
         })
-      })()
+      })().catch(()=>socket.destroy())
       return
     }
 
     void (async () => {
+      if (!await currentSocketIdentity(identity)) { socket.destroy(); return }
       // The attempt must belong to this user. Without this check any
       // authenticated user could watch anyone's application.
       const [attempt] = await db
@@ -125,12 +147,12 @@ export function attachLiveGateway(server: Server): WebSocketServer {
       }
 
       wss.handleUpgrade(request, socket, head, (ws) => {
-        accept(ws, userId, attemptId!, Boolean(match[2]))
+        accept(ws, userId, attemptId!, Boolean(match[2]), token)
       })
-    })()
+    })().catch(()=>socket.destroy())
   })
 
-  function accept(socket: WebSocketLike, userId: string, attemptId: string, readOnly: boolean): void {
+  function accept(socket: WebSocketLike, userId: string, attemptId: string, readOnly: boolean, token: string): void {
     void markWatching(attemptId)
 
     const unsubscribe = subscribeToAttempts(userId, (payload: AttemptEventPayload) => {
@@ -141,7 +163,12 @@ export function attachLiveGateway(server: Server): WebSocketServer {
       socket.send(JSON.stringify(payload), () => undefined)
     })
 
-    const refresh = setInterval(() => void markWatching(attemptId), WATCH_REFRESH_MS)
+    const refresh = setInterval(() => {
+      void (async () => {
+        if (!await currentSocketIdentity(verifyAccessToken(token))) { socket.close(1008,'Session expired'); return }
+        await markWatching(attemptId)
+      })().catch(()=>socket.close(1008,'Session expired'))
+    }, WATCH_REFRESH_MS)
     refresh.unref()
 
     const client: Client = { socket, userId, attemptId, unsubscribe, refresh }

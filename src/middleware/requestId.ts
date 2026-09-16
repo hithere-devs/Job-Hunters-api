@@ -1,6 +1,7 @@
 import crypto from 'node:crypto'
 import type { RequestHandler } from 'express'
 import { pinoHttp } from 'pino-http'
+import { safeLogUrl } from '../lib/safe-log-url.js'
 import { logger } from '../lib/logger.js'
 
 /**
@@ -50,16 +51,16 @@ export const httpLogger = pinoHttp({
   },
   customSuccessMessage: (req, res) => {
     const ms = (req as { durationMs?: number }).durationMs
-    return `${req.method} ${req.url} → ${res.statusCode}${ms === undefined ? '' : ` (${ms.toFixed(0)}ms)`}`
+    return `${req.method} ${safeLogUrl(req.url)} → ${res.statusCode}${ms === undefined ? '' : ` (${ms.toFixed(0)}ms)`}`
   },
   // The error handler already logs failures with full context; this would only
   // duplicate them at a second severity.
-  customErrorMessage: (req, res) => `${req.method} ${req.url} → ${res.statusCode}`,
+  customErrorMessage: (req, res) => `${req.method} ${safeLogUrl(req.url)} → ${res.statusCode}`,
   autoLogging: {
     ignore: (req) => req.url === '/healthz' || req.url === '/health',
   },
   serializers: {
-    req: (req) => ({ id: req.id, method: req.method, url: req.url }),
+    req: (req) => ({ id: req.id, method: req.method, url: safeLogUrl(req.url) }),
     res: (res) => ({ statusCode: res.statusCode }),
   },
 })

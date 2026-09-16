@@ -72,6 +72,9 @@ export function sourcesForQuestion(question: ResolverQuestion, sources: AnswerSo
   return sources.filter((source) => {
     if (source.topic === 'credential' || source.topic === 'legal') return false
     if (topic === 'professional' || topic === 'contact') {
+      // A reply about why the applicant wants company A is not evidence of
+      // wanting company B. Recompose from resume facts instead.
+      if (source.kind === 'explicit_answer' && source.applicationId && source.applicationId !== question.applicationId && /why.*(?:our|this|join|work here|company|we.*hire)|cover\s*letter|motivat.*(?:company|role|position)/i.test(source.label)) return false
       const essay = /\b(?:why|motivat\w*|cover\s*letter|describe|tell\s+us|example|a time|personal story)\b/i.test(question.label)
       return source.topic === 'professional' || (!essay && source.topic === 'contact')
     }

@@ -36,8 +36,11 @@ export function getPool(): pg.Pool {
       // round trips — measured at ~1.5s against Supabase from here, against
       // ~175ms for a query on an open one. Reaping idle connections after
       // thirty seconds meant any user arriving after a quiet minute paid that
-      // 1.5s again. Keeping them means the pool is warm when someone shows up.
-      idleTimeoutMillis: 0,
+      // 1.5s again. The small pool is kept warm by normal polling; idle connections are released after 30 seconds so other services do not exhaust the shared pooler.
+      idleTimeoutMillis: 30_000,
+      maxLifetimeSeconds: 300,
+      statement_timeout: 30_000,
+      query_timeout: 35_000,
       keepAlive: true,
     })
 

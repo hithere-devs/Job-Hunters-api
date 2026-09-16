@@ -2,6 +2,23 @@
 
 Date: 2026-09-16. Visual design preserved. Payments and Gmail access excluded.
 
+## Implementation status after the follow-up fixes
+
+This document preserves the original findings below as an audit trail; they are not all still open.
+
+- Implemented and covered by code/tests or observed runtime checks: UX-01, 02, 04, 05, 06, 08, 09, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 25, 26, 28 and 29.
+- UX-03: removed CSRF-only/screenshot-model verification and clear stale states; provider-side authentication acceptance remains a human/provider gate.
+- UX-07: atomic per-user UTC-day queue admission budget is implemented. Pending work crossing day boundaries still needs an explicit execution-day pacing policy if the business promises a hard submitted-per-day limit.
+- UX-20: disconnect/removal UX preserves application history and dirty-slot reservation. Audited credential-profile deletion and full data-retention policies remain operational work.
+- UX-24: recovery/reset code, secure tokens, revocation and UI are implemented; real SMTP delivery is not certified without configured mail-service acceptance.
+- UX-27: the onboarding catalogue is capability-driven. Unsupported verification, including YC without authenticated evidence, is shown honestly rather than marked connected.
+
+The VM runner is now running with live submission enabled by explicit user authorization. Applications start from the saved VM profile, upload the stored résumé, stream read-only frames and run sequentially per profile. The four initial live attempts reached review/uncertain outcomes; they are not claimed as confirmed submissions.
+
+Additional user-requested work: Playground is now Live Applications; all missing questions share one inbox; replies are saved by default; expired browsers do not erase known answers; Muse 1.3 Contributor reasons from profile, résumé and authorized prior replies before requesting new facts. Country-sensitive answers are scoped, and generated answers have separate provenance. The LLM-led runner keeps credential, validation and duplicate-submit guards outside the model.
+
+See `vm-application-rollout.md`, `application-execution.md` and `backend-architecture-audit.md` for deployment proof, exact test gates, prior failed gates and remaining production limits.
+
 ## Verification boundary
 
 - Returning-user journey: inspected in the already signed-in Chrome extension session. Confirmed 705 jobs, 313 eligible, 100 checkboxes per page, top-100 selection persisted across pages, and four visible queued applications after recovery.

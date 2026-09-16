@@ -1,7 +1,9 @@
 import http from 'node:http';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync, statSync, mkdirSync, writeFileSync, chownSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, chownSync } from 'node:fs';
+
+import { disconnectAllowed, MAX_RESUME_BYTES } from './lifecycle-policy.ts';
 
 const execFileAsync = promisify(execFile);
 const PORT = Number(process.env.VM_AGENT_PORT ?? 18900);
@@ -9,6 +11,16 @@ const TOKEN = process.env.VM_AGENT_TOKEN ?? '';
 const HOST = '127.0.0.1';
 const IDLE_MS = 20 * 60 * 1000;
 const states = new Map<number, TenantState>();
+const operations = new Map<number, Promise<unknown>>();
+let shuttingDown = false;
+async function exclusive<T>(i: number, operation: () => Promise<T>): Promise<T> {
+  const prior = operations.get(i) ?? Promise.resolve();
+  const current = prior.catch(() => undefined).then(operation);
+  operations.set(i, current);
+  try { return await current; } finally { if (operations.get(i) === current) operations.delete(i); }
+}
+function alive(pid: number): boolean { try { process.kill(-pid, 0); return true; } catch { return false; } }
+
 
 type Mode = 'connect' | 'apply' | 'idle';
 type TenantState = { mode: Mode; child: ReturnType<typeof spawn> | null; pid: number | null; startedAt: number | null; lastActivity: number; expiresAt: string | null; idleTimer?: NodeJS.Timeout };
@@ -108,18 +120,27 @@ async function screenshot(i: number): Promise<Buffer | null> {
     return null;
   }
 }
-function stopProcess(i: number): Promise<boolean> {
-  const s = state(i); if (!s.child || !s.pid) { s.mode='idle'; s.expiresAt=null; return Promise.resolve(false); }
-  const child = s.child; const pid = s.pid; if (s.idleTimer) clearTimeout(s.idleTimer);
-  return new Promise(resolve => {
-    let done = false; const finish = (forced: boolean) => { if (done) return; done=true; s.mode='idle'; s.child=null; s.pid=null; s.startedAt=null; s.expiresAt=null; resolve(forced); };
-    child.once('exit', () => finish(false));
-    try { process.kill(pid, 'SIGTERM'); } catch { finish(false); return; }
-    setTimeout(() => { if (!done) { console.error(`tenant ${i} Chrome did not exit after SIGTERM; escalating to SIGKILL`); try { process.kill(pid, 'SIGKILL'); } catch {} finish(true); } }, 10_000);
-  });
+async function stopProcess(i: number): Promise<boolean> {
+  const s = state(i);
+  if (!s.pid) { s.mode='idle'; s.expiresAt=null; return false; }
+  const pid=s.pid;
+  if (s.idleTimer) clearTimeout(s.idleTimer);
+  try { process.kill(-pid, 'SIGTERM'); } catch { try { process.kill(pid, 'SIGTERM'); } catch {} }
+  const deadline=Date.now()+10_000;
+  while (alive(pid) && Date.now()<deadline) await new Promise(resolve=>setTimeout(resolve,100));
+  const forced=alive(pid);
+  if (forced) {
+    console.error(`[tenant ${i}] Chrome did not exit after SIGTERM and 10-second wait; escalating process group to SIGKILL`);
+    try { process.kill(-pid, 'SIGKILL'); } catch {}
+  }
+  s.mode='idle';s.child=null;s.pid=null;s.startedAt=null;s.expiresAt=null;
+  return forced;
 }
 async function launch(i: number, mode: Exclude<Mode,'idle'>) {
   const s = state(i); if (s.mode !== 'idle' && s.child) return null;
+  // Flow B uses CDP frames only. Physically disconnect VNC, including stale
+  // clients that still hold a previously authenticated stream URL.
+  await execFileAsync('systemctl', [mode === 'connect' ? 'start' : 'stop', `huntly-novnc@${i}`, `huntly-x11vnc@${i}`]);
   // `--hide-crash-restore-bubble`: any ungraceful stop — an agent restart, an
   // OOM — makes Chrome greet the next launch with "Chrome didn't shut down
   // correctly", a bubble that covers the top-right of the page and swallows the
@@ -132,33 +153,48 @@ async function launch(i: number, mode: Exclude<Mode,'idle'>) {
   const args = ['--user-data-dir='+profile(i), '--no-first-run', '--no-default-browser-check', '--disable-dev-shm-usage', '--disable-features=TranslateUI', '--hide-crash-restore-bubble', '--window-size=1440,900', '--window-position=0,0', '--start-maximized'];
   if (mode === 'apply') args.push('--remote-debugging-port='+cdpPort(i), '--remote-debugging-address=127.0.0.1');
   args.push('about:blank');
-  const child = spawn('sudo', ['-u', `huntly-u${i}`, 'env', `DISPLAY=${display(i)}`, 'google-chrome', ...args], {stdio:'ignore'});
+  const child = spawn('sudo', ['-u', `huntly-u${i}`, 'env', `DISPLAY=${display(i)}`, 'google-chrome', ...args], {stdio:'ignore',detached:true});
   s.mode=mode; s.child=child; s.pid=child.pid ?? null; s.startedAt=Date.now(); s.lastActivity=Date.now(); s.expiresAt=new Date(Date.now()+IDLE_MS).toISOString();
-  s.idleTimer = setTimeout(async () => { if (s.mode !== 'idle' && Date.now()-s.lastActivity >= IDLE_MS) await stopProcess(i); }, IDLE_MS + 100);
+  child.once('error', error => { console.error(`[tenant ${i}] Chrome launch failed: ${error.message}`); if (s.child === child) {s.mode='idle';s.child=null;s.pid=null;} });
   child.once('exit', () => { if (s.child === child) { s.mode='idle'; s.child=null; s.pid=null; s.startedAt=null; s.expiresAt=null; } });
+  if (mode === 'apply') {
+    const deadline=Date.now()+30000; let ready=false;
+    while(Date.now()<deadline && s.child===child){
+      try {const response=await fetch(`http://127.0.0.1:${cdpPort(i)}/json/version`,{signal:AbortSignal.timeout(1000)});if(response.ok){ready=true;break;}}catch{}
+      await new Promise(resolve=>setTimeout(resolve,200));
+    }
+    if(!ready){await stopProcess(i);throw new Error('Chrome debugging endpoint did not become ready');}
+  } else {
+    await new Promise(resolve=>setTimeout(resolve,300));
+    if(s.child!==child)throw new Error('Chrome exited before the connect session started');
+  }
   return s;
 }
-async function route(req: http.IncomingMessage, res: http.ServerResponse) {
-  if (TOKEN && req.headers.authorization !== `Bearer ${TOKEN}`) return json(res, 401, {error:'unauthorized'});
+async function handleTenant(req: http.IncomingMessage, res: http.ServerResponse) {
+  if (req.headers.authorization !== `Bearer ${TOKEN}`) return json(res, 401, {error:'unauthorized'});
   const method=req.method ?? 'GET', url=new URL(req.url ?? '/', `http://${HOST}:${PORT}`), path=url.pathname;
   if (method==='GET' && path==='/health') return json(res,200,{ok:true,tenants:10,chromeVersion:process.env.CHROME_VERSION ?? 'unknown'});
   const i=validIndex(path); if (i===null) return json(res,404,{error:'not_found'});
-  const s=state(i); s.lastActivity=Date.now();
+  const s=state(i);
+  if (path.endsWith('/status') || path.endsWith('/connect') || path.endsWith('/resume')) { s.lastActivity=Date.now(); if(s.mode !== 'idle') s.expiresAt=new Date(s.lastActivity+IDLE_MS).toISOString(); }
   if (method==='POST' && path.endsWith('/connect')) { if (s.mode!=='idle') return json(res,409,{error:'busy',mode:s.mode}); const x=await launch(i,'connect'); return json(res,200,{mode:'connect',display:display(i),vncPort:vncPort(i),pid:x?.pid ?? null,expiresAt:x?.expiresAt}); }
   if (method==='POST' && path.endsWith('/apply')) { if (s.mode!=='idle') return json(res,409,{error:'busy',mode:s.mode}); const x=await launch(i,'apply'); return json(res,200,{mode:'apply',cdpUrl:`http://127.0.0.1:${cdpPort(i)}`,pid:x?.pid ?? null,expiresAt:x?.expiresAt}); }
   if (method==='PUT' && path.endsWith('/resume')) {
     const chunks: Buffer[] = []
-    for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+    let size=0;
+    for await (const chunk of req) { const data=Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk); size+=data.length; if(size>MAX_RESUME_BYTES) return json(res,413,{error:'invalid_resume_size'}); chunks.push(data); }
     const bytes = Buffer.concat(chunks)
-    if (bytes.length === 0 || bytes.length > 12 * 1024 * 1024) return json(res, 400, { error: 'invalid_resume_size' })
+    if (bytes.length === 0 || bytes.length > MAX_RESUME_BYTES) return json(res, 400, { error: 'invalid_resume_size' })
     const target = resumePath(i)
     mkdirSync(`/home/huntly-u${i}/run`, { recursive: true })
     writeFileSync(target, bytes, { mode: 0o600 })
-    try { chownSync(target, `huntly-u${i}`, `huntly-u${i}`) } catch {}
+    const {stdout: uid}=await execFileAsync('id',['-u',`huntly-u${i}`]);
+    const {stdout: gid}=await execFileAsync('id',['-g',`huntly-u${i}`]);
+    chownSync(target,Number(uid.trim()),Number(gid.trim()));
     return json(res, 200, { path: target, bytes: bytes.length })
   }
   if (method==='POST' && path.endsWith('/stop')) { await stopProcess(i); return json(res,200,{stopped:true}); }
-  if (method==='POST' && path.endsWith('/disconnect')) { await stopProcess(i); return json(res,200,{stopped:true,cookieDomains:await cookies(i),cookies:await cookieRows(i)}); }
+  if (method==='POST' && path.endsWith('/disconnect')) { if (!disconnectAllowed(s.mode)) return json(res,409,{error:'busy',mode:s.mode}); await stopProcess(i); const rows=await cookieRows(i); return json(res,200,{stopped:true,cookieDomains:[...new Set(rows.map(row=>row.host))],cookies:rows}); }
   // Captured before the browser stops, so the caller can fall back to reading
   // the screen when it cannot recognise a platform's session cookie.
   if (method==='GET' && path.endsWith('/screenshot')) {
@@ -170,5 +206,23 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse) {
   if (method==='GET' && path.endsWith('/cookies')) { if (s.mode!=='idle') return json(res,409,{error:'browser_running'}); return json(res,200,{domains:await cookies(i),cookies:await cookieRows(i)}); }
   return json(res,404,{error:'not_found'});
 }
-if (!TOKEN) console.warn('VM_AGENT_TOKEN is empty; authentication disabled');
-http.createServer((req,res)=>{ route(req,res).catch(e=>json(res,500,{error:'internal',message:String(e)})); }).listen(PORT,HOST,()=>console.log(`vm-agent listening on ${HOST}:${PORT}`));
+if (!TOKEN) throw new Error('VM_AGENT_TOKEN is required; refusing to start an unauthenticated VM agent');
+const server=http.createServer((req,res)=>{
+  if(shuttingDown) return json(res,503,{error:'shutting_down'});
+  const url=new URL(req.url ?? '/', `http://${HOST}:${PORT}`);
+  const index=validIndex(url.pathname);
+  const work=()=>handleTenant(req,res);
+  const task=index===null || url.pathname.endsWith('/status') ? work() : exclusive(index,work);
+  void task.catch(error=>{ console.error('VM agent request failed:',error instanceof Error ? error.message : 'unknown');if(!res.headersSent) json(res,500,{error:'internal'}); });
+});
+const idleSweep=setInterval(()=>{
+  for(const [index,s] of states) if(s.mode!=='idle' && Date.now()-s.lastActivity>=IDLE_MS) void exclusive(index,async()=>{if(Date.now()-state(index).lastActivity>=IDLE_MS) await stopProcess(index);});
+},15000);
+idleSweep.unref();
+server.listen(PORT,HOST,()=>console.log(`vm-agent listening on ${HOST}:${PORT}`));
+async function shutdown(){
+  if(shuttingDown)return;shuttingDown=true;clearInterval(idleSweep);server.close();
+  await Promise.all([...states.keys()].map(index=>exclusive(index,()=>stopProcess(index))));
+  process.exit(0);
+}
+process.on('SIGTERM',()=>void shutdown());process.on('SIGINT',()=>void shutdown());

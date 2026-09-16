@@ -30,6 +30,7 @@ const optionalUrl = z.preprocess(
 
 const schema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+  ADMIN_USER_IDS: z.string().optional(),
   PORT: z.coerce.number().int().positive().default(4000),
   LOG_LEVEL: z
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
@@ -42,8 +43,9 @@ const schema = z.object({
 
   DATABASE_URL: optionalString,
   DATABASE_SSL: booleanish.default('true'),
-  DATABASE_POOL_MAX: z.coerce.number().int().positive().max(100).default(10),
+  DATABASE_POOL_MAX: z.coerce.number().int().positive().max(100).default(3),
   REDIS_URL: optionalUrl,
+  APPLICATION_QUEUE_NAME: z.string().regex(/^[a-zA-Z0-9_-]+$/).default('hunt-apply'),
 
 
   JWT_ACCESS_SECRET: z.string().min(32, 'JWT_ACCESS_SECRET must be at least 32 characters'),
@@ -277,6 +279,7 @@ const schema = z.object({
   SMTP_USER: optionalString,
   SMTP_PASSWORD: optionalString,
   MAIL_FROM: z.string().default('Hunty <hunty@huntly.app>'),
+  AUTH_PASSWORD_RESET_URL: optionalUrl,
 
   MAX_RESUME_BYTES: z.coerce.number().int().positive().default(5 * 1024 * 1024),
   MAX_PHOTO_BYTES: z.coerce.number().int().positive().default(5 * 1024 * 1024),

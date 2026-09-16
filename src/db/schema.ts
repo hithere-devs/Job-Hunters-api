@@ -172,6 +172,7 @@ export const users = pgTable(
     /** Google OIDC subject. Email remains the fallback link for old accounts. */
     googleSubject: text('google_subject'),
     passwordHash: text('password_hash').notNull(),
+    authVersion: integer('auth_version').notNull().default(0),
     name: text('name').notNull(),
     /** Emoji the UI shows as the avatar. Picked at signup, editable later. */
     avatar: text('avatar').notNull().default('🧑‍🚀'),
@@ -675,6 +676,8 @@ export const applyAttempts = pgTable(
     browserSessionId: text('browser_session_id'),
     error: text('error'),
     startedAt: timestamp('started_at', { withTimezone: true }),
+    /** Durable irreversible-action fence; never cleared on failure. */
+    submitStartedAt: timestamp('submit_started_at', { withTimezone: true }),
     completedAt: timestamp('completed_at', { withTimezone: true }),
     ...timestamps,
   },
@@ -1294,6 +1297,8 @@ export const fieldAnswers = pgTable(
     value: text('value'),
     /** False until a human has agreed with it. */
     confirmed: boolean('confirmed').notNull().default(false),
+    /** Legacy/model answers must never be mistaken for explicit user permission. */
+    provenance: text('provenance').notNull().default('legacy'),
     timesUsed: integer('times_used').notNull().default(0),
     ...timestamps,
   },
@@ -1624,3 +1629,62 @@ export type UserBrowserSession = typeof userBrowserSessions.$inferSelect
 export type ApplicationStatus = (typeof applicationStatusEnum.enumValues)[number]
 export type ReferralSource = (typeof referralSourceEnum.enumValues)[number]
 export type ActivityKind = (typeof activityKindEnum.enumValues)[number]
+
+/** Durable intent to publish an application job. Committed with the queue read model. */
+export const applicationDispatches = pgTable('application_dispatches', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  candidateId: uuid('candidate_id').notNull().references(() => huntCandidates.id, { onDelete: 'cascade' }),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  runId: uuid('run_id').notNull().references(() => huntRuns.id, { onDelete: 'cascade' }),
+  portal: text('portal').notNull(),
+  queueName: text('queue_name').notNull().default('hunt-apply'),
+  deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+  cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
+  ...timestamps,
+}, table => [index('application_dispatches_pending_idx').on(table.deliveredAt), index('application_dispatches_candidate_idx').on(table.candidateId)])
+
+export const attemptFlags = pgTable('attempt_flags', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  attemptId: uuid('attempt_id').notNull().references(() => applyAttempts.id, { onDelete: 'cascade' }),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  note: text('note'),
+  status: text('status').notNull().default('open'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(now),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+}, table => [index('attempt_flags_status_idx').on(table.status, table.createdAt)])
+
+
+/** Password recovery tokens are hashed at rest, expire, and are consumed once. */
+export const passwordResetTokens = pgTable('password_reset_tokens', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  tokenHash: text('token_hash').notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  consumedAt: timestamp('consumed_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [uniqueIndex('password_reset_token_hash_idx').on(table.tokenHash), index('password_reset_user_idx').on(table.userId)])
+
+/** Human-supplied form answers for one live attempt. Never browser commands or credentials. */
+export const pendingApplicationQuestions = pgTable('pending_application_questions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  applicationId: uuid('application_id').notNull().references(() => applications.id, { onDelete: 'cascade' }),
+  attemptId: uuid('attempt_id').notNull().references(() => applyAttempts.id, { onDelete: 'cascade' }),
+  host: text('host').notNull(),
+  fieldSignature: text('field_signature').notNull(),
+  fieldName: text('field_name'),
+  label: text('label').notNull(),
+  type: text('type').notNull(),
+  options: jsonb('options').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+  required: boolean('required').notNull(),
+  sensitive: boolean('sensitive').notNull().default(false),
+  status: text('status').notNull().default('pending'),
+  answer: text('answer'),
+  /** AI provenance/evidence stays distinct from explicitly provided user answers. */
+  answerMeta: jsonb('answer_meta').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  remember: boolean('remember').notNull().default(false),
+  blockedReason: text('blocked_reason'),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  answeredAt: timestamp('answered_at', { withTimezone: true }),
+  ...timestamps,
+}, table => [uniqueIndex('pending_questions_attempt_field_idx').on(table.attemptId,table.fieldSignature),index('pending_questions_user_status_idx').on(table.userId,table.status)])
