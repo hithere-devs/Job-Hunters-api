@@ -1,10 +1,11 @@
 import http from 'node:http';
+import {createConnection} from 'node:net';
 import {validAttemptId,validateOpenClawPolicy} from './openclaw-policy.ts';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { existsSync, mkdirSync, writeFileSync, chownSync, chmodSync, renameSync, readFileSync, unlinkSync } from 'node:fs';
 
-import { disconnectAllowed, MAX_RESUME_BYTES } from './lifecycle-policy.ts';
+import { disconnectAllowed, MAX_RESUME_BYTES, gatewayLifecycleAction } from './lifecycle-policy.ts';
 
 const execFileAsync = promisify(execFile);
 const PORT = Number(process.env.VM_AGENT_PORT ?? 18900);
@@ -143,8 +144,29 @@ async function stopProcess(i: number): Promise<boolean> {
   await removeOpenClawPolicy(i);
   return forced;
 }
+async function gatewayLifecycle(i:number,mode:Mode,phase:'before_chrome'|'after_chrome_ready'){
+  const action=gatewayLifecycleAction(mode,phase),unit=`openclaw-gateway-huntly-u${i}.service`;
+  if(!action||!existsSync(`/etc/systemd/system/${unit}`))return;
+  await execFileAsync('systemctl',[action,unit]);
+  if(action==='start'){
+    const port=19789+(i-1)*1000,deadline=Date.now()+15000;
+    while(Date.now()<deadline){
+      const ready=await new Promise<boolean>(resolve=>{
+        const socket=createConnection({host:'127.0.0.1',port});
+        const timer=setTimeout(()=>{socket.destroy();resolve(false)},500);
+        socket.once('connect',()=>{clearTimeout(timer);socket.destroy();resolve(true)});
+        socket.once('error',()=>{clearTimeout(timer);socket.destroy();resolve(false)});
+      });
+      if(ready)return;
+      await new Promise(resolve=>setTimeout(resolve,150));
+    }
+    throw new Error('Tenant application gateway did not become ready');
+  }
+}
 async function launch(i: number, mode: Exclude<Mode,'idle'>) {
   const s = state(i); if (s.mode !== 'idle' && s.child) return null;
+  // A persistent extension relay client must never attach to Flow A.
+  await gatewayLifecycle(i,mode,'before_chrome');
   // Sever old interactive clients before switching modes. The X server, not
   // the UI, enforces read-only input during application execution.
   await execFileAsync('systemctl', ['stop', `huntly-novnc@${i}`, `huntly-x11vnc@${i}`]);
@@ -176,6 +198,7 @@ async function launch(i: number, mode: Exclude<Mode,'idle'>) {
       await new Promise(resolve=>setTimeout(resolve,200));
     }
     if(!ready){await stopProcess(i);throw new Error('Chrome debugging endpoint did not become ready');}
+    try{await gatewayLifecycle(i,mode,'after_chrome_ready');}catch(error){await stopProcess(i);throw error;}
   } else {
     await new Promise(resolve=>setTimeout(resolve,300));
     if(s.child!==child)throw new Error('Chrome exited before the connect session started');
