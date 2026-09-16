@@ -443,9 +443,11 @@ export async function applyApprovedCandidate(
 
     await transition({ attemptId: attempt.id, userId, state: 'submitted', detail: { recipe: result.recipe } })
     await db.update(applyAttempts).set({
+      status: 'submitted',
       submittedFields: audit,
       unresolvedFields: [],
       evidenceStoragePath,
+      completedAt: new Date(),
       updatedAt: new Date(),
     }).where(eq(applyAttempts.id, attempt.id))
     await db.update(huntCandidates).set({ status: 'applied', updatedAt: new Date() }).where(eq(huntCandidates.id, candidateId))
