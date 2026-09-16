@@ -89,6 +89,7 @@ test('nudge uses the existing logical session with steer and is rejected after c
   const start = requests.find((request) => request.method === 'agent')!
   assert.equal(nudge.params.sessionKey, start.params.sessionKey); assert.equal(nudge.params.queueMode, 'steer')
   await client.cancelRun(runId)
+  assert.ok(requests.some((request) => request.method === 'chat.abort' && request.params.runId === nudge.params.idempotencyKey), 'the nudge side run must also be cancelled')
   await assert.rejects(client.nudgeRun(runId, 'Continue'))
 })
 test('ambiguous disconnect never replays the agent RPC automatically', async () => {

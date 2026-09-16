@@ -88,7 +88,11 @@ case. Browser lifecycle remains the VM agent's responsibility.
 `nudgeRun` sends `chat.send` with the same session key, `queueMode=steer`, a unique
 idempotency key and a timeout no greater than the original deadline. It is
 refused after local completion, cancellation or deadline. It does not extend
-the attempt's budget.
+the attempt's budget. The server may create a follow-up run if the primary
+run finishes during steering admission. The client tracks these side-run IDs
+and cancels them before reporting the primary run quiescent. Eight nudges per
+attempt is the limit. The action-policy guard must also expire when the primary
+run ends, rather than relying on prompt steering for isolation.
 
 ## Deadline and failure semantics
 

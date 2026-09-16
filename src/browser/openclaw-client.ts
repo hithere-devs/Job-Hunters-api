@@ -30,7 +30,7 @@ export interface OpenClawClientOptions {
 }
 interface Run {
   id: string; tenant: number; sessionKey: string; deadline: number; text: string
-  listeners: Set<(event: OpenClawEvent) => void>; result?: RunResult
+  listeners: Set<(event: OpenClawEvent) => void>; childRuns: Set<string>; result?: RunResult
   timer?: NodeJS.Timeout; stopping?: Promise<void>; done: Promise<RunResult>; resolve: (result: RunResult) => void
 }
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' ? value as Record<string, unknown> : {}
@@ -168,7 +168,7 @@ export class OpenClawClient {
     for (const file of files) if (!file.startsWith(`/home/huntly-u${tenant}/`) || file.includes('/../') || file.includes('\n')) throw new OpenClawRunError('Run files must be staged inside the tenant home', true)
     let resolve!: (result: RunResult) => void
     const done = new Promise<RunResult>((r) => { resolve = r })
-    const run: Run = { id: options.attemptId, tenant, sessionKey: `agent:main:huntly-apply-${options.attemptId}`, deadline, text: '', listeners: new Set(options.onEvent ? [options.onEvent] : []), done, resolve }
+    const run: Run = { id: options.attemptId, tenant, sessionKey: `agent:main:huntly-apply-${options.attemptId}`, deadline, text: '', childRuns: new Set(), listeners: new Set(options.onEvent ? [options.onEvent] : []), done, resolve }
     this.runs.set(run.id, run)
     run.timer = setTimeout(() => { void this.stop(run, 'timeout') }, Math.max(1, deadline - Date.now()))
     const params = { message: options.prompt + (files.length ? `\nFiles already staged on this tenant:\n${files.join('\n')}` : ''), sessionKey: run.sessionKey, idempotencyKey: options.attemptId, timeout: Math.max(1, Math.ceil((deadline - Date.now()) / 1000)), deliver: false }
@@ -180,7 +180,11 @@ export class OpenClawClient {
       if (run.id !== response.runId) { this.runs.delete(run.id); run.id = response.runId; this.runs.set(run.id, run) }
       void this.monitor(run)
       return { runId: run.id }
-    } catch {
+    } catch (error) {
+      if (error instanceof OpenClawRunError && error.quiescent) {
+        this.finish(run, { runId: run.id, status: 'error', text: '', cancelConfirmed: true, error: error.message })
+        throw error
+      }
       await this.stop(run, 'error')
       throw new OpenClawRunError('OpenClaw start failed; no automatic replay is safe', run.result?.cancelConfirmed === true, run.id)
     }
@@ -198,6 +202,8 @@ export class OpenClawClient {
         const payload = record(await (await this.connection(run.tenant)).rpc('agent.wait', params, params.timeoutMs + 1_000))
         if (this.terminal(payload)) {
           const reply = record(payload.terminalReply)
+          const childrenStopped = await this.stopChildRuns(run)
+          if (!childrenStopped) { this.finish(run, { runId: run.id, status: 'error', text: run.text, cancelConfirmed: false, error: 'OpenClaw nudge cancellation unconfirmed' }); return }
           this.finish(run, { runId: run.id, status: payload.status === 'ok' ? 'ok' : payload.status === 'error' ? 'error' : 'cancelled', text: typeof reply.text === 'string' ? reply.text : run.text, error: typeof payload.error === 'string' ? payload.error : undefined, cancelConfirmed: true })
           return
         }
@@ -205,6 +211,17 @@ export class OpenClawClient {
         await new Promise((resolve) => setTimeout(resolve, 25))
       } catch { await this.stop(run, 'error'); return }
     }
+  }
+  private async stopChildRuns(run: Run): Promise<boolean> {
+    const confirmations = await Promise.all([...run.childRuns].map(async (runId) => {
+      try {
+        const connection = await this.connection(run.tenant)
+        await connection.rpc('chat.abort', { sessionKey: run.sessionKey, runId }, this.options.cancelTimeoutMs ?? 10_000)
+        const result = record(await connection.rpc('agent.wait', { runId, timeoutMs: this.options.cancelTimeoutMs ?? 10_000 }, (this.options.cancelTimeoutMs ?? 10_000) + 1000))
+        return this.terminal(result)
+      } catch { return false }
+    }))
+    return confirmations.every(Boolean)
   }
   private stop(run: Run, status: 'timeout' | 'cancelled' | 'error'): Promise<void> {
     if (run.result) return Promise.resolve()
@@ -218,6 +235,8 @@ export class OpenClawClient {
         await connection.rpc('chat.abort', params, this.options.cancelTimeoutMs ?? 10_000)
         const payload = record(await connection.rpc('agent.wait', { runId: run.id, timeoutMs: this.options.cancelTimeoutMs ?? 10_000 }, (this.options.cancelTimeoutMs ?? 10_000) + 1000))
         cancelConfirmed = this.terminal(payload)
+        const childrenStopped = await this.stopChildRuns(run)
+        cancelConfirmed = cancelConfirmed && childrenStopped
       } catch { /* An acknowledged abort is not proof the browser tools stopped. */ }
       this.finish(run, { runId: run.id, status, text: run.text, cancelConfirmed, error: status === 'timeout' ? 'OpenClaw hard deadline exceeded' : status === 'error' ? 'OpenClaw transport or run failure' : undefined })
     })()
@@ -238,9 +257,15 @@ export class OpenClawClient {
   async nudgeRun(runId: string, message: string): Promise<void> {
     const run = this.requireRun(runId)
     if (run.result || run.stopping || Date.now() >= run.deadline) throw new OpenClawRunError('OpenClaw run is no longer active', Boolean(run.result?.cancelConfirmed), runId)
-    const params = { sessionKey: run.sessionKey, message: message.trim(), queueMode: 'steer', idempotencyKey: `${runId}:nudge:${randomUUID()}`, deliver: false, timeoutMs: Math.max(1, run.deadline - Date.now()) }
+    if (run.childRuns.size >= 8) throw new OpenClawRunError('This attempt has reached its nudge limit', false, runId)
+    const nudgeId = `${runId}:nudge:${randomUUID()}`
+    const params = { sessionKey: run.sessionKey, message: message.trim(), queueMode: 'steer', idempotencyKey: nudgeId, deliver: false, timeoutMs: Math.max(1, run.deadline - Date.now()) }
     if (!params.message || params.message.length > 2000 || !validateChatSendParams(params)) throw new OpenClawRunError('Invalid nudge', false, runId)
-    await (await this.connection(run.tenant)).rpc('chat.send', params)
+    // chat.send creates its own run even when it injects into the primary run.
+    // Keep it under the primary deadline, including acceptance-loss races.
+    run.childRuns.add(nudgeId)
+    const response = record(await (await this.connection(run.tenant)).rpc('chat.send', params))
+    if (typeof response.runId === 'string') run.childRuns.add(response.runId)
   }
   private requireRun(runId: string) { const run = this.runs.get(runId); if (!run) throw new OpenClawRunError('Unknown OpenClaw run', false, runId); return run }
   async close(): Promise<void> { for (const run of this.runs.values()) if (!run.result) await this.stop(run, 'cancelled'); for (const connection of this.connections.values()) (await connection.catch(() => undefined))?.close() }
