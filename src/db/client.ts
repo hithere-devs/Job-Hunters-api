@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres'
 import pg from 'pg'
 import { env, hasDatabase } from '../config/env.js'
@@ -54,13 +55,21 @@ export function getDb(): NodePgDatabase<typeof schema> {
   return database
 }
 
+/** Reuse the transaction connection in nested service/serializer calls. */
+export type DatabaseTransaction = Parameters<Parameters<NodePgDatabase<typeof schema>['transaction']>[0]>[0]
+const transactionContext = new AsyncLocalStorage<DatabaseTransaction>()
+
+export function runWithDatabase<T>(transaction: DatabaseTransaction, work: () => Promise<T>): Promise<T> {
+  return transactionContext.run(transaction, work)
+}
+
 /**
  * Proxy so modules can `import { db }` and read naturally, while the real pool
  * is still only built on first query.
  */
 export const db = new Proxy({} as NodePgDatabase<typeof schema>, {
   get(_target, property, receiver) {
-    return Reflect.get(getDb(), property, receiver)
+    return Reflect.get(transactionContext.getStore() ?? getDb(), property, receiver)
   },
 })
 

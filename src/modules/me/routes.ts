@@ -42,14 +42,14 @@ export const meRouter: Router = Router()
 
 meRouter.use(requireAuth)
 
-async function browserSessionFor(userId: string) {
-  const [row] = await db.select().from(userBrowserSessions).where(eq(userBrowserSessions.userId, userId)).limit(1)
+async function browserSessionFor(userId: string, connection: Pick<typeof db, 'select'> = db) {
+  const [row] = await connection.select().from(userBrowserSessions).where(eq(userBrowserSessions.userId, userId)).limit(1)
   return row
 }
 
-async function allocateBrowserSession(userId: string) {
+async function allocateBrowserSession(userId: string, connection: Pick<typeof db, 'transaction'> = db) {
   // Serialize slot assignment across API processes, not just this Node instance.
-  return db.transaction(async (tx) => {
+  return connection.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`browser-slots:${env.VM_ID}`}))`)
     const [existing] = await tx.select().from(userBrowserSessions).where(eq(userBrowserSessions.userId, userId)).limit(1)
     if (existing) {
@@ -75,11 +75,11 @@ function accessTokenFromRequest(req: { headers: Record<string, string | string[]
 
 meRouter.post('/browser-session/connect', asyncHandler(async (req, res) => {
   const auth = currentUser(req)
-  return withBrowserLifecycle(auth.id, async () => {
-  const session = await allocateBrowserSession(auth.id)
+  return withBrowserLifecycle(auth.id, async (tx) => {
+  const session = await allocateBrowserSession(auth.id, tx)
   // Reuse an interactive window; an active application returns 409 untouched.
   const { expiresAt, outcome } = await ensureTenantConnected(session.tenantIndex)
-  await db.update(userBrowserSessions).set({ status: 'connecting', updatedAt: new Date() }).where(eq(userBrowserSessions.id, session.id))
+  await tx.update(userBrowserSessions).set({ status: 'connecting', updatedAt: new Date() }).where(eq(userBrowserSessions.id, session.id))
   const token = accessTokenFromRequest(req)
   ok(res, {
     streamUrl: `/me/browser-session/stream?token=${encodeURIComponent(token)}&sessionId=${session.id}`,
@@ -92,8 +92,8 @@ meRouter.post('/browser-session/connect', asyncHandler(async (req, res) => {
 
 meRouter.post('/browser-session/disconnect', asyncHandler(async (req, res) => {
   const auth = currentUser(req)
-  return withBrowserLifecycle(auth.id, async () => {
-  const session = await browserSessionFor(auth.id)
+  return withBrowserLifecycle(auth.id, async (tx) => {
+  const session = await browserSessionFor(auth.id, tx)
   if (!session) return ok(res, { connected: false, cookieDomains: [], providers: [] })
 
   if (session.vmId !== env.VM_ID) throw badRequest('Your browser host is unavailable.')
@@ -105,7 +105,7 @@ meRouter.post('/browser-session/disconnect', asyncHandler(async (req, res) => {
   const now = new Date()
   const status = sessionVerificationStatus(providers, session.lastVerifiedAt !== null)
   const profileId = `vm:${session.vmId}:${session.tenantIndex}`
-  await db.transaction(async (tx) => {
+  await tx.transaction(async (tx) => {
     await tx.update(userBrowserSessions).set({ status, cookieDomains: domains, lastVerifiedAt: now, updatedAt: now }).where(eq(userBrowserSessions.id, session.id))
     const [user] = await tx.select({ email: users.email }).from(users).where(eq(users.id, auth.id)).limit(1)
     for (const provider of providers) {
@@ -126,16 +126,16 @@ meRouter.post('/browser-session/disconnect', asyncHandler(async (req, res) => {
 /** Disable Huntly access without deleting credentials or releasing a dirty tenant to another user. */
 meRouter.post('/browser-session/remove', asyncHandler(async (req, res) => {
   const auth = currentUser(req)
-  return withBrowserLifecycle(auth.id, async () => {
+  return withBrowserLifecycle(auth.id, async (tx) => {
   if (req.body?.confirm !== true) throw badRequest('Confirm removal before disconnecting this session.')
-  const session = await browserSessionFor(auth.id)
+  const session = await browserSessionFor(auth.id, tx)
   if (!session) return ok(res, { removed: true, profileDeleted: false })
   if (session.vmId !== env.VM_ID) throw badRequest('Your browser host is unavailable.')
   const live = await getTenantStatus(session.tenantIndex)
   if (live.mode === 'apply') throw new VmAgentBusyError('apply')
   if (live.mode === 'connect') await disconnectTenant(session.tenantIndex)
   const profileId = `vm:${session.vmId}:${session.tenantIndex}`
-  await db.transaction(async (tx) => {
+  await tx.transaction(async (tx) => {
     await tx.update(userBrowserSessions).set({ status: 'absent', cookieDomains: [], lastVerifiedAt: null, updatedAt: new Date() }).where(eq(userBrowserSessions.id, session.id))
     await tx.update(portalAccounts).set({ status: 'absent', browserProfileId: null, lastVerifiedAt: null, actionRequired: 'Session disconnected from Huntly. Reconnect to use it again.', updatedAt: new Date() }).where(and(eq(portalAccounts.userId, auth.id), eq(portalAccounts.browserProfileId, profileId)))
   })

@@ -1,6 +1,5 @@
-import { withBrowserLifecycle } from './lifecycle.js'
+import { withBrowserLifecycle, type BrowserTransaction } from './lifecycle.js'
 import { and, eq } from 'drizzle-orm'
-import { db } from '../db/client.js'
 import { userBrowserSessions } from '../db/schema.js'
 import { assertTenantCdpUrl, assertVmProfileOwner, parseVmProfile, selectBrowserProvider } from './profile-policy.js'
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core'
@@ -192,12 +191,12 @@ async function openLocal(options: SessionOptions, slot: Slot): Promise<AgentSess
 
 async function openVm(options: SessionOptions, slot: Slot): Promise<AgentSession> {
   if (!options.userId) throw serviceUnavailable('A user-owned browser profile is required.')
-  return withBrowserLifecycle(options.userId, () => openVmLocked(options, slot))
+  return withBrowserLifecycle(options.userId, (tx) => openVmLocked(options, slot, tx))
 }
 
-async function openVmLocked(options: SessionOptions, slot: Slot): Promise<AgentSession> {
+async function openVmLocked(options: SessionOptions, slot: Slot, tx: BrowserTransaction): Promise<AgentSession> {
   const tenantIndex = parseVmProfile(options.profileId ?? '', env.VM_ID)
-  const [owner] = await db.select().from(userBrowserSessions).where(and(eq(userBrowserSessions.vmId, env.VM_ID), eq(userBrowserSessions.tenantIndex, tenantIndex))).limit(1)
+  const [owner] = await tx.select().from(userBrowserSessions).where(and(eq(userBrowserSessions.vmId, env.VM_ID), eq(userBrowserSessions.tenantIndex, tenantIndex))).limit(1)
   assertVmProfileOwner(owner, options.userId, env.VM_ID, tenantIndex)
   const info = await applyTenant(tenantIndex)
   let browser: Browser

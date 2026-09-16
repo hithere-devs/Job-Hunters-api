@@ -1,6 +1,7 @@
+import { saveGoogleState, consumeGoogleState } from './oauth-state.js'
 import crypto from 'node:crypto'
 import { and, eq, isNull, lt, or, sql } from 'drizzle-orm'
-import { db } from '../../db/client.js'
+import { db, runWithDatabase } from '../../db/client.js'
 import { huntSpecs, kits, refreshTokens, users, type User } from '../../db/schema.js'
 import { badRequest, conflict, serviceUnavailable, unauthorized } from '../../lib/errors.js'
 import {
@@ -42,26 +43,15 @@ export function avatarFor(email: string): string {
 
 /* ------------------------------------------------------------ Google login */
 
-/** Short-lived, single-use login states. The state never contains user data. */
-const pendingGoogleStates = new Map<string, { at: number }>()
-
-function sweepGoogleStates(): void {
-  const cutoff = Date.now() - 10 * 60_000
-  for (const [state, entry] of pendingGoogleStates) {
-    if (entry.at < cutoff) pendingGoogleStates.delete(state)
-  }
-}
-
-export function startGoogleSignIn(): string {
+export async function startGoogleSignIn(): Promise<string> {
   if (!hasGoogleAuth || !env.GOOGLE_CLIENT_ID || !env.GOOGLE_AUTH_REDIRECT) {
     throw serviceUnavailable(
       'Google login is not configured. Set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and GOOGLE_AUTH_REDIRECT.',
     )
   }
 
-  sweepGoogleStates()
   const state = crypto.randomBytes(24).toString('base64url')
-  pendingGoogleStates.set(state, { at: Date.now() })
+  await saveGoogleState(state)
 
   const url = new URL('https://accounts.google.com/o/oauth2/v2/auth')
   url.searchParams.set('client_id', env.GOOGLE_CLIENT_ID)
@@ -110,9 +100,7 @@ export async function completeGoogleSignIn(
   state: string,
   context: RequestContext,
 ): Promise<AuthSession> {
-  const pending = pendingGoogleStates.get(state)
-  pendingGoogleStates.delete(state)
-  if (!pending || pending.at < Date.now() - 10 * 60_000) {
+  if (!await consumeGoogleState(state)) {
     throw badRequest('That Google sign-in link has expired. Start again.')
   }
   if (!hasGoogleAuth || !env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET || !env.GOOGLE_AUTH_REDIRECT) {
@@ -216,7 +204,7 @@ async function issueSession(user: User, context: RequestContext, connection?: Pi
     return db.transaction(async (tx) => {
       const [current] = await tx.select().from(users).where(eq(users.id, user.id)).for('update').limit(1)
       if (!current || current.authVersion !== user.authVersion || current.passwordHash !== user.passwordHash) throw unauthorized('Your account changed during sign-in. Please sign in again.')
-      return issueSession(current, context, tx)
+      return runWithDatabase(tx, () => issueSession(current, context, tx))
     })
   }
 
@@ -339,7 +327,7 @@ export async function refreshSession(
     const [row] = await tx.select().from(refreshTokens).where(and(eq(refreshTokens.id, payload.jti), eq(refreshTokens.userId, payload.sub))).for('update').limit(1)
     if (!row || row.tokenHash !== presentedHash) throw unauthorized('Refresh token is not recognised.')
     if (row.revokedAt || row.expiresAt.getTime() <= Date.now()) throw unauthorized('This session has ended. Sign in again.')
-    const session = await issueSession(user, context, tx)
+    const session = await runWithDatabase(tx, () => issueSession(user, context, tx))
     const newPayload = verifyRefreshToken(session.refreshToken)
     await tx.update(refreshTokens).set({ revokedAt: new Date(), replacedByTokenId: newPayload.jti }).where(eq(refreshTokens.id, row.id))
     return session

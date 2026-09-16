@@ -73,7 +73,7 @@ authRouter.post(
   '/google/start',
   authLimiter,
   asyncHandler(async (_req, res) => {
-    ok(res, { authorizeUrl: startGoogleSignIn() })
+    ok(res, { authorizeUrl: await startGoogleSignIn() })
   }),
 )
 

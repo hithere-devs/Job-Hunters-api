@@ -27,3 +27,13 @@ A production SMTP end-to-end delivery/reset test has **not** been performed. Rec
 ## Verification boundaries
 
 No provider login was automated, no passwords or cookie values were inspected, no profile was reset or deleted, and no real application was submitted. Unit tests cover mode conflict/reconnect, strict tenant routing/ownership/CDP checks, CSRF rejection, readiness aggregation, supported catalogue, reset-token schema/link policy, and versioned JWTs. Full route/reset transaction integration requires applying the additive migration first.
+
+## Transaction and multi-process hardening
+
+Browser lifecycle operations use a shared PostgreSQL advisory try-lock; the callback and nested services reuse the same transaction connection. A competing operation returns a retryable conflict rather than waiting indefinitely. `runWithDatabase()` preserves that connection through asynchronous serializer/service calls, including password-session issuance. This avoids a pool-starvation deadlock at `DATABASE_POOL_MAX=1`.
+
+Refresh rotation, password reset, and password changes serialize on the user row. A refresh token is consumed and its replacement persisted in one transaction; reset cannot race a replacement token into existence after revocation. Session issuance rechecks the authenticated user's password hash and auth version under the same lock. Logout-all also increments auth version.
+
+Google OAuth states now live in shared Redis with a ten-minute TTL, hashed keys, and atomic one-time consumption. Dedicated bounded Redis commands return unavailable rather than hanging during a Redis outage. This requires Redis access from every API replica.
+
+After the additive migration, run `DATABASE_POOL_MAX=1 node --env-file=.env --import tsx src/scripts/verify-auth-transactions.ts`. The fixture tests lifecycle nested queries, signup serializers, onboarding retry, refresh rotation, one-use reset, and revocation, then rolls back all fixture rows.
