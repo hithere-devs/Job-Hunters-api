@@ -37,10 +37,13 @@ import { provisionPortalAccount } from './portal-accounts.js'
 import { createMinimalResumeVariant } from './tailoring.js'
 import { fillForm, hasSubmitControl, hasSubmissionConfirmation, submitForm } from './apply/fill.js'
 import { countryCodeFor } from './apply/work-authorisation.js'
+import { applyWithOpenClaw, loadOpenClawDossier, OpenClawApplyError, verifyOpenClawFilledFields } from './apply/openclaw-apply.js'
+import { uploadTenantResume } from '../browser/vm-client.js'
+import { parseVmProfile } from '../browser/profile-policy.js'
 import { ApplicationDeferredError } from './application-policy.js'
 import { publishAttemptEvent } from './apply/events.js'
 import { waitForApplicationAnswers } from './apply/live-questions.js'
-import { beforeSubmission, submissionWasAttempted, withSubmissionGuard } from './apply/submission-guard.js'
+import { beforeSubmission, noteUnexpectedSubmission, submissionWasAttempted, withSubmissionGuard } from './apply/submission-guard.js'
 import { transition } from './apply/state.js'
 import { awaitTakeover, isWatched, startScreencast } from './apply/screencast.js'
 
@@ -71,7 +74,9 @@ export async function applyApprovedCandidate(
   let submissionConfirmed = false
   return withSubmissionGuard(async () => {
   options?.signal?.throwIfAborted()
-  if(!(options?.dryRun??env.APPLY_DRY_RUN)&&!hasApplyAgent)throw badRequest('The autonomous browser model is not configured. No live application can be submitted until it is available.')
+  const useOpenClaw = env.APPLY_DRIVER === 'openclaw'
+  const hasReasoningDriver = hasApplyAgent || useOpenClaw
+  if(!(options?.dryRun??env.APPLY_DRY_RUN)&&!hasReasoningDriver)throw badRequest('The autonomous browser model is not configured. No live application can be submitted until it is available.')
   const [candidateState] = await db
     .select({ resumeVariantId: huntCandidates.resumeVariantId, runId: huntCandidates.runId })
     .from(huntCandidates)
@@ -213,7 +218,8 @@ export async function applyApprovedCandidate(
     await transition({ attemptId: attempt.id, userId, state: 'opening', detail: { applyUrl, dryRun } })
 
     const resumePath = path.join(scratch, path.basename(row.variant.fileName))
-    await writeFile(resumePath, await downloadObject(row.variant.storagePath))
+    const resumeBytes = await downloadObject(row.variant.storagePath)
+    await writeFile(resumePath, resumeBytes)
     const page = session.page
     try {
       await page.goto(applyUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 })
@@ -275,8 +281,8 @@ export async function applyApprovedCandidate(
     let unresolved = result.unresolved
     let agentSubmitted = false
     let agentElapsedMs=0
-    let agentCanSubmit=!hasApplyAgent
-    for(let round=0;round<(hasApplyAgent?3:1);round++){
+    let agentCanSubmit=!hasReasoningDriver
+    for(let round=0;round<(useOpenClaw?1:hasApplyAgent?3:1);round++){
       options?.signal?.throwIfAborted()
       if(submissionWasAttempted()||agentElapsedMs>=600_000)break
       unresolved=await waitForApplicationAnswers({page,userId,applicationId:application.id,attemptId:attempt.id,unresolved,
@@ -284,16 +290,16 @@ export async function applyApprovedCandidate(
       const providedRows=await db.select().from(pendingApplicationQuestions).where(and(eq(pendingApplicationQuestions.userId,userId),eq(pendingApplicationQuestions.attemptId,attempt.id),eq(pendingApplicationQuestions.status,'applied')))
       const providedAnswers:ProvidedFormAnswer[]=providedRows.filter(q=>q.answer!==null&&!forbiddenQuestion({label:q.label,type:q.type,name:q.fieldName??undefined})).map(q=>({label:q.label,name:q.fieldName??undefined,type:q.type,host:q.host,value:q.answer!,source:q.answerMeta.source==='profile_ai'?'profile_ai':'user'}))
 
-    // Muse reviews every page after cheap profile filling and semantic answer
+    // The reasoning driver reviews the remainder after cheap profile filling and semantic answer
     // resolution. Missing facts are questions, never a reason to skip reasoning.
     const agentRoundStarted=Date.now()
-    if (hasApplyAgent) {
+    if (hasReasoningDriver) {
       await transition({
         attemptId: attempt.id,
         userId,
         state: 'filling',
         detail: {
-          tier: 'agent',
+          tier: useOpenClaw ? 'openclaw' : 'agent',
           reason:
             result.fields.length === 0
               ? 'no_form_found'
@@ -306,12 +312,44 @@ export async function applyApprovedCandidate(
         // A site skill knows things the generic path cannot: that Work at a
         // Startup's application *is* a message to the founders, for instance.
         // Without one, the generic agent runs on the same session.
-        const agent = await applyWithAgent({
-          session,userId,applyUrl,dryRun,profile,resumePath,
+        const legacy = async () => applyWithAgent({
+          session:session!,userId,applyUrl,dryRun:useOpenClaw?true:dryRun,profile,resumePath,
           job:{title:row.job.title,company:row.job.company},providedAnswers,
           resumeCurrentPage:true,playbook:skill?await skill.playbook():undefined,
-          maxSteps:Math.min(env.APPLY_AGENT_MAX_STEPS,18),maxDurationMs:Math.max(1,600_000-agentElapsedMs),
+          maxSteps:Math.min(env.APPLY_AGENT_MAX_STEPS,18),maxDurationMs:Math.max(1,600_000-agentElapsedMs-(Date.now()-agentRoundStarted)),
         })
+        let agent: Awaited<ReturnType<typeof applyWithAgent>>
+        if (useOpenClaw) {
+          if (session.provider !== 'vm' || !profileId) throw new OpenClawApplyError('OpenClaw requires an owned VM browser profile.', false)
+          const tenantIndex = parseVmProfile(profileId, env.VM_ID)
+          const stagedResume = await uploadTenantResume(tenantIndex, Buffer.from(resumeBytes))
+          const dossier = await loadOpenClawDossier(userId, attempt.id, [host, new URL(page.url()).hostname])
+          try {
+            agent = await applyWithOpenClaw({
+              tenantIndex: tenantIndex, attemptId: attempt.id, applyUrl, currentUrl: page.url(), resumePath: stagedResume.path, profile, dossier,
+              job: { title: row.job.title, company: row.job.company, countries: authorisation.jobCountries, description: row.job.descriptionText ?? undefined },
+              unresolved, timeoutMs: env.OPENCLAW_RUN_TIMEOUT_MS, signal: options?.signal,
+              onLifecycle: async event => {
+                if (event.state === 'step') {
+                  publishAttemptEvent(userId, { type: 'state', attemptId: attempt.id, state: 'filling', reason: null,
+                    detail: { tier: 'openclaw', runId: event.runId, stage: 'reasoning' }, at: new Date().toISOString() })
+                  return
+                }
+                await transition({ attemptId: attempt.id, userId, state: 'filling',
+                  detail: { tier: 'openclaw', runId: event.runId, tenantIndex: tenantIndex, lifecycle: event.state, ...event.detail } })
+              },
+            })
+          } catch (error) {
+            if (error instanceof OpenClawApplyError && error.possibleSubmission) await noteUnexpectedSubmission()
+            options?.signal?.throwIfAborted()
+            if (!(error instanceof OpenClawApplyError) || !error.safeToFallback || !hasApplyAgent) throw error
+            await transition({ attemptId: attempt.id, userId, state: 'filling', detail: { tier: 'legacy_fallback', reason: 'openclaw_stopped' } })
+            // Kept until three postings across two ATS families pass. This
+            // driver also stops before submit; only submitForm below clicks it.
+            agent = await legacy()
+          }
+        } else agent = await legacy()
+        if (useOpenClaw) agent.filled = await verifyOpenClawFilledFields(page, agent.filled)
         agentCanSubmit=agent.canSubmit===true
         logger.info(
           { attemptId: attempt.id, skill: skill?.manifest.id ?? null, reached: agent.reached, filled: agent.filled.length, blocked: agent.blocked.length },
@@ -359,7 +397,7 @@ export async function applyApprovedCandidate(
       } catch (error) {
         // A failed agent must not lose the deterministic tier's work — the
         // attempt falls through to review with whatever the ladder managed.
-        if (submissionWasAttempted()) throw error
+        if (submissionWasAttempted() || error instanceof OpenClawApplyError && !error.safeToFallback) throw error
         logger.warn({ err: error, attemptId: attempt.id }, 'agent tier failed; keeping ladder result')
       }
     }
@@ -380,10 +418,10 @@ export async function applyApprovedCandidate(
     }
 
       if(agentSubmitted||unresolved.length>0)break
-      if(needsPostAnswerReview&&hasApplyAgent){agentCanSubmit=false;continue}
-      if(!hasApplyAgent||agentCanSubmit)break
+      if(needsPostAnswerReview&&hasReasoningDriver){agentCanSubmit=false;continue}
+      if(!hasReasoningDriver||agentCanSubmit)break
     }
-    if(hasApplyAgent&&!agentSubmitted&&!agentCanSubmit&&unresolved.length===0){
+    if(hasReasoningDriver&&!agentSubmitted&&!agentCanSubmit&&unresolved.length===0){
       unresolved=[{label:'The browser agent could not complete this page within its bounded reasoning budget. No final submission was attempted.',type:'automation',why:'automation_limit'}]
     }
 
