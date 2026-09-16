@@ -105,6 +105,9 @@ const schema = z.object({
    * kept for offline development and for tests.
    */
   BROWSER_PROVIDER: z.enum(['browser-use', 'local']).default('browser-use'),
+  VM_AGENT_URL: optionalUrl.default('http://127.0.0.1:18900'),
+  VM_AGENT_TOKEN: optionalString,
+  VM_ID: z.string().default('openclaw-vm'),
   BROWSER_USE_API_KEY: optionalString,
   BROWSER_USE_API_BASE: z.string().url().default('https://api.browser-use.com/api/v4'),
   /**
@@ -345,6 +348,7 @@ export const hasFirecrawl = Boolean(env.FIRECRAWL_API_KEY)
 
 /** Hosted browsers. Without a key the browser provider falls back to local. */
 export const hasBrowserUse = Boolean(env.BROWSER_USE_API_KEY)
+export const hasVmAgent = Boolean(env.VM_AGENT_TOKEN)
 
 /** What `openSession` will actually do, once the key situation is accounted for. */
 export const browserProvider: 'browser-use' | 'local' =

@@ -1,12 +1,14 @@
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { Router } from 'express'
 import { db } from '../../db/client.js'
-import { kits, users, type Kit } from '../../db/schema.js'
+import { kits, portalAccounts, userBrowserSessions, users, type Kit } from '../../db/schema.js'
 import { badRequest, notFound } from '../../lib/errors.js'
 import { asyncHandler, created, noContent, ok, pathParam } from '../../lib/http.js'
 import { buildObjectKey, createSignedUrl, removeObject, uploadObject } from '../../lib/storage.js'
 import { currentUser, requireAuth } from '../../middleware/auth.js'
 import { photoUpload } from '../../middleware/upload.js'
+import { connectTenant, disconnectTenant } from '../../browser/vm-client.js'
+import { env } from '../../config/env.js'
 import { validate } from '../../middleware/validate.js'
 import {
   serializeEmployment,
@@ -36,6 +38,60 @@ import {
 export const meRouter: Router = Router()
 
 meRouter.use(requireAuth)
+
+async function browserSessionFor(userId: string) {
+  const [row] = await db.select().from(userBrowserSessions).where(eq(userBrowserSessions.userId, userId)).limit(1)
+  return row
+}
+
+async function allocateBrowserSession(userId: string) {
+  const existing = await browserSessionFor(userId)
+  if (existing) return existing
+  const occupied = await db.select({ tenantIndex: userBrowserSessions.tenantIndex }).from(userBrowserSessions).where(eq(userBrowserSessions.vmId, env.VM_ID))
+  const used = new Set(occupied.map((r) => r.tenantIndex))
+  const tenantIndex = Array.from({ length: 10 }, (_, n) => n + 1).find((n) => !used.has(n))
+  if (!tenantIndex) throw badRequest('All browser session slots are in use.')
+  const [createdRow] = await db.insert(userBrowserSessions).values({ userId, vmId: env.VM_ID, tenantIndex }).returning()
+  if (!createdRow) throw badRequest('Could not allocate a browser session slot.')
+  return createdRow
+}
+
+function accessTokenFromRequest(req: { headers: Record<string, string | string[] | undefined> }): string {
+  const value = req.headers.authorization
+  return typeof value === 'string' && value.startsWith('Bearer ') ? value.slice(7) : ''
+}
+
+meRouter.post('/browser-session/connect', asyncHandler(async (req, res) => {
+  const auth = currentUser(req)
+  const session = await allocateBrowserSession(auth.id)
+  const info = await connectTenant(session.tenantIndex)
+  await db.update(userBrowserSessions).set({ status: 'connecting', updatedAt: new Date() }).where(eq(userBrowserSessions.id, session.id))
+  const token = accessTokenFromRequest(req)
+  ok(res, { streamUrl: `/me/browser-session/stream?token=${encodeURIComponent(token)}&sessionId=${session.id}`, tenantIndex: session.tenantIndex, expiresAt: info.expiresAt })
+}))
+
+meRouter.post('/browser-session/disconnect', asyncHandler(async (req, res) => {
+  const auth = currentUser(req)
+  const session = await browserSessionFor(auth.id)
+  if (!session) return ok(res, { connected: false, cookieDomains: [] })
+  const result = await disconnectTenant(session.tenantIndex)
+  const domains = result.cookieDomains
+  const now = new Date()
+  await db.update(userBrowserSessions).set({ status: 'ready', cookieDomains: domains, lastVerifiedAt: now, updatedAt: now }).where(eq(userBrowserSessions.id, session.id))
+  const profileId = `vm:${session.vmId}:${session.tenantIndex}`
+  const providerDomains: Array<[string, string]> = [['google', '.google.com'], ['wellfound', '.wellfound.com'], ['instahyre', '.instahyre.com']]
+  for (const [portalId, domain] of providerDomains) {
+    if (!domains.some((d) => d === domain || d.endsWith(domain))) continue
+    await db.update(portalAccounts).set({ status: 'ready', browserProfileId: profileId, lastVerifiedAt: now, updatedAt: now }).where(and(eq(portalAccounts.userId, auth.id), eq(portalAccounts.portalId, portalId)))
+  }
+  ok(res, { connected: false, cookieDomains: domains })
+}))
+
+meRouter.get('/browser-session', asyncHandler(async (req, res) => {
+  const auth = currentUser(req)
+  const session = await browserSessionFor(auth.id)
+  ok(res, session ? { status: session.status, cookieDomains: session.cookieDomains, lastVerifiedAt: session.lastVerifiedAt, providers: ['google', 'wellfound', 'instahyre'].map((id) => ({ id, verified: (session.cookieDomains ?? []).some((d) => d.includes(id === 'google' ? 'google.com' : `${id}.com`)) })) } : { status: 'absent', cookieDomains: [], lastVerifiedAt: null, providers: [] })
+}))
 
 async function serializeKitResponse(kit: Kit | undefined) {
   const data = serializeKit(kit)

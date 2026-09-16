@@ -1,6 +1,7 @@
 import { relations, sql } from 'drizzle-orm'
 import {
   boolean,
+  check,
   date,
   index,
   integer,
@@ -629,6 +630,25 @@ export const portalAccounts = pgTable(
     ...timestamps,
   },
   (table) => [uniqueIndex('portal_accounts_user_portal_idx').on(table.userId, table.portalId)],
+)
+
+export const userBrowserSessions = pgTable(
+  'user_browser_sessions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+    vmId: text('vm_id').notNull(),
+    tenantIndex: smallint('tenant_index').notNull(),
+    status: text('status').notNull().default('absent'),
+    cookieDomains: jsonb('cookie_domains').$type<string[]>().notNull().default([]),
+    lastVerifiedAt: timestamp('last_verified_at', { withTimezone: true }),
+    ...timestamps,
+  },
+  (table) => [
+    check('user_browser_sessions_tenant_index_check', sql`${table.tenantIndex} between 1 and 10`),
+    uniqueIndex('user_browser_sessions_user_idx').on(table.userId),
+    uniqueIndex('user_browser_sessions_slot_idx').on(table.vmId, table.tenantIndex),
+  ],
 )
 
 export const applyAttempts = pgTable(
@@ -1595,6 +1615,7 @@ export type EmailAccount = typeof emailAccounts.$inferSelect
 export type EmailMessage = typeof emailMessages.$inferSelect
 export type NewEmailMessage = typeof emailMessages.$inferInsert
 export type Notification = typeof notifications.$inferSelect
+export type UserBrowserSession = typeof userBrowserSessions.$inferSelect
 
 export type ApplicationStatus = (typeof applicationStatusEnum.enumValues)[number]
 export type ReferralSource = (typeof referralSourceEnum.enumValues)[number]

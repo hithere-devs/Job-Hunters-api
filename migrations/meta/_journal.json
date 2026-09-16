@@ -134,6 +134,13 @@
       "when": 1788711694628,
       "tag": "0019_next_mandroid",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1789527380115,
+      "tag": "0020_user_browser_sessions",
+      "breakpoints": true
     }
   ]
 }

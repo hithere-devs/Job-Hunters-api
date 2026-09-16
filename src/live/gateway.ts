@@ -1,8 +1,8 @@
 import type { Server } from 'node:http'
-import { WebSocketServer, type WebSocket } from 'ws'
+import WebSocket, { WebSocketServer, type WebSocket as WebSocketLike } from 'ws'
 import { and, eq } from 'drizzle-orm'
 import { db } from '../db/client.js'
-import { applyAttempts, playgroundRuns } from '../db/schema.js'
+import { applyAttempts, playgroundRuns, userBrowserSessions } from '../db/schema.js'
 import { env } from '../config/env.js'
 import { logger } from '../lib/logger.js'
 import { verifyAccessToken } from '../lib/jwt.js'
@@ -30,7 +30,7 @@ const PLAYGROUND_PATH = /^\/live\/playground\/([0-9a-f-]{36})$/i
 const WATCH_REFRESH_MS = 20_000
 
 interface Client {
-  socket: WebSocket
+  socket: WebSocketLike
   userId: string
   attemptId: string
   unsubscribe: () => void
@@ -44,6 +44,27 @@ export function attachLiveGateway(server: Server): WebSocketServer {
 
   server.on('upgrade', (request, socket, head) => {
     const url = new URL(request.url ?? '', `http://${request.headers.host ?? 'localhost'}`)
+    if (url.pathname === '/me/browser-session/stream') {
+      const token = url.searchParams.get('token') ?? ''
+      const sessionId = url.searchParams.get('sessionId') ?? ''
+      let userId: string
+      try { userId = verifyAccessToken(token).sub } catch { socket.destroy(); return }
+      void (async () => {
+        const [session] = await db.select().from(userBrowserSessions).where(and(eq(userBrowserSessions.id, sessionId), eq(userBrowserSessions.userId, userId))).limit(1).catch(() => [])
+        if (!session) { socket.destroy(); return }
+        const upstream = new WebSocket(`ws://127.0.0.1:${6100 + session.tenantIndex}`)
+        upstream.once('open', () => {
+          wss.handleUpgrade(request, socket, head, (client) => {
+            upstream.on('message', (data, isBinary) => { if (client.readyState === client.OPEN) client.send(data, { binary: isBinary }) })
+            client.on('message', (data, isBinary) => { if (upstream.readyState === upstream.OPEN) upstream.send(data, { binary: isBinary }) })
+            const close = () => { if (upstream.readyState === upstream.OPEN) upstream.close(); if (client.readyState === client.OPEN) client.close() }
+            client.on('close', close); client.on('error', close); upstream.on('close', close); upstream.on('error', close)
+          })
+        })
+        upstream.once('error', () => socket.destroy())
+      })()
+      return
+    }
     const playground = PLAYGROUND_PATH.exec(url.pathname)
     const match = playground ?? PATH.exec(url.pathname)
     if (!match) {
@@ -108,7 +129,7 @@ export function attachLiveGateway(server: Server): WebSocketServer {
     })()
   })
 
-  function accept(socket: WebSocket, userId: string, attemptId: string): void {
+  function accept(socket: WebSocketLike, userId: string, attemptId: string): void {
     void markWatching(attemptId)
 
     const unsubscribe = subscribeToAttempts(userId, (payload: AttemptEventPayload) => {
@@ -152,7 +173,7 @@ export function attachLiveGateway(server: Server): WebSocketServer {
    * user clicks in the real thing — anything typed instead goes over HTTP,
    * where it can be validated and recorded.
    */
-  function acceptPlayground(socket: WebSocket, userId: string, runId: string): void {
+  function acceptPlayground(socket: WebSocketLike, userId: string, runId: string): void {
     const unsubscribe = subscribeToPlayground(userId, (payload: PlaygroundEvent) => {
       // One socket watches one run; everything else on this user's channel
       // belongs to a different tab.
