@@ -63,15 +63,41 @@ export async function waitForApplicationAnswers(params:{page:Page;userId:string;
  }
 
  const expiresAt=new Date(Date.now()+(params.timeoutMs??LIVE_QUESTION_TIMEOUT_MS))
- const priorRows=await db.select().from(pendingApplicationQuestions).where(and(eq(pendingApplicationQuestions.userId,userId),eq(pendingApplicationQuestions.applicationId,applicationId),eq(pendingApplicationQuestions.host,host),ne(pendingApplicationQuestions.attemptId,attemptId),inArray(pendingApplicationQuestions.status,['answered','applied','skipped']))).orderBy(desc(pendingApplicationQuestions.updatedAt)).limit(100)
+ /**
+  * Prior answers, across every application this user has ever made.
+  *
+  * This used to be scoped by `applicationId`, which meant an answer was only
+  * ever reused inside the job it was given for. "What is your location?" was
+  * asked again on the next posting, and the one after that — so every single
+  * application stopped and waited for a human, and applying unattended was
+  * impossible by construction.
+  *
+  * Reuse is still gated: `validateLiveAnswer` below re-checks the stored answer
+  * against *this* field's current options, so a stale or mismatched answer
+  * becomes a question again rather than being forced in.
+  */
+ const priorRows=await db.select().from(pendingApplicationQuestions).where(and(eq(pendingApplicationQuestions.userId,userId),ne(pendingApplicationQuestions.attemptId,attemptId),inArray(pendingApplicationQuestions.status,['answered','applied','skipped']))).orderBy(desc(pendingApplicationQuestions.updatedAt)).limit(400)
+ const plainLabel=(value:string)=>normaliseLabel(value).toLowerCase().replace(/\s*[-–—]\s*no fact provided$/i,'')
  for(const field of captured){
   const signature=fieldSignature(field)
   const commonKey=canonicalCommonQuestionKey(field)
-  const label=normaliseLabel(field.label).toLowerCase().replace(/\s*[-–—]\s*no fact provided$/i,'')
-  const prior=priorRows.find(q=>q.fieldSignature===signature || ((!q.fieldName&&q.options.length===0)&&(normaliseLabel(q.label).toLowerCase().replace(/\s*[-–—]\s*no fact provided$/i,'')===label || (commonKey&&canonicalCommonQuestionKey(capturedField(q))===commonKey))))
+  const label=plainLabel(field.label)
+  const matches=(q:typeof priorRows[number])=>q.fieldSignature===signature || ((!q.fieldName&&q.options.length===0)&&(plainLabel(q.label)===label || (commonKey&&canonicalCommonQuestionKey(capturedField(q))===commonKey)))
+  // Same host first — an option list is a property of the form, not of the
+  // question. Only carry an answer to a different host when it is a question
+  // we recognise generically, or plain free text with no options to mismatch.
+  const prior=priorRows.find(q=>q.host===host&&matches(q))
+   ?? priorRows.find(q=>q.host!==host&&matches(q)&&(Boolean(commonKey)||((field.options??[]).length===0&&q.options.length===0)))
   let inherited:string|null=null
   if(prior?.answer){try{inherited=validateLiveAnswer(field,{answer:prior.answer,remember:prior.remember,skip:false})}catch{}}
-  await db.insert(pendingApplicationQuestions).values({userId,applicationId,attemptId,host,fieldSignature:signature,fieldName:field.name??null,label:field.label,type:field.type,options:field.options??[],required:field.required,sensitive:Boolean(sensitiveReason(field.label,field.options)),status:inherited?'answered':prior?.status==='skipped'&&!field.required?'skipped':'pending',answer:inherited,remember:prior?.answerMeta.source==='profile_ai'?false:(prior?.remember??false),answerMeta:inherited?(prior?.answerMeta??{}):{},expiresAt,blockedReason:prior?.answer&&!inherited?'Your previous answer is saved, but does not match the provider’s current options. Please confirm a choice for this exact question.':null}).onConflictDoNothing()
+  // Remembering is the default for anything safe to reuse. Defaulting to false
+  // meant a user had to opt in per question, and almost nobody does — so the
+  // long-term `field_answers` cache stayed empty and every answer was thrown
+  // away the moment the application finished. Sensitive questions are excluded
+  // here exactly as they are everywhere else.
+  const sensitive=Boolean(sensitiveReason(field.label,field.options))
+  const remember=prior?.answerMeta.source==='profile_ai'?false:(prior?.remember??(!sensitive&&canReuseExplicitAnswer(field)))
+  await db.insert(pendingApplicationQuestions).values({userId,applicationId,attemptId,host,fieldSignature:signature,fieldName:field.name??null,label:field.label,type:field.type,options:field.options??[],required:field.required,sensitive,status:inherited?'answered':prior?.status==='skipped'&&!field.required?'skipped':'pending',answer:inherited,remember,answerMeta:inherited?(prior?.answerMeta??{}):{},expiresAt,blockedReason:prior?.answer&&!inherited?'Your previous answer is saved, but does not match the provider’s current options. Please confirm a choice for this exact question.':null}).onConflictDoNothing()
  }
  if(params.resolveWithProfile!==false){
   await transition({attemptId,userId,state:'resolving_answers',detail:{questionCount:captured.length}})

@@ -185,7 +185,11 @@ const HEURISTICS: Array<[RegExp, keyof PortalProfile | string]> = [
   [/\bgithub\b/i, 'github'],
   [/\b(?:portfolio|website|personal site)\b/i, 'portfolio'],
   [/\b(?:address|street)\b/i, 'addressLine1'],
-  [/\bcity\b|\btown\b/i, 'city'],
+  // `Location` on its own is what Ashby and Greenhouse label the city field,
+  // and it blocked live applications as an `unknown_field` while the answer sat
+  // in the kit. Anchored so it does not swallow "Location preference" or
+  // "Are you willing to relocate", which are different questions.
+  [/^\s*(?:current\s+)?location\s*\*?\s*$|\bcity\b|\btown\b|\b(?:current|based\s+in)\s+location\b/i, 'city'],
   [/\b(?:state|province|region)\b/i, 'region'],
   [/\b(?:postal|zip|pin)\s*code\b/i, 'postalCode'],
   [/\bcountry\b/i, 'country'],

@@ -137,6 +137,20 @@ describe('heuristic mapping', () => {
     assert.equal(heuristicMatch({ label: 'When can you start?', type: 'text', required: false }), 'noticePeriod')
   })
 
+  it('maps a bare "Location" label to the city on file', () => {
+    // From a live Ashby form. This was blocking real applications as an
+    // `unknown_field` while the answer sat in the kit the whole time.
+    assert.equal(heuristicMatch({ label: 'Location', type: 'text', required: true }), 'city')
+    assert.equal(heuristicMatch({ label: 'Location*', type: 'text', required: true }), 'city')
+    assert.equal(heuristicMatch({ label: 'Current Location', type: 'text', required: true }), 'city')
+  })
+
+  it('does not treat a relocation question as a location field', () => {
+    // These ask something else entirely, and filling a city into them is wrong.
+    assert.notEqual(heuristicMatch({ label: 'Are you willing to relocate?', type: 'text', required: true }), 'city')
+    assert.notEqual(heuristicMatch({ label: 'Location preference for this role', type: 'text', required: false }), 'city')
+  })
+
   it('does not match a phrase buried in a long question', () => {
     // From a live GitLab form. "current employer" appears, but the question is
     // legal and the answer is not a company name.
