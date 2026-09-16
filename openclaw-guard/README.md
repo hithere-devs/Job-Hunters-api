@@ -48,7 +48,7 @@ The gateway session key must equal `agent:main:huntly-apply-${attemptId}`. Missi
 
 Deadlines are epoch milliseconds, at most eleven minutes into the future. Files without valid policy, restrictive permissions, exact tenant path, approved host or bound tab fail closed. `approvedFields` contains only existing explicit, country-scoped user answers. It is not a permission to infer a sensitive answer from residence or a resume. Field labels and types must match the actual DOM, not model-supplied claims.
 
-Upload must use exactly `resumePath` and `inputRef` for a visible file input. The trusted runner must stage the resume in OpenClaw's allowed upload directory. Arbitrary paths, click-to-upload arming and selectors are denied.
+Upload must use exactly `resumePath` and `inputRef` for a verified enabled file input. Hidden inputs are accepted for direct file attachment; no click-to-upload or arbitrary selector permission is added. The trusted runner must stage the resume in OpenClaw's allowed upload directory. Arbitrary paths, click-to-upload arming and selectors are denied.
 
 The trusted application runner must navigate to the application page before invoking OpenClaw. `navigate` and `open` are denied because OpenClaw returns an inline snapshot before a post-navigation hook could inspect a login page.
 
@@ -87,3 +87,43 @@ PASS tenant9 gateway plugin: native browser filled Fixture Ada and approved spon
 The native final click returned `huntly_guard:final_submit_or_unproven_click`. Post-run DOM assertions proved both filled values and no submit event. Cleanup removed policy and fixture page, then stopped Chrome through VM agent. Follow-up status was `mode=idle`, `pid=null`; gateway remained active.
 
 This gate proves actual hook invocation, native reference resolution, permitted writes and refusal of the final control on the fixture. It does not certify all ATS widgets or turn the before-tool hook into a network firewall.
+
+### Authentication affordances versus actual challenges
+
+A hidden `g-recaptcha-response` textarea or optional header Sign in button does not stop inspection. Visible password, OTP, CAPTCHA, "not a robot" and human-verification controls still do. Login routes remain blocked. Sign in controls cannot be clicked by the driver.
+
+Only hidden iframes are excluded from inspection, checking the iframe element and every ancestor frame. Their contents are not read. Visible off-host frames remain denied; there is no broad Google-domain exception. Opacity alone is not treated as hidden, because a transparent element can remain in the accessibility tree.
+
+`verify-isolation.mjs` is a root-only backend fixture for tenants 9 and 10. It writes only a newly generated synthetic localStorage marker on example.com and never reads existing keys or cookie values. It also checks native Chrome visibility policy and rejects tenant 9's gateway token at tenant 10. `--guard-only` runs the independent tenant 9 visibility and gateway-token checks if the second Chrome is unavailable.
+
+### Isolation and upload gates, 2026-09-16
+
+The first two-browser fixture failed with `VM tenant10 apply HTTP 500`. Investigation found Chrome Remote Desktop already using display `:20`; tenant 10 Xvfb had been crash-looping. With explicit authorization, tenant 10 moved to free display `:30`. The human desktop and tenants 1–9 were preserved. The VM-agent and Xvfb/x11vnc wrappers must agree on that exception.
+
+After the correction, the full fixture passed:
+
+```text
+PASS tenant9/10 isolation: distinct CDP profiles retain independent synthetic markers on the same example.com origin.
+PASS native Chrome guard: hidden reCAPTCHA and optional Sign in do not block snapshots; visible human-verification challenge does.
+PASS tenant9 token rejected by tenant10 gateway: INVALID_REQUEST.
+```
+
+The wrong-token fixture initially used protocol 3 and correctly failed its own assertion on `protocol mismatch`; it now uses installed protocol 4 and asserts an unauthorized/token-mismatch response rather than accepting any rejection.
+
+The upload solution uses the documented managed inbound-media root, not the private `/tmp` mount:
+
+```text
+/home/huntly-uN/.openclaw-huntly-uN/media/inbound/<attemptId>-resume.pdf
+```
+
+Stage an ordinary direct-child file, mode 0600, readable by its tenant. Do not use symlinks, hardlinks or nested paths. The policy must contain the same absolute path. `CONFIG_DIR` resolves from `OPENCLAW_STATE_DIR`, and native `resolveStrictExistingUploadPaths()` permits that inbound root. Delete the file on attempt cleanup.
+
+`sudo node verify-native-upload.mjs` proved the real native resolver, actual policy hook and native `setInputFiles` path:
+
+```text
+PASS native OpenClaw upload: guarded hidden file input received synthetic PDF from tenant managed inbound-media path.
+```
+
+The fixture obtained a real snapshot ref while the input was visible, hid it, and then attached a synthetic PDF. The guard no longer requires upload-input visibility, but still requires exact approved path, input ref, enabled input, and DOM type `file`. Inputs hidden before every snapshot may expose no usable ref; the deterministic uploader remains responsible for those cases. No general CSS-selector or file-chooser permission was added.
+
+Both fixtures removed their own synthetic state, closed their pages and stopped test Chrome processes through the VM agent.

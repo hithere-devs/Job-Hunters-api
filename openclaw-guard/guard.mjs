@@ -1,7 +1,7 @@
 import { open, lstat } from 'node:fs/promises'
 import { constants } from 'node:fs'
 
-const credential = /password|passcode|one.?time|\botp\b|verification.?code|security.?code|recovery.?code|api.?key|access.?token|refresh.?token|captcha|secret/i
+const credential = /password|passcode|one.?time|\botp\b|verification.?code|security.?code|recovery.?code|api.?key|access.?token|refresh.?token|captcha|not.?a.?robot|human.?verification|verify.{0,20}human|(?:i am|i.m|you are|you.re).{0,10}human|secret/i
 const sensitive = /sponsor|visa|citizen|nationality|authori[sz]|eligible to work|right to work|permission to work|gender|pronoun|ethnic|race|hispanic|latino|disabilit|veteran|sexual|salary|compensation|\bctc\b|criminal|convict|background|non.?compete|legal obligation/i
 const never = /criminal|convict|background check|non.?compete|legal obligation|certify|attest|swear|declaration/i
 const final = /submit|finish|complete|send|confirm|apply|accept offer/i
@@ -59,7 +59,7 @@ export async function decide(event, policy, facts, resolveRef, now = Date.now())
   if (p.action === 'upload') {
     if (!policy.resumePath || !Array.isArray(p.paths) || p.paths.length !== 1 || p.paths[0] !== policy.resumePath || typeof p.inputRef !== 'string' || p.ref || p.element) return deny('upload_must_target_approved_file_input')
     const node = await resolveRef(p.inputRef)
-    if (node.type !== 'file' || node.tag !== 'input' || !node.visible || credential.test(node.label)) return deny('invalid_upload_input')
+    if (node.type !== 'file' || node.tag !== 'input' || node.disabled || credential.test(node.label)) return deny('invalid_upload_input')
     return { params: { action: 'upload', ...route, paths: [policy.resumePath], inputRef: p.inputRef } }
   }
   if (p.action !== 'act') return deny('action_not_allowed')

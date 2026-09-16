@@ -55,6 +55,8 @@ test('upload requires exact approved resume path and a file input ref', async ()
  const e={toolName:'browser',params:{action:'upload',paths:[policy().resumePath],inputRef:'e1'}}
  const file={...node(),type:'file',label:'Resume'}
  assert.equal((await check(e,policy(),facts(),file)).block,undefined)
+ assert.equal((await check(e,policy(),facts(),{...file,visible:false})).block,undefined)
+ assert.equal((await check(e,policy(),facts(),{...file,disabled:true})).block,true)
  assert.equal((await check({...e,params:{...e.params,paths:['/etc/passwd']}},policy(),facts(),file)).block,true)
  assert.equal((await check(e)).block,true)
 })

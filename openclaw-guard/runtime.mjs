@@ -33,17 +33,43 @@ export function describeElement(element) {
   }
 }
 export function describePage() {
-  // Read types and labels, not values, before allowing snapshot/screenshot.
-  const credentialPattern = /password|passcode|one.?time|\botp\b|verification.?code|security.?code|recovery.?code|api.?key|access.?token|refresh.?token|captcha/i
-  const fields = Array.from(document.querySelectorAll('input,textarea'))
-  const hasSecret = fields.some(el => credentialPattern.test([el.getAttribute('type'), el.getAttribute('autocomplete'), el.getAttribute('name'), el.getAttribute('id'), el.getAttribute('aria-label'), ...Array.from(el.labels || []).map(l => l.textContent)].join(' ')))
-  const authButton = Array.from(document.querySelectorAll('button,input[type=submit]')).some(el => /^(?:sign in|log in|login|continue with google|sign in with google)$/i.test((el.textContent || el.getAttribute('aria-label') || '').trim()))
+  // Read types and labels, never values. Hidden reCAPTCHA response inputs are
+  // normal ATS plumbing, not an interactive human challenge.
+  const visible = el => {
+    const box = el.getBoundingClientRect()
+    const style = document.defaultView.getComputedStyle(el)
+    return box.width > 0 && box.height > 0 && style.visibility !== 'hidden' && style.display !== 'none' && !el.closest('[hidden],[aria-hidden="true"]')
+  }
+  const credentialPattern = /password|passcode|one.?time|\botp\b|verification.?code|security.?code|recovery.?code|api.?key|access.?token|refresh.?token|captcha|not.?a.?robot|human.?verification|verify.{0,20}human|(?:i am|i.m|you are|you.re).{0,10}human/i
+  const fields = Array.from(document.querySelectorAll('input,textarea,[role="checkbox"]'))
+  const hasSecret = fields.some(el => visible(el) && credentialPattern.test([el.getAttribute('type'), el.getAttribute('autocomplete'), el.getAttribute('name'), el.getAttribute('id'), el.getAttribute('aria-label'), ...Array.from(el.labels || []).map(l => l.textContent), el.getAttribute('role') === 'checkbox' ? el.textContent : ''].join(' ')))
+  // A header Sign in button is not a login form; its click remains denied.
   const loginRoute = /\/(?:login|signin|sign-in|auth)(?:\/|\?|$)/i.test(location.pathname)
   const steps = (document.body?.innerText || '').match(/\bstep\s*(\d+)\s*(?:of|\/)\s*(\d+)\b/i)
   const wizardStep = steps && Number(steps[1]) > 0 && Number(steps[2]) <= 30 ? { current: Number(steps[1]), total: Number(steps[2]) } : null
-  return { hasAuthentication: hasSecret || authButton || loginRoute, wizardStep }
+  return { hasAuthentication: hasSecret || loginRoute, wizardStep }
+}
+
+/** Invisible analytics/challenge iframes are not rendered in ARIA snapshots.
+ * Inspect no content in those frames. Visible off-host frames still fail policy. */
+export async function frameIsVisible(frame) {
+  let current = frame
+  while (current.parentFrame()) {
+    const element = await current.frameElement()
+    try {
+      const visible = await element.evaluate(el => {
+        const box = el.getBoundingClientRect(), style = el.ownerDocument.defaultView.getComputedStyle(el)
+        return box.width > 0 && box.height > 0 && style.display !== 'none' && style.visibility !== 'hidden' && !el.closest('[hidden],[aria-hidden="true"]')
+      })
+      if (!visible) return false
+    } finally { await element.dispose() }
+    current = current.parentFrame()
+  }
+  return true
 }
 export async function pageFacts(page, targetId) {
-  const observed = await Promise.all(page.frames().map(frame => frame.evaluate(describePage)))
-  return { targetId, url: page.url(), frameUrls: page.frames().map(frame => frame.url()), hasAuthentication: observed.some(frame => frame.hasAuthentication), wizardStep: observed[0]?.wizardStep ?? null }
+  const frames = []
+  for (const frame of page.frames()) if (await frameIsVisible(frame)) frames.push(frame)
+  const observed = await Promise.all(frames.map(frame => frame.evaluate(describePage)))
+  return { targetId, url: page.url(), frameUrls: frames.map(frame => frame.url()), hasAuthentication: observed.some(frame => frame.hasAuthentication), wizardStep: observed[0]?.wizardStep ?? null }
 }
