@@ -18,7 +18,7 @@ import { badRequest, notFound } from '../../lib/errors.js'
 import { logger } from '../../lib/logger.js'
 import { readParsedResume } from '../../services/resume-parser.js'
 import { rankJob, readWeights, type RankableJob } from '../ranking.js'
-import { canonicalise } from './canonicalise.js'
+import { canonicalise, hasApplyableUrl } from './canonicalise.js'
 import { ensureDreamCompanyBoards } from './board-resolver.js'
 import { planQueries } from './planner.js'
 import { connectorsForRun } from './registry.js'
@@ -452,12 +452,12 @@ export async function discoverForRun(
       userId,
       jobId: entry.job.id,
       sourcePortal: entry.scraped.portal,
-      status: ranking.decision,
+      status: hasApplyableUrl(entry.scraped) ? ranking.decision : 'needs_review',
       score: ranking.score,
       scoreBreakdown: ranking.breakdown,
-      reasons: ranking.reasons,
+      reasons: hasApplyableUrl(entry.scraped) ? ranking.reasons : [...ranking.reasons, 'no_applyable_url'],
     })
-    if (!ranking.accepted) continue
+    if (!ranking.accepted || !hasApplyableUrl(entry.scraped)) continue
     candidateValues.push({
       runId,
       userId,

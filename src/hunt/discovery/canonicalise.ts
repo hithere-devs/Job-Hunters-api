@@ -92,3 +92,8 @@ export function canonicalise(jobs: ScrapedJob[]): ScrapedJob[] {
 
   return [...best.values()]
 }
+
+/** A listing whose only URL is an aggregator cannot be applied to. */
+export function hasApplyableUrl(job: ScrapedJob): boolean {
+  return isAtsUrl(job.applyUrl ?? job.url)
+}
