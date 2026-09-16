@@ -162,3 +162,15 @@ PASS native portaled autocomplete: option bound to sole expanded nonsensitive fi
 ```
 
 `verify-autocomplete.mjs` proves the actual hook and native click using a synthetic portaled suggestion in tenant 9, then verifies that collapsing its controller removes permission.
+
+### Optional extension adapter, not activated
+
+The default remains `HUNTLY_BROWSER_PROFILE=tenant`. An explicitly configured service may opt in to `HUNTLY_BROWSER_PROFILE=extension-test` and must supply its exact `HUNTLY_EXTENSION_CDP_PORT`, such as `27801` for the tenant 9 experiment. Do not infer the port or reuse another tenant's relay.
+
+The adapter loads the pinned runtime's own `getBrowserControlState()` and `resolveProfile()` module instances. It obtains the already-owned relay's process-only internal authentication URL without logging it. The separate resolver validates profile, driver, loopback port, ownership and authentication consistency. Credentials are never constructed from a gateway token or persisted by this adapter.
+
+Every tool still proves the policy target exists in the tenant's raw Chrome on `9200+N`. Active extension actions use only extension-native refs, and `Target.getTargetInfo` must return the exact same physical Chrome target ID. A different target or unsupported target-ID translation fails closed, even if the URL happens to match. Raw CDP is used only for guard observations, not as a fallback action transport.
+
+A genuinely unstarted relay may bootstrap with the first read-only snapshot after raw tenant/host/authentication checks. Mutations, uploads and screenshots require the active verified extension runtime. Wrong ports, borrowed relays, stale credentials or malformed configuration cannot use that bootstrap path.
+
+Local unit tests cover both routes, exact target mismatch, port mismatch, startup behavior and unchanged submit refusal. This adapter has **not** been deployed, selected or validated against a live extension connection. Native compatibility and Chrome extension approval remain separate gates. Deploy the complete plugin directory, including `extension-profile.mjs`, if enabling it later.

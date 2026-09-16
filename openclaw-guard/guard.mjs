@@ -43,17 +43,19 @@ function fieldCheck(node, value, p) {
   return null
 }
 /** Facts and resolveRef are host-observed. Never use model-supplied labels or types. */
-export async function decide(event, policy, facts, resolveRef, now = Date.now()) {
+export async function decide(event, policy, facts, resolveRef, now = Date.now(), routing = {}) {
   try { validatePolicy(policy, now) } catch { return deny('policy_missing_or_expired') }
   if (event.toolName !== 'browser') return deny('tool_not_browser')
+  const profileName = routing.profileName ?? 'tenant'
+  if (!['tenant', 'extension-test'].includes(profileName)) return deny('unsupported_browser_profile')
   const p = event.params
   if (!p || typeof p !== 'object' || Array.isArray(p)) return deny('invalid_parameters')
-  if (p.node || (p.target && p.target !== 'host') || (p.profile && p.profile !== 'tenant')) return deny('wrong_tenant_route')
+  if (p.node || (p.target && p.target !== 'host') || (p.profile && p.profile !== profileName)) return deny('wrong_tenant_route')
   if (p.targetId && p.targetId !== policy.targetId) return deny('wrong_tab')
   if (!facts || facts.targetId !== policy.targetId || !hostAllowed(facts.url, policy) || facts.frameUrls.some(url => url !== 'about:blank' && !hostAllowed(url, policy))) return deny('unapproved_page')
   if (facts.hasAuthentication) return deny('human_authentication_required')
   // Restrict the envelope as well as the action so future tool parameters fail closed.
-  const route = { target: 'host', profile: 'tenant', targetId: policy.targetId }
+  const route = { target: 'host', profile: profileName, targetId: policy.targetId }
   if (p.action === 'snapshot') return { params: { action: 'snapshot', ...route, snapshotFormat: 'ai', refs: 'aria', interactive: false, compact: false, maxChars: 18000 } }
   if (p.action === 'screenshot') return { params: { action: 'screenshot', ...route, fullPage: false, type: 'png' } }
   if (p.action === 'upload') {

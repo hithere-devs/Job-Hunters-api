@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { resolveExtensionProfile } from './extension-profile.mjs'
 
 /** Private runtime adapter deliberately pinned. Upgrading OpenClaw requires revalidation. */
 let runtime
@@ -10,7 +11,43 @@ export async function loadRuntime(root) {
   runtime ??= import(pathToFileURL(join(root, 'dist/pw-session-CQV8ZkDn.mjs')).href)
   const exports = await runtime
   if (typeof exports.C !== 'function' || typeof exports.l !== 'function' || typeof exports.L !== 'function') throw new Error('unsupported_ref_runtime')
-  return { pageForTarget: exports.C, refLocator: exports.l, restoreRoleRefs: exports.L }
+  return {
+    pageForTarget: exports.C, refLocator: exports.l, restoreRoleRefs: exports.L,
+    extensionApi: async () => {
+      const stateModule = await import(pathToFileURL(join(root, 'dist/browser-control-state-CLsCObQm.mjs')).href)
+      const configModule = await import(pathToFileURL(join(root, 'dist/config-n_aIDo5k.mjs')).href)
+      if (typeof stateModule.getBrowserControlState !== 'function' || typeof configModule.a !== 'function') throw new Error('unsupported_extension_runtime')
+      return { getBrowserControlState: stateModule.getBrowserControlState, resolveProfile: configModule.a }
+    },
+  }
+}
+
+/** Optional extension route. No extension URL, token or supplied input is logged. */
+export async function selectGuardBrowser({ runtime, policy, tenant, profileName = 'tenant', expectedPort, action }) {
+  if (!Number.isInteger(tenant) || tenant < 1 || tenant > 10 || !['tenant', 'extension-test'].includes(profileName)) throw new Error('invalid_guard_browser_route')
+  const rawCdpUrl = `http://127.0.0.1:${9200 + tenant}`
+  const rawPage = await runtime.pageForTarget({ cdpUrl: rawCdpUrl, targetId: policy.targetId })
+  if (profileName === 'tenant') return { rawPage, refPage: rawPage, cdpUrl: rawCdpUrl, profileName, bootstrap: false }
+  if (!Number.isInteger(expectedPort) || expectedPort < 1024 || expectedPort > 65535) throw new Error('invalid_extension_port')
+  const api = await runtime.extensionApi()
+  let extension
+  try {
+    extension = resolveExtensionProfile({ state: api.getBrowserControlState(), resolveProfile: api.resolveProfile, profileName, expectedPort })
+  } catch (error) {
+    // Only a specifically unstarted relay may bootstrap with one read-only snapshot.
+    // Wrong port/profile/auth is never a reason to use raw CDP for the action.
+    if (action === 'snapshot' && error?.bootstrapAllowed === true) return { rawPage, refPage: null, cdpUrl: null, profileName, bootstrap: true }
+    throw new Error('extension_runtime_not_ready')
+  }
+  const refPage = await runtime.pageForTarget({ cdpUrl: extension.cdpUrl, targetId: policy.targetId })
+  const session = await refPage.context().newCDPSession(refPage)
+  try {
+    const result = await session.send('Target.getTargetInfo')
+    if (result?.targetInfo?.targetId !== policy.targetId || result.targetInfo.type !== 'page') throw new Error('extension_target_mismatch')
+  } finally { await session.detach() }
+  const route = { rawPage, refPage, profileName, bootstrap: false }
+  Object.defineProperty(route, 'cdpUrl', { value: extension.cdpUrl, enumerable: false })
+  return route
 }
 
 /** Read labels/types only. In particular this never reads an input's value. */

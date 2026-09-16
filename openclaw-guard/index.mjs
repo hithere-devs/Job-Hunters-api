@@ -1,5 +1,5 @@
 import { decide, readPolicy, assertRunContext } from './guard.mjs'
-import { describeElement, loadRuntime, pageFacts } from './runtime.mjs'
+import { describeElement, loadRuntime, pageFacts, selectGuardBrowser } from './runtime.mjs'
 
 export default {
   id: 'huntly-application-guard',
@@ -14,17 +14,21 @@ export default {
         assertRunContext(policy, context)
         const root = process.env.HUNTLY_OPENCLAW_ROOT || '/opt/huntly/openclaw-runtime/node_modules/openclaw'
         const runtime = await loadRuntime(root)
-        const cdpUrl = `http://127.0.0.1:${9200 + tenant}`
         if (context.abortSignal?.aborted) throw new Error('cancelled')
-        const page = await runtime.pageForTarget({ cdpUrl, targetId: policy.targetId })
-        runtime.restoreRoleRefs({ page, cdpUrl, targetId: policy.targetId })
-        const facts = await pageFacts(page, policy.targetId)
+        const profileName = process.env.HUNTLY_BROWSER_PROFILE || 'tenant'
+        const browser = await selectGuardBrowser({ runtime, policy, tenant, profileName, expectedPort: Number(process.env.HUNTLY_EXTENSION_CDP_PORT), action: event.params?.action })
+        const rawFacts = await pageFacts(browser.rawPage, policy.targetId)
+        const rawProof = await decide({ toolName: 'browser', params: { action: 'snapshot' } }, policy, rawFacts, async () => { throw new Error('no_bootstrap_refs') }, Date.now(), { profileName })
+        if (rawProof.block) return rawProof
+        const page = browser.refPage
+        if (page) runtime.restoreRoleRefs({ page, cdpUrl: browser.cdpUrl, targetId: policy.targetId })
+        const facts = page && page !== browser.rawPage ? await pageFacts(page, policy.targetId) : rawFacts
         const result = await decide(event, policy, facts, async (ref) => {
-          if (!/^(?:f\d+)?(?:e|ax)?\d+$/.test(ref)) throw new Error('invalid_ref')
+          if (!page || !/^(?:f\d+)?(?:e|ax)?\d+$/.test(ref)) throw new Error('invalid_or_unavailable_ref')
           const locator = runtime.refLocator(page, ref)
           if (await locator.count() !== 1) throw new Error('ambiguous_ref')
           return locator.evaluate(describeElement, undefined, { timeout: 3000 })
-        })
+        }, Date.now(), { profileName })
         if (context.abortSignal?.aborted || policy.deadlineEpoch <= Date.now()) throw new Error('expired')
         return result
       } catch {
