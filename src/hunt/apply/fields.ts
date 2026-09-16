@@ -160,7 +160,7 @@ const HEURISTICS: Array<[RegExp, keyof PortalProfile | string]> = [
   [/\b(?:postal|zip|pin)\s*code\b/i, 'postalCode'],
   [/\bcountry\b/i, 'country'],
   [/\b(?:notice period|availability|start date|when can you start)\b/i, 'noticePeriod'],
-  [/\b(?:current|present)\s+(?:company|employer)\b/i, 'currentCompany'],
+  [/\b(?:(?:current|present|most\s+recent)\s+(?:company|employer))\b/i, 'currentCompany'],
   [/\b(?:headline|current title|current role)\b/i, 'headline'],
   [/\b(?:years?\s+of\s+experience|total experience|experience in years)\b/i, 'totalExperience'],
 ]
