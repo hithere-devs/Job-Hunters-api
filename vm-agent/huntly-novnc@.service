@@ -1,0 +1,11 @@
+[Unit]
+Description=websockify for huntly tenant %i
+After=huntly-x11vnc@%i.service
+Requires=huntly-x11vnc@%i.service
+[Service]
+User=huntly-u%i
+ExecStart=/usr/local/bin/huntly-novnc %i
+Restart=always
+RestartSec=2
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,10 @@
+[Unit]
+Description=Xvfb for huntly tenant %i
+After=network.target
+[Service]
+User=huntly-u%i
+ExecStart=/usr/local/bin/huntly-xvfb %i
+Restart=always
+RestartSec=2
+[Install]
+WantedBy=multi-user.target
