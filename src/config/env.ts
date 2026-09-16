@@ -104,7 +104,7 @@ const schema = z.object({
    * a live URL a human can take over in. `local` is the old Playwright launch,
    * kept for offline development and for tests.
    */
-  BROWSER_PROVIDER: z.enum(['browser-use', 'local']).default('browser-use'),
+  BROWSER_PROVIDER: z.enum(['browser-use', 'local', 'vm']).default('browser-use'),
   VM_AGENT_URL: optionalUrl.default('http://127.0.0.1:18900'),
   VM_AGENT_TOKEN: optionalString,
   VM_ID: z.string().default('openclaw-vm'),
@@ -351,8 +351,12 @@ export const hasBrowserUse = Boolean(env.BROWSER_USE_API_KEY)
 export const hasVmAgent = Boolean(env.VM_AGENT_TOKEN)
 
 /** What `openSession` will actually do, once the key situation is accounted for. */
-export const browserProvider: 'browser-use' | 'local' =
-  env.BROWSER_PROVIDER === 'browser-use' && hasBrowserUse ? 'browser-use' : 'local'
+export const browserProvider: 'browser-use' | 'local' | 'vm' =
+  env.BROWSER_PROVIDER === 'vm' && hasVmAgent
+    ? 'vm'
+    : env.BROWSER_PROVIDER === 'browser-use' && hasBrowserUse
+      ? 'browser-use'
+      : 'local'
 
 /** Run confirmations are logged instead of sent until SMTP is configured. */
 export const hasMailer = Boolean(env.SMTP_HOST)

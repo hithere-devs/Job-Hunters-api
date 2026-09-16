@@ -13,9 +13,10 @@ import {
   jobSources,
   jobs,
   resumeVariants,
+  userBrowserSessions,
   type HuntRunJob,
 } from '../db/schema.js'
-import { env, hasApplyAgent } from '../config/env.js'
+import { browserProvider, env, hasApplyAgent } from '../config/env.js'
 import { badRequest, notFound } from '../lib/errors.js'
 import { logger } from '../lib/logger.js'
 import { buildObjectKey, downloadObject, uploadObject } from '../lib/storage.js'
@@ -169,8 +170,15 @@ export async function applyApprovedCandidate(
   // for a residential exit. Null is fine and common — most ATS forms are
   // generic and need none of it.
   const skill = skillForUrl(applyUrl)
-  const profileId =
-    skill?.manifest.authMode === 'profile' ? await profileFor(userId, skill.manifest.id) : null
+  let profileId = skill?.manifest.authMode === 'profile' ? await profileFor(userId, skill.manifest.id) : null
+  if (browserProvider === 'vm' && !profileId) {
+    const [session] = await db.select({ vmId: userBrowserSessions.vmId, tenantIndex: userBrowserSessions.tenantIndex })
+      .from(userBrowserSessions)
+      .where(eq(userBrowserSessions.userId, userId))
+      .limit(1)
+    if (!session) throw badRequest('Connect your browser session before preparing an application.')
+    profileId = `vm:${session.vmId}:${session.tenantIndex}`
+  }
 
   let session: Awaited<ReturnType<typeof openSession>> | null = null
   // Declared out here so the `finally` can stop it however the attempt ends.

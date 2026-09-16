@@ -22,6 +22,13 @@ export interface VmConnectInfo {
   expiresAt: string | null
 }
 
+export interface VmApplyInfo {
+  mode: 'apply'
+  cdpUrl: string
+  pid: number | null
+  expiresAt: string | null
+}
+
 export type VmMode = 'connect' | 'apply' | 'idle'
 
 export interface VmTenantStatus {
@@ -79,6 +86,14 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export function connectTenant(index: number): Promise<VmConnectInfo> {
   return call(`/tenants/${index}/connect`, { method: 'POST' })
+}
+
+export function applyTenant(index: number): Promise<VmApplyInfo> {
+  return call(`/tenants/${index}/apply`, { method: 'POST' })
+}
+
+export function stopTenant(index: number): Promise<{ stopped: boolean }> {
+  return call(`/tenants/${index}/stop`, { method: 'POST' })
 }
 
 export function disconnectTenant(index: number): Promise<{

@@ -4,6 +4,7 @@ import { serviceUnavailable } from '../lib/errors.js'
 import { logger } from '../lib/logger.js'
 import { launchAutomationBrowser } from '../hunt/browser.js'
 import { createBrowser, getBrowser, stopBrowser, type BrowserSessionInfo } from './client.js'
+import { applyTenant, stopTenant } from './vm-client.js'
 import { createSemaphore, type Slot } from './limit.js'
 
 /**
@@ -56,7 +57,7 @@ export interface AgentSession {
   browser: Browser
   context: BrowserContext
   page: Page
-  provider: 'browser-use' | 'local'
+  provider: 'browser-use' | 'local' | 'vm'
   /** A URL a human can open to watch and take over. Null when local. */
   liveUrl: string | null
   /** The hosted session id, for cost lookup and forced cleanup. Null local. */
@@ -184,6 +185,39 @@ async function openLocal(options: SessionOptions, slot: Slot): Promise<AgentSess
   }
 }
 
+async function openVm(options: SessionOptions, slot: Slot): Promise<AgentSession> {
+  const match = options.profileId?.match(/^vm:[^:]+:(\d+)$/)
+  if (!match) throw serviceUnavailable('A VM browser session requires a VM profile slot.')
+  const tenantIndex = Number(match[1])
+  const info = await applyTenant(tenantIndex)
+  let browser: Browser
+  try {
+    browser = await chromium.connectOverCDP(info.cdpUrl, { timeout: 60_000 })
+  } catch (error) {
+    await stopTenant(tenantIndex).catch(() => undefined)
+    throw error
+  }
+  const context = browser.contexts()[0] ?? (await browser.newContext())
+  const page = context.pages()[0] ?? (await context.newPage())
+  let closed = false
+  return {
+    browser,
+    context,
+    page,
+    provider: 'vm',
+    liveUrl: null,
+    sessionId: `vm:${tenantIndex}`,
+    async close() {
+      if (closed) return
+      closed = true
+      try { await browser.close().catch(() => undefined) } finally {
+        await stopTenant(tenantIndex).catch((error) => logger.error({ err: error, tenantIndex }, 'VM browser did not stop'))
+        slot.release()
+      }
+    },
+  }
+}
+
 export async function openSession(options: SessionOptions): Promise<AgentSession> {
   assertAutomationEnabled()
 
@@ -191,7 +225,9 @@ export async function openSession(options: SessionOptions): Promise<AgentSession
   try {
     return browserProvider === 'browser-use'
       ? await openHosted(options, slot)
-      : await openLocal(options, slot)
+      : browserProvider === 'vm'
+        ? await openVm(options, slot)
+        : await openLocal(options, slot)
   } catch (error) {
     // Only reached when the browser never came up, so nothing holds the slot.
     slot.release()
