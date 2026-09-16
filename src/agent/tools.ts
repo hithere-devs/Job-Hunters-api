@@ -3,7 +3,7 @@ import { browserFilePayload } from '../lib/file-payload.js'
 import type { Page } from 'playwright-core'
 import { env } from '../config/env.js'
 import { logger } from '../lib/logger.js'
-import { sensitiveReason } from '../hunt/apply/fields.js'
+import { sensitiveReason, isContextualQuestion } from '../hunt/apply/fields.js'
 import { normaliseHttpUrl } from '../hunt/apply/urls.js'
 import { refSelector, type Observation } from './observe.js'
 
@@ -293,6 +293,7 @@ export async function runTool(
       if (!element) return { ok: false, message: `No element numbered ${String(args.ref)}.` }
       const credential = await page.locator(refSelector(element.ref)).evaluate(html => html instanceof HTMLInputElement && (html.type === 'password' || /^(current-password|new-password|one-time-code)$/.test(html.autocomplete)))
       if (credential) return {ok:false,message:'Credentials and verification codes must be entered by the account owner. Stop and report login_required.'}
+      if (isContextualQuestion({label:element.label,type:element.kind,required:true})) return {ok:false,message:'This employer-specific answer requires the user to review and accept it. Do not invent or fill it; report this field as blocked.'}
       if (sensitiveReason(element.label)) {
         return {
           ok: false,

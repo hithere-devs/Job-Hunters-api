@@ -51,3 +51,28 @@ Fixture users, jobs, and isolated Redis queue removed; no consumer or browser st
 ## Remaining production boundaries
 
 External submission is not a database transaction. Unexpected JavaScript buttons can submit through custom handlers; native form semantics and known submit controls are guarded, but each live provider still needs a reviewed acceptance run. Cookie evidence cannot guarantee the provider will accept the session. Model/runtime failures can still park a job. Event writes are best-effort, although the submit fence is not. Queue durability assumes Postgres and Redis backups and tested restore procedures. Live provider submissions, real sign-ins, load testing, disaster recovery, and monitoring rollout are separate release gates, not implied by passing these fixtures.
+
+## Live questions and question inbox
+
+Unanswered fields become structured, user-owned questions. A live browser waits up to ten minutes under the existing renewable application leases. Answers are applied only to the captured host and exact field identity, after re-reading current controls and validating the offered options. An answer is literal form data, never a browser instruction or model prompt. Radio groups use their question heading, not an opaque field ID or the first option. Checkbox false unchecks the control.
+
+- `GET /applications/:id/questions` returns the current attempt's questions and waiting deadline.
+- `POST /applications/:id/questions/:questionId/answer` accepts `answer`, explicit `remember`, or `skip` for an optional question.
+- `GET /applications/questions` groups matching outstanding questions by host, field signature, options, and required/sensitive state. Employer-specific and non-reusable questions remain separate per application.
+- `POST /applications/questions/answers` saves up to 500 answers atomically, bounded to 750 KB. An invalid option or cross-user question rejects the whole request. Live attempts continue; expired pre-submit attempts may be queued safely once required questions are answered. Unknown or submit-fenced attempts remain blocked.
+- `POST /applications/:id/recover-questions` reopens only a provably pre-submit, inactive attempt to capture missing legacy labels/options.
+
+No password, OTP, verification-code, or CAPTCHA question is accepted in chat. Optional demographics require an explicit answer or explicit skip. Remembering is opt-in and occurs only after the provider control accepted the value; legal/reference and employer-specific answers are not reused across applications. Question answer values are excluded from stream events and question DTOs. Driver errors during answer writes are sanitized so SQL parameters cannot leak answers to logs.
+
+The inbox uses batch reads rather than one set of queries per application. A failed fixture exposed the shared Supabase session-pool connection limit, not a question validation failure. After the parent rollout switched to transaction pooling, the fixture passed with `DATABASE_POOL_MAX=1`:
+
+```text
+Known failed-fixture cleanup: 0 users, 0 referenced jobs
+PASS radio group exposes readable question, not opaque UUID or option label
+PASS cross-owner answers rejected; invalid option rolls back entire batch
+PASS live answers applied to exact controls; false unchecked; literal text not executed; no submit
+PASS expired answers autoqueue only proven pre-submit attempts; fenced unknown attempt stays blocked
+Fixture browser and DB records removed; no provider login or application submission
+```
+
+This was an isolated browser/DB test using `fixture.invalid`, not a provider login or real application. Run it with `APPLICATION_QUEUE_NAME=hunt-apply-test-<unique> DATABASE_POOL_MAX=1 npx tsx src/scripts/verify-live-questions.ts`. The earlier failing gate reported `(EMAXCONNSESSION) max clients reached in session mode - max clients are limited to pool_size: 15`; cleanup verification found no residual users or referenced jobs from that failed attempt.

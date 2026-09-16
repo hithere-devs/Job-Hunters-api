@@ -26,7 +26,7 @@ export interface FilledField {
 export interface FillResult {
   fields: FilledField[]
   /** Required fields nobody could answer. Non-empty means blocked. */
-  unresolved: Array<{ label: string; type: string; why: BlockedReason }>
+  unresolved: Array<{ label: string; type: string; name?: string; required?: boolean; options?:string[]; why: BlockedReason }>
   recipe: string
 }
 
@@ -58,28 +58,34 @@ function controlFor(page: Page, field: FormField) {
   return byLabel
 }
 
-async function setValue(page: Page, field: FormField, value: string): Promise<boolean> {
-  const control = controlFor(page, field)
-  if ((await control.count()) === 0) return false
-  if (!(await control.isVisible().catch(() => false))) return false
-
+export async function setValue(page: Page, field: FormField, value: string): Promise<boolean> {
   try {
+    if (field.type === 'radio' || (field.type === 'checkbox' && (field.options?.length ?? 0) > 1)) {
+      if (!field.options?.includes(value)) return false
+      const option = page.getByLabel(value, {exact:true})
+      const exact = field.name ? option.and(page.locator(`[name="${escapeAttributeValue(field.name)}"]`)).first() : option.first()
+      if (!await exact.isVisible()) return false
+      await exact.check()
+      return await exact.isChecked()
+    }
+    const control = controlFor(page, field)
+    if ((await control.count()) === 0 || !await control.isVisible()) return false
+    const credential = await control.evaluate(element => element instanceof HTMLInputElement && (element.type === 'password' || /^(current-password|new-password|one-time-code)$/.test(element.autocomplete)))
+    if (credential) return false
     if (field.type === 'select-one' || field.type === 'select') {
-      // Try the label first, then the value — forms disagree about which the
-      // visible text corresponds to.
-      await control.selectOption({ label: value }).catch(async () => {
-        await control.selectOption(value)
-      })
+      await control.selectOption({ label: value })
       return true
     }
-    if (field.type === 'checkbox' || field.type === 'radio') {
-      await control.check()
-      return true
+    if (field.type === 'checkbox') {
+      if (!['true','false'].includes(value)) return false
+      await control.setChecked(value === 'true')
+      return (await control.isChecked()) === (value === 'true')
     }
     await control.fill(value)
     return true
-  } catch (error) {
-    logger.debug({ err: error, label: field.label }, 'could not set a field')
+  } catch {
+    // Playwright errors can contain the attempted value. Never log it.
+    logger.debug({label:field.label}, 'control rejected the provided answer')
     return false
   }
 }
@@ -144,7 +150,7 @@ export async function fillForm(params: {
       // Only required fields stop an application. An optional question we
       // cannot answer is one we simply leave blank, as a person would.
       if (field.required) {
-        unresolved.push({ label: field.label, type: field.type, why: resolved.blocked })
+        unresolved.push({ ...field, why: resolved.blocked })
       }
       filled.push({ label: field.label, via: 'skipped', filled: false })
       publishAttemptEvent(userId, {
@@ -159,7 +165,7 @@ export async function fillForm(params: {
 
     const ok = resolved.value ? await setValue(page, field, resolved.value) : false
     if (!ok && field.required) {
-      unresolved.push({ label: field.label, type: field.type, why: 'needs_input' })
+      unresolved.push({ ...field, why: 'needs_input' })
     }
 
     filled.push({ label: field.label, via: resolved.via, filled: ok })

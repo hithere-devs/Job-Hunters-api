@@ -33,6 +33,7 @@ import { provisionPortalAccount } from './portal-accounts.js'
 import { createMinimalResumeVariant } from './tailoring.js'
 import { fillForm, hasSubmitControl, hasSubmissionConfirmation, submitForm } from './apply/fill.js'
 import { ApplicationDeferredError } from './application-policy.js'
+import { waitForApplicationAnswers } from './apply/live-questions.js'
 import { beforeSubmission, submissionWasAttempted, withSubmissionGuard } from './apply/submission-guard.js'
 import { transition } from './apply/state.js'
 import { awaitTakeover, isWatched, startScreencast } from './apply/screencast.js'
@@ -262,7 +263,7 @@ export async function applyApprovedCandidate(
     // with no recipe) or it filled what it could and left required questions
     // behind. Recipes stay first because they are faster, cheaper and exact
     // where they apply.
-    if (hasApplyAgent && needsAgent) {
+    if (hasApplyAgent && needsAgent && unresolved.length === 0) {
       await transition({
         attemptId: attempt.id,
         userId,
@@ -355,6 +356,11 @@ export async function applyApprovedCandidate(
         if (submissionWasAttempted()) throw error
         logger.warn({ err: error, attemptId: attempt.id }, 'agent tier failed; keeping ladder result')
       }
+    }
+
+    if (!submissionWasAttempted()) {
+      unresolved = await waitForApplicationAnswers({page,userId,applicationId:application.id,attemptId:attempt.id,unresolved,
+        optionalLabels:result.fields.filter(field=>!field.filled&&field.via==='skipped').map(field=>field.label),signal:options?.signal})
     }
 
     if (unresolved.length > 0) {

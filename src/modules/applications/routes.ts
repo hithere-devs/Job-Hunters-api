@@ -20,6 +20,8 @@ import { toRelativeLabel } from '../../lib/time.js'
 import { currentUser, requireAuth } from '../../middleware/auth.js'
 import { validate, validatedQuery } from '../../middleware/validate.js'
 import { reconcileApplicationRecords, applicationRuntimes } from './runtime.js'
+import { liveAnswerSchema } from '../../hunt/apply/question-policy.js'
+import { listApplicationQuestions,listQuestionInbox,answerQuestions } from './questions.js'
 import { safeRetryReason } from '../../hunt/application-policy.js'
 import { applicationPreflight } from './preflight.js'
 import { applicationQueueHealth } from '../../hunt/application-queue.js'
@@ -139,6 +141,17 @@ const STATUS_TIMESTAMP: Record<ApplicationStatus, keyof Application | null> = {
   failed: null,
   closed: null,
 }
+
+applicationsRouter.post('/:id/recover-questions',validate({params:idParamSchema}),asyncHandler(async(req,res)=>{
+ ok(res,await retryApplication(currentUser(req).id,pathParam(req,'id')))
+}))
+applicationsRouter.get('/questions',asyncHandler(async(req,res)=>{ok(res,await listQuestionInbox(currentUser(req).id))}))
+applicationsRouter.post('/questions/answers',validate({body:z.object({answers:z.array(liveAnswerSchema.extend({questionId:z.string().uuid()})).min(1).max(500)})}),asyncHandler(async(req,res)=>{ok(res,await answerQuestions(currentUser(req).id,req.body.answers))}))
+applicationsRouter.get('/:id/questions',validate({params:idParamSchema}),asyncHandler(async(req,res)=>{ok(res,await listApplicationQuestions(currentUser(req).id,pathParam(req,'id')))}))
+applicationsRouter.post('/:id/questions/:questionId/answer',validate({params:idParamSchema.extend({questionId:z.string().uuid()}),body:liveAnswerSchema}),asyncHandler(async(req,res)=>{
+ const result=await answerQuestions(currentUser(req).id,[{...req.body,questionId:pathParam(req,'questionId')}],pathParam(req,'id'))
+ ok(res,{...result,saved:true,status:req.body.skip?'skipped':'answered',willContinue:result.continuedApplicationIds.length>0||result.queuedApplicationIds.length>0})
+}))
 
 applicationsRouter.get('/active', asyncHandler(async(req,res) => {
   const userId=currentUser(req).id

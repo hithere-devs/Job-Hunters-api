@@ -15,6 +15,7 @@ import { publishAttemptEvent } from './events.js'
  */
 
 export type AttemptState =
+  | 'waiting_for_input'
   | 'queued'
   | 'opening'
   | 'filling'

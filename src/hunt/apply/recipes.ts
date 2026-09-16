@@ -69,7 +69,7 @@ export async function readFields(page: Page, containerSelector?: string): Promis
     for (const element of controls) {
       const input = element as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
       const type = (input as HTMLInputElement).type || input.tagName.toLowerCase()
-      if (type === 'hidden' || input.disabled) continue
+      if (['hidden','password'].includes(type) || input.disabled || /^(current-password|new-password|one-time-code)$/.test(input.getAttribute('autocomplete') ?? '')) continue
 
       // Pair the control with its label the way a person would: an explicit
       // `for=`, then a wrapping label, then aria, then nearby text.
@@ -94,7 +94,7 @@ export async function readFields(page: Page, containerSelector?: string): Promis
       if (!label) {
         const labelledBy = element.getAttribute('aria-labelledby')
         if (labelledBy) {
-          const target = document.getElementById(labelledBy)
+          const target = document.getElementById(labelledBy.split(/\s+/)[0] ?? labelledBy)
           if (target && target.textContent && target.textContent.trim()) {
             label = target.textContent.trim()
           }
@@ -133,23 +133,36 @@ export async function readFields(page: Page, containerSelector?: string): Promis
         if (existing) {
           existing.options = existing.options ?? []
           existing.options.push(label.replace(/\s+/g, ' ').slice(0, 120))
+          existing.required ||= input.required || element.getAttribute('aria-required') === 'true'
           continue
         }
         // Prefer the group's own question — a fieldset legend or the
         // application-question wrapper — over the first option's label.
-        const group = element.closest('fieldset, .application-question, [role="radiogroup"], .field')
-        const legend = group
-          ? group.querySelector('legend, .application-label, label:not([for]), .text')
-          : null
-        const groupLabel =
-          legend && legend.textContent && legend.textContent.trim()
-            ? legend.textContent.trim()
-            : label
+        const group = element.closest('fieldset, .application-question, [role="radiogroup"], .field, [class*="fieldEntry"], [class*="FieldEntry"], [class*="form-field"]')
+        const legend = group?.querySelector('legend, .application-label, [role="heading"], label:not([for]), [class*="fieldLabel"], [class*="FieldLabel"]')
+        let groupLabel = document.querySelector(`label[for="${CSS.escape(name)}"]`)?.textContent?.trim() ?? legend?.textContent?.trim() ?? ''
+        const labelledBy = group?.getAttribute('aria-labelledby')
+        if (labelledBy) groupLabel = labelledBy.split(/\s+/).map(id => document.getElementById(id)?.textContent?.trim() ?? '').join(' ').trim() || groupLabel
+        if (!groupLabel || groupLabel === label || legend?.querySelector('input')) {
+          // Walk outward past option labels. Opaque UUID names identify fields,
+          // not the question a person needs to answer.
+          let parent = element.parentElement
+          for (let depth = 0; parent && depth < 6; depth++, parent = parent.parentElement) {
+            if (Array.from(parent.querySelectorAll<HTMLInputElement>('input:not([type=hidden]),select,textarea')).some(control => control.name && control.name !== name)) break
+            const candidates = Array.from(parent.querySelectorAll('legend, label, h1, h2, h3, h4, [role="heading"], [class*="label"], [class*="Label"], p'))
+            const question = candidates.find(node => {
+              const text = node.textContent?.trim() ?? ''
+              return text.length > 5 && text !== label && !node.querySelector('input,select,textarea') && !node.closest('label:has(input)') && !['yes','no','male','female'].includes(text.toLowerCase()) && (text.includes('?') || node.tagName === 'LEGEND' || !node.getAttribute('for'))
+            })
+            if (question?.textContent) { groupLabel = question.textContent.trim(); break }
+          }
+        }
+        if (!groupLabel) groupLabel = label
         found.push({
           label: groupLabel.replace(/\s+/g, ' ').slice(0, 200),
           type,
           name,
-          required: input.required || element.getAttribute('aria-required') === 'true',
+          required: input.required || element.getAttribute('aria-required') === 'true' || group?.getAttribute('aria-required') === 'true' || /(?:[✱*]|\(required\))\s*$/i.test(groupLabel),
           options: [label.replace(/\s+/g, ' ').slice(0, 120)],
         })
         continue
@@ -159,11 +172,12 @@ export async function readFields(page: Page, containerSelector?: string): Promis
         label: label.replace(/\s+/g, ' ').slice(0, 200),
         type,
         name,
-        required: input.required || element.getAttribute('aria-required') === 'true',
+        required: input.required || element.getAttribute('aria-required') === 'true' || /(?:[✱*]|\(required\))\s*$/i.test(label),
         options,
       })
     }
 
+    for (const field of found) if (field.type === 'checkbox' && field.options?.length === 1) field.options = []
     return found
   }, containerSelector ?? null)
 }
