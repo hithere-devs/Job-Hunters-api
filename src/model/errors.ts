@@ -10,7 +10,7 @@ export class ModelServiceUnavailableError extends Error {
 export function modelServiceFailure(error: unknown): ModelServiceUnavailableError | null {
   if(error instanceof ModelServiceUnavailableError)return error
   const message=typeof error==='string'?error:error instanceof Error?error.message:error&&typeof error==='object'&&'message' in error&&typeof error.message==='string'?error.message:''
-  if(/credit balance.{0,60}too low|insufficient[_\s-]*(?:credits?|funds|quota)|exceeded.{0,30}current quota|billing[_\s-]*hard[_\s-]*limit/i.test(message))return new ModelServiceUnavailableError('provider_quota')
-  if(/invalid.{0,20}api.?key|api.?key.{0,30}(?:invalid|expired)|invalid x-api-key|authentication_error/i.test(message))return new ModelServiceUnavailableError('provider_auth')
+  if(/no available credits or quota|credit balance.{0,60}too low|insufficient[_\s-]*(?:credits?|funds|quota)|exceeded.{0,30}current quota|billing[_\s-]*hard[_\s-]*limit/i.test(message))return new ModelServiceUnavailableError('provider_quota')
+  if(/model provider authentication failed|invalid.{0,20}api.?key|api.?key.{0,30}(?:invalid|expired)|invalid x-api-key|authentication_error/i.test(message))return new ModelServiceUnavailableError('provider_auth')
   return null
 }

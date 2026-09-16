@@ -1,6 +1,7 @@
 import { createHash, createPublicKey, randomUUID, sign } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import WebSocket from 'ws'
+import {modelServiceFailure} from '../model/errors.js'
 import { validateAgentParams, validateAgentWaitParams, validateChatAbortParams, validateChatSendParams, validateConnectParams } from '@openclaw/gateway-protocol'
 import { isGatewayResponseFrame, isGatewayEventFrame } from '@openclaw/gateway-protocol/frame-guards'
 import { PROTOCOL_VERSION } from '@openclaw/gateway-protocol/version'
@@ -29,11 +30,15 @@ export interface OpenClawClientOptions {
   cancelTimeoutMs?: number
 }
 interface Run {
-  id: string; tenant: number; sessionKey: string; deadline: number; text: string
+  id: string; tenant: number; sessionKey: string; deadline: number; text: string; providerFailure?: string
   listeners: Set<(event: OpenClawEvent) => void>; childRuns: Set<string>; result?: RunResult
   timer?: NodeJS.Timeout; stopping?: Promise<void>; done: Promise<RunResult>; resolve: (result: RunResult) => void
 }
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' ? value as Record<string, unknown> : {}
+/** OpenClaw delivery metadata is not part of the assistant's answer. */
+export function normalizeOpenClawReplyText(text: string): string {
+  return text.replace(/^\s*\[\[reply_to_current\]\]\s*/, '')
+}
 export function openClawGatewayUrl(tenant: number): string {
   if (!Number.isInteger(tenant) || tenant < 1 || tenant > 10) throw new OpenClawRunError('Invalid OpenClaw tenant', true)
   const base = Number(process.env.OPENCLAW_BASE_PORT ?? 19789)
@@ -152,6 +157,10 @@ export class OpenClawClient {
           if (typeof data.text === 'string') run.text = data.text
           else if (typeof data.delta === 'string') run.text += data.delta
         }
+        if(event.stream==='lifecycle'&&data.phase==='error'){
+          const failure=modelServiceFailure(data.error??data.errorMessage??payload.error)
+          if(failure)run.providerFailure=failure.message // constant safe diagnostic, never the upstream body
+        }
         for (const listener of run.listeners) { try { listener(event) } catch { /* Consumers cannot interrupt the watchdog. */ } }
       })
     })()
@@ -214,7 +223,7 @@ export class OpenClawClient {
           const childrenStopped = await this.stopChildRuns(run)
           if (run.stopping || run.result) return
           if (!childrenStopped) { this.finish(run, { runId: run.id, status: 'error', text: run.text, cancelConfirmed: false, error: 'OpenClaw nudge cancellation unconfirmed' }); return }
-          this.finish(run, { runId: run.id, status: payload.status === 'ok' ? 'ok' : payload.status === 'error' ? 'error' : 'cancelled', text: typeof reply.text === 'string' ? reply.text : run.text, error: typeof payload.error === 'string' ? payload.error : typeof record(payload.error).message === 'string' ? record(payload.error).message as string : undefined, cancelConfirmed: true })
+          this.finish(run, { runId: run.id, status: payload.status === 'ok' ? 'ok' : payload.status === 'error' ? 'error' : 'cancelled', text: normalizeOpenClawReplyText(typeof reply.text === 'string' ? reply.text : run.text), error: run.providerFailure ?? (typeof payload.error === 'string' ? payload.error : typeof record(payload.error).message === 'string' ? record(payload.error).message as string : undefined), cancelConfirmed: true })
           return
         }
         if (Date.now() >= run.deadline) { await this.stop(run, 'timeout'); return }

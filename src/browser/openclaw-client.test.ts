@@ -3,10 +3,10 @@ import { generateKeyPairSync, createPublicKey, verify } from 'node:crypto'
 import { afterEach, test } from 'node:test'
 import { WebSocketServer } from 'ws'
 import { validateAgentParams, validateAgentWaitParams, validateChatAbortParams, validateChatSendParams, validateConnectParams } from '@openclaw/gateway-protocol'
-import { OpenClawClient, OpenClawRunError, openClawGatewayUrl, openClawBrowserProfile } from './openclaw-client.js'
+import { OpenClawClient, OpenClawRunError, openClawGatewayUrl, normalizeOpenClawReplyText, openClawBrowserProfile } from './openclaw-client.js'
 const cleanup: Array<() => Promise<void>> = []
 afterEach(async () => { for (const close of cleanup.splice(0)) await close() })
-async function fixture(options: { complete?: boolean; noStop?: boolean; dropAgent?: boolean; waitUntilAbort?: boolean; providerError?: string } = {}) {
+async function fixture(options: { complete?: boolean; noStop?: boolean; dropAgent?: boolean; waitUntilAbort?: boolean; providerError?: string; terminalText?: string } = {}) {
   const requests: Array<{ id: string; method: string; params: Record<string, any> }> = []
   const server = new WebSocketServer({ host: '127.0.0.1', port: 0 })
   await new Promise<void>((resolve) => server.once('listening', resolve))
@@ -27,7 +27,7 @@ async function fixture(options: { complete?: boolean; noStop?: boolean; dropAgen
         assert.ok(validateAgentWaitParams(request.params))
         if (options.waitUntilAbort && !stopped) { waiting.push(() => respond({ runId: request.params.runId, status: 'error', endedAt: Date.now() })); return }
         if(options.providerError){respond({runId:request.params.runId,status:'error',endedAt:Date.now(),error:{message:options.providerError}});return}
-        respond(stopped || options.complete ? { runId: request.params.runId, status: stopped ? 'error' : 'ok', endedAt: Date.now(), terminalReply: { text: 'Ready for owner verification' } } : { runId: request.params.runId, status: 'timeout' })
+        respond(stopped || options.complete ? { runId: request.params.runId, status: stopped ? 'error' : 'ok', endedAt: Date.now(), terminalReply: { text: options.terminalText ?? 'Ready for owner verification' } } : { runId: request.params.runId, status: 'timeout' })
       } else if (request.method === 'chat.abort') { assert.ok(validateChatAbortParams(request.params)); stopped = !options.noStop; waiting.splice(0).forEach(finish => finish()); respond({ ok: true, aborted: true, runIds: [request.params.runId] }) }
       else if (request.method === 'chat.send') { assert.ok(validateChatSendParams(request.params)); respond({ runId: request.params.idempotencyKey, status: 'accepted' }) }
     })
@@ -134,4 +134,17 @@ test('preserves structured provider errors for nonretryable availability handlin
  const {runId}=await client.startRun(9,{attemptId:'model-unavailable',prompt:'Fixture only'})
  const result=await client.waitForRun(runId,{timeoutMs:2000})
  assert.equal(result.status,'error');assert.match(result.error??'',/credit balance/);assert.equal(result.cancelConfirmed,true)
+})
+
+test('strips only a leading documented reply routing marker before a JSON answer', () => {
+  assert.equal(normalizeOpenClawReplyText('  [[reply_to_current]]\n {"ready":true}'), '{"ready":true}')
+  const literal = '{"answer":"[[reply_to_current]]"}'
+  assert.equal(normalizeOpenClawReplyText(literal), literal)
+  assert.equal(normalizeOpenClawReplyText('  {"ready":true}'), '  {"ready":true}')
+})
+test('waitForRun returns canonical answer text rather than OpenClaw delivery metadata', async () => {
+  const { client } = await fixture({ complete: true, terminalText: '[[reply_to_current]]\nGEMINI_OK' })
+  const { runId } = await client.startRun(9, { attemptId: 'reply-directive', prompt: 'Health fixture' })
+  const result = await client.waitForRun(runId, { timeoutMs: 500 })
+  assert.equal(result.status, 'ok'); assert.equal(result.text, 'GEMINI_OK')
 })
