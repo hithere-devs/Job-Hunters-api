@@ -1,4 +1,5 @@
 import os from 'node:os'
+import {ModelServiceUnavailableError} from '../model/errors.js'
 import path from 'node:path'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { and, eq, inArray, sql } from 'drizzle-orm'
@@ -409,7 +410,7 @@ export async function applyApprovedCandidate(
       } catch (error) {
         // A failed agent must not lose the deterministic tier's work — the
         // attempt falls through to review with whatever the ladder managed.
-        if (submissionWasAttempted() || error instanceof OpenClawApplyError && !error.safeToFallback) throw error
+        if (error instanceof ModelServiceUnavailableError || submissionWasAttempted() || error instanceof OpenClawApplyError && !error.safeToFallback) throw error
         logger.warn({ err: error, attemptId: attempt.id }, 'agent tier failed; keeping ladder result')
       }
     }

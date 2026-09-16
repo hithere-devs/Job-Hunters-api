@@ -8,6 +8,7 @@ import { canReuseExplicitAnswer, sensitiveReason } from './fields.js'
 import { forbiddenQuestion } from './question-policy.js'
 import type { ApplyOutcome } from '../../skills/types.js'
 import {subscribeOpenClawNudges} from './openclaw-nudges.js'
+import {modelServiceFailure,ModelServiceUnavailableError} from '../../model/errors.js'
 import * as gateway from '../../browser/openclaw-client.js'
 
 export interface StoredApplyAnswer {
@@ -197,6 +198,7 @@ export async function applyWithOpenClaw(input: OpenClawApplyInput, client: Gatew
     if (!quiescent) await cancel()
     await input.onLifecycle?.({ runId, state: result.status })
     input.signal?.throwIfAborted()
+    const infrastructureFailure=modelServiceFailure(result.error);if(infrastructureFailure)throw infrastructureFailure
     if (result.status !== 'ok') throw new OpenClawApplyError(result.error ?? `OpenClaw run ${result.status}`, quiescent)
     const report = parseOpenClawApplyReport(result.text)
     if (report.assumptions.length) await input.onLifecycle?.({ runId, state: 'assumptions', detail: { assumptions: report.assumptions } })
@@ -206,6 +208,7 @@ export async function applyWithOpenClaw(input: OpenClawApplyInput, client: Gatew
     if (runId && !quiescent) {
       try { await cancel() } catch { /* An unconfirmed cancellation forbids the legacy driver from taking over. */ }
     }
+    if (error instanceof ModelServiceUnavailableError && quiescent) throw error
     if (error instanceof OpenClawApplyError && error.possibleSubmission) throw error
     throw new OpenClawApplyError(error instanceof Error ? error.message : 'OpenClaw application failed', quiescent, { cause: error })
   } finally {

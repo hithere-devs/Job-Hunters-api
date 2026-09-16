@@ -214,7 +214,7 @@ export class OpenClawClient {
           const childrenStopped = await this.stopChildRuns(run)
           if (run.stopping || run.result) return
           if (!childrenStopped) { this.finish(run, { runId: run.id, status: 'error', text: run.text, cancelConfirmed: false, error: 'OpenClaw nudge cancellation unconfirmed' }); return }
-          this.finish(run, { runId: run.id, status: payload.status === 'ok' ? 'ok' : payload.status === 'error' ? 'error' : 'cancelled', text: typeof reply.text === 'string' ? reply.text : run.text, error: typeof payload.error === 'string' ? payload.error : undefined, cancelConfirmed: true })
+          this.finish(run, { runId: run.id, status: payload.status === 'ok' ? 'ok' : payload.status === 'error' ? 'error' : 'cancelled', text: typeof reply.text === 'string' ? reply.text : run.text, error: typeof payload.error === 'string' ? payload.error : typeof record(payload.error).message === 'string' ? record(payload.error).message as string : undefined, cancelConfirmed: true })
           return
         }
         if (Date.now() >= run.deadline) { await this.stop(run, 'timeout'); return }

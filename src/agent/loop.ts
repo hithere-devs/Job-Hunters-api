@@ -1,3 +1,4 @@
+import {modelServiceFailure} from '../model/errors.js'
 import type { Page } from 'playwright-core'
 import { env } from '../config/env.js'
 import { logger } from '../lib/logger.js'
@@ -9,7 +10,7 @@ import { runTool, toolsFor, type AgentReport, type ToolContext } from './tools.j
 /**
  * The agent.
  *
- * Muse Spark decides, Playwright acts, and this file is the loop between them.
+ * Retained fallback reasoning loop. OpenClaw is the primary VM driver.
  * It replaces Stagehand, which had to be dropped for three separate reasons:
  * it could only reason with providers on its own list, it needed a browser
  * extension that Chromium would not load headlessly — so it ran a second,
@@ -314,6 +315,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         }),
       )
     } catch (error) {
+      const infrastructureFailure=modelServiceFailure(error);if(infrastructureFailure)throw infrastructureFailure
       logger.warn({ err: error }, 'agent step failed')
       const key = errorKey(error)
       repeatedModelErrors = key === lastModelError ? repeatedModelErrors + 1 : 1
@@ -337,7 +339,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       // No tool call means the model answered in prose. Say so once and give
       // it another turn; a second miss ends the run rather than burning steps
       // on a conversation.
-      messages.push({ role: 'assistant', content: result.content ?? '' })
+      messages.push({ role: 'assistant', content: result.content ?? '', ...(result.reasoningDetails?.length ? {reasoning_details:result.reasoningDetails} : {}) })
       messages.push({
         role: 'user',
         content: 'That was not a tool call. Call exactly one tool, or call done.',
@@ -406,6 +408,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       role: 'assistant',
       content: result.content ?? '',
       tool_calls: [call],
+      ...(result.reasoningDetails?.length ? {reasoning_details:result.reasoningDetails} : {}),
     })
     messages.push({
       role: 'tool',

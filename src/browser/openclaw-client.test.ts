@@ -6,7 +6,7 @@ import { validateAgentParams, validateAgentWaitParams, validateChatAbortParams, 
 import { OpenClawClient, OpenClawRunError, openClawGatewayUrl, openClawBrowserProfile } from './openclaw-client.js'
 const cleanup: Array<() => Promise<void>> = []
 afterEach(async () => { for (const close of cleanup.splice(0)) await close() })
-async function fixture(options: { complete?: boolean; noStop?: boolean; dropAgent?: boolean; waitUntilAbort?: boolean } = {}) {
+async function fixture(options: { complete?: boolean; noStop?: boolean; dropAgent?: boolean; waitUntilAbort?: boolean; providerError?: string } = {}) {
   const requests: Array<{ id: string; method: string; params: Record<string, any> }> = []
   const server = new WebSocketServer({ host: '127.0.0.1', port: 0 })
   await new Promise<void>((resolve) => server.once('listening', resolve))
@@ -26,6 +26,7 @@ async function fixture(options: { complete?: boolean; noStop?: boolean; dropAgen
       } else if (request.method === 'agent.wait') {
         assert.ok(validateAgentWaitParams(request.params))
         if (options.waitUntilAbort && !stopped) { waiting.push(() => respond({ runId: request.params.runId, status: 'error', endedAt: Date.now() })); return }
+        if(options.providerError){respond({runId:request.params.runId,status:'error',endedAt:Date.now(),error:{message:options.providerError}});return}
         respond(stopped || options.complete ? { runId: request.params.runId, status: stopped ? 'error' : 'ok', endedAt: Date.now(), terminalReply: { text: 'Ready for owner verification' } } : { runId: request.params.runId, status: 'timeout' })
       } else if (request.method === 'chat.abort') { assert.ok(validateChatAbortParams(request.params)); stopped = !options.noStop; waiting.splice(0).forEach(finish => finish()); respond({ ok: true, aborted: true, runIds: [request.params.runId] }) }
       else if (request.method === 'chat.send') { assert.ok(validateChatSendParams(request.params)); respond({ runId: request.params.idempotencyKey, status: 'accepted' }) }
@@ -126,4 +127,11 @@ test('extension browser is an explicit per-tenant opt-in',()=>{
   process.env.OPENCLAW_BROWSER_PROFILES='{"3":"untrusted-profile"}'
   assert.throws(()=>openClawBrowserProfile(3))
  }finally{if(before===undefined)delete process.env.OPENCLAW_BROWSER_PROFILES;else process.env.OPENCLAW_BROWSER_PROFILES=before}
+})
+
+test('preserves structured provider errors for nonretryable availability handling',async()=>{
+ const {client}=await fixture({providerError:'Your credit balance is too low to access the Anthropic API.'})
+ const {runId}=await client.startRun(9,{attemptId:'model-unavailable',prompt:'Fixture only'})
+ const result=await client.waitForRun(runId,{timeoutMs:2000})
+ assert.equal(result.status,'error');assert.match(result.error??'',/credit balance/);assert.equal(result.cancelConfirmed,true)
 })

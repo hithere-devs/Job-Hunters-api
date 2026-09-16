@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import {ModelServiceUnavailableError} from '../../model/errors.js'
 import { describe, it } from 'node:test'
 import { runWithDatabase, type DatabaseTransaction } from '../../db/client.js'
 import { OpenClawRunError, type RunResult } from '../../browser/openclaw-client.js'
@@ -59,6 +60,10 @@ describe('OpenClaw application handoff', () => {
     assert.equal(((supplied as unknown[])[1] as { attemptId: string }).attemptId, input.attemptId)
     assert.deepEqual(lifecycle, ['started', 'ok'])
     assert.deepEqual(mock.counts(), { cancelled: 0, unsubscribed: 1 })
+  })
+  it('does not retry a depleted model provider through the legacy driver',async()=>{
+    const mock=clientWith({status:'error',error:'Your credit balance is too low to access the Anthropic API.',cancelConfirmed:true})
+    await assert.rejects(applyWithOpenClaw(input,mock.client),error=>error instanceof ModelServiceUnavailableError&&error.reason==='provider_quota')
   })
   it('permits legacy fallback only after timeout cancellation is confirmed', async () => {
     const mock = clientWith({ status: 'timeout', cancelConfirmed: false })
