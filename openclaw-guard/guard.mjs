@@ -54,7 +54,7 @@ export async function decide(event, policy, facts, resolveRef, now = Date.now())
   if (facts.hasAuthentication) return deny('human_authentication_required')
   // Restrict the envelope as well as the action so future tool parameters fail closed.
   const route = { target: 'host', profile: 'tenant', targetId: policy.targetId }
-  if (p.action === 'snapshot') return { params: { action: 'snapshot', ...route, snapshotFormat: 'ai', refs: 'aria', interactive: true, compact: true, maxChars: 18000 } }
+  if (p.action === 'snapshot') return { params: { action: 'snapshot', ...route, snapshotFormat: 'ai', refs: 'aria', interactive: false, compact: false, maxChars: 18000 } }
   if (p.action === 'screenshot') return { params: { action: 'screenshot', ...route, fullPage: false, type: 'png' } }
   if (p.action === 'upload') {
     if (!policy.resumePath || !Array.isArray(p.paths) || p.paths.length !== 1 || p.paths[0] !== policy.resumePath || typeof p.inputRef !== 'string' || p.ref || p.element) return deny('upload_must_target_approved_file_input')

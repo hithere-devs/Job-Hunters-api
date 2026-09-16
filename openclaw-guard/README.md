@@ -130,7 +130,7 @@ Both fixtures removed their own synthetic state, closed their pages and stopped 
 
 ### Ashby Yes/No controls
 
-The observed Ashby DOM uses plain native buttons with no role or explicit type. Its Yes/No container is `.ashby-application-form-input-yesno`, inside `.ashby-application-form-field-entry` with a single question label. The guard recognizes only that bounded structure: exactly one group, exactly two Yes/No buttons, one local label, no competing input/link, no form-action override and no submission-bearing question.
+The observed Ashby DOM uses plain native buttons with no role or explicit type. Its Yes/No container is `.ashby-application-form-input-yesno`, inside `.ashby-application-form-field-entry` with a single question label. The guard recognizes only that bounded structure: exactly one group, exactly two Yes/No buttons, one local label, at most one direct backing checkbox and no other competing input/link, no form-action override and no submission-bearing question.
 
 That known control is represented as the application's logical `checkbox` field. Yes proposes exactly `true`, No proposes exactly `false`. It does not toggle an unchecked boolean when the chosen button is No. Sensitive choices still require the exact approved label, type and value; a `No` string is not silently substituted for stored `false`.
 
@@ -141,3 +141,12 @@ PASS native Ashby boolean guard: exact approved false clicked No; unapproved Yes
 ```
 
 `verify-ashby-choices.mjs` uses a synthetic field with the observed wrapper structure in tenant 9. It calls the actual hook and native OpenClaw click after obtaining native snapshot refs. It does not inspect or change a real applicant's page.
+
+
+### Real markup correction and full context
+
+Read-only inspection of the authorized public Mercor form showed a third child in every Yes/No container: Ashby's backing native checkbox. The original fixture omitted it and the guard rejected those groups. The matcher now permits at most one direct `input[type=checkbox]` in the proven Yes/No container. Other inputs and multiple backing controls still fail. The synthetic fixture now includes that actual structure.
+
+All four Yes buttons and the New York location checkbox passed hypothetical guard classification against fresh native refs on the public form, without clicking or filling anything. The location checkbox already resolved correctly as an input with checkbox type; no extra click permission was added for it. Old-run ref failures should not be treated as proof of a missing permission.
+
+Snapshots now preserve static question labels with `interactive:false` and `compact:false`, retaining the 18,000-character cap. The full native public-form snapshot contained the work-authorization question. This avoids handing the model four indistinguishable Yes/No pairs without their questions. The tool permissions and exact sensitive-answer policy did not change.

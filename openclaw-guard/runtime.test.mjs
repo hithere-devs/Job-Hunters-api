@@ -29,10 +29,13 @@ test('hidden off-host iframe is neither inspected nor included; visible off-host
 })
 
 import { describeElement } from './runtime.mjs'
-function ashbyChoice({labelText='Are you legally authorized to work in the United States?',extraButton=false,extraLabel=false,type=null}={}) {
+function ashbyChoice({labelText='Are you legally authorized to work in the United States?',extraButton=false,extraLabel=false,type=null,backingType=null,extraBacking=false}={}) {
  const labels=[],buttons=[]
  const entry={querySelectorAll:s=>s==='label'?labels:s==='.ashby-application-form-input-yesno'?[choices]:[],querySelector:()=>null}
- const choices={closest:()=>entry,querySelectorAll:s=>s==='button'?buttons:[],querySelector:()=>null}
+ const backing=[]
+ const choices={closest:()=>entry,querySelectorAll:s=>s==='button'?buttons:s==='input,select,textarea,a'?backing:[],querySelector:()=>null}
+ if(backingType)backing.push({tagName:'INPUT',getAttribute:()=>backingType,parentElement:choices})
+ if(extraBacking)backing.push({tagName:'INPUT',getAttribute:()=> 'text',parentElement:choices})
  const makeButton=text=>({tagName:'BUTTON',textContent:text,labels:[],getAttribute:k=>k==='type'?type:null,hasAttribute:()=>false,closest:s=>s==='.ashby-application-form-input-yesno'?choices:null,ownerDocument:{getElementById:()=>null,defaultView:{getComputedStyle:()=>({visibility:'visible',display:'block'})}},getBoundingClientRect:()=>({width:80,height:30})})
  buttons.push(makeButton('Yes'),makeButton('No'));if(extraButton)buttons.push(makeButton('Submit application'))
  const makeLabel=text=>({textContent:text,closest:()=>entry,querySelector:()=>null})
@@ -40,12 +43,12 @@ function ashbyChoice({labelText='Are you legally authorized to work in the Unite
  return buttons.map(describeElement)
 }
 test('Ashby native Yes/No buttons carry their sole local label and strict boolean choice',()=>{
- const [yes,no]=ashbyChoice()
+ const [yes,no]=ashbyChoice({backingType:'checkbox'})
  assert.equal(yes.type,'checkbox');assert.equal(yes.choiceValue,'true');assert.equal(no.choiceValue,'false')
  assert.equal(no.label,'Are you legally authorized to work in the United States?');assert.equal(no.choiceContext,true)
 })
 test('unproven or submit-bearing Ashby-like groups cannot become choices',()=>{
- for(const options of [{extraButton:true},{extraLabel:true},{labelText:'Confirm submission?'},{type:'submit'}]){
+ for(const options of [{extraButton:true},{extraLabel:true},{labelText:'Confirm submission?'},{type:'submit'},{backingType:'password'},{backingType:'checkbox',extraBacking:true}]){
   const [button]=ashbyChoice(options)
   assert.equal(button.choiceValue,undefined);assert.equal(button.choiceContext,false)
  }

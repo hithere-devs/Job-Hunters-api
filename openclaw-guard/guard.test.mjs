@@ -27,6 +27,9 @@ test('inspection denies authentication and off-host pages before returning conte
  assert.equal((await check(e,policy(),{...facts(),url:'https://jobs.ashbyhq.com.evil.test'})).block,true)
  assert.equal((await check(e,policy(),{...facts(),frameUrls:['https://accounts.google.com']})).block,true)
  assert.equal((await check(e)).params.refs,'aria')
+ assert.equal((await check(e)).params.interactive,false)
+ assert.equal((await check(e)).params.compact,false)
+ assert.equal((await check(e)).params.maxChars,18000)
 })
 test('ordinary text fills remain allowed but credential fields never do', async () => {
  assert.equal((await check(event({kind:'type',ref:'e1',text:'Ada'}))).block,undefined)

@@ -27,8 +27,10 @@ export function describeElement(element) {
     const buttons = Array.from(choices?.querySelectorAll('button') || [])
     const labels = Array.from(entry?.querySelectorAll('label') || []).filter(label => label.closest('.ashby-application-form-field-entry') === entry && !label.querySelector('input,select,textarea,button'))
     const optionNames = buttons.map(button => (button.textContent || '').trim().toLowerCase())
+    const backingControls = Array.from(choices?.querySelectorAll('input,select,textarea,a') || [])
+    const backingValid = backingControls.length === 0 || (backingControls.length === 1 && backingControls[0].tagName === 'INPUT' && backingControls[0].getAttribute('type') === 'checkbox' && backingControls[0].parentElement === choices)
     const label = labels.length === 1 ? labels[0].textContent?.trim() || '' : ''
-    if (entry && choices && buttons.length === 2 && buttons.includes(element) && optionNames.includes('yes') && optionNames.includes('no') && entry.querySelectorAll('.ashby-application-form-input-yesno').length === 1 && !choices.querySelector('input,select,textarea,a') && buttons.every(button => !button.hasAttribute('form') && !button.hasAttribute('formaction') && !['submit', 'reset'].includes(button.getAttribute('type'))) && label.length > 5 && label.length <= 600 && !/\b(?:submit|submission|finish|complete|send|confirm)\b/i.test(label)) {
+    if (entry && choices && buttons.length === 2 && buttons.includes(element) && optionNames.includes('yes') && optionNames.includes('no') && entry.querySelectorAll('.ashby-application-form-input-yesno').length === 1 && backingValid && buttons.every(button => !button.hasAttribute('form') && !button.hasAttribute('formaction') && !['submit', 'reset'].includes(button.getAttribute('type'))) && label.length > 5 && label.length <= 600 && !/\b(?:submit|submission|finish|complete|send|confirm)\b/i.test(label)) {
       groupName = label
       ashbyBoolean = true
     }
