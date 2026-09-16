@@ -1,3 +1,4 @@
+import {PROVIDER_SPAM_MESSAGE} from './apply/provider-block.js'
 import os from 'node:os'
 import {ModelServiceUnavailableError} from '../model/errors.js'
 import path from 'node:path'
@@ -522,11 +523,12 @@ export async function applyApprovedCandidate(
       // screenshot proves it. Recording it as an error would make the safe
       // mode look broken and push people to turn it off.
       const heldBack = outcome.heldBack === 'dry_run' || outcome.heldBack === 'kill_switch'
+      const providerBlocked=outcome.result==='provider_blocked'
       await transition({
         attemptId: attempt.id,
         userId,
         state: heldBack ? 'skipped' : 'blocked',
-        ...(heldBack ? {} : { reason: 'needs_input' as const }),
+        ...(heldBack ? {} : { reason: providerBlocked ? 'provider_blocked' as const : 'needs_input' as const }),
         detail: { heldBack: outcome.heldBack ?? null, result: outcome.result ?? null, recipe: result.recipe },
       })
       // `pending` is the attempt's own starting state — reusing it here left a
@@ -536,9 +538,9 @@ export async function applyApprovedCandidate(
       // filled correctly, outcome deliberately never determined.
       await db.update(applyAttempts).set({
         status: heldBack || outcome.result === 'submitted_unconfirmed' ? 'unknown' : 'needs_review',
-        error: outcome.result === 'submitted_unconfirmed' ? 'Submit was clicked, but confirmation was not observed. Check the provider; do not retry automatically.' : outcome.heldBack ? `Not submitted: ${outcome.heldBack}` : null,
+        error: providerBlocked ? PROVIDER_SPAM_MESSAGE : outcome.result === 'submitted_unconfirmed' ? 'Submit was clicked, but confirmation was not observed. Check the provider; do not retry automatically.' : outcome.heldBack ? `Not submitted: ${outcome.heldBack}` : null,
         submittedFields: audit,
-        unresolvedFields: heldBack ? [] : [{ label: 'Submit control', type: 'button' }],
+        unresolvedFields: heldBack || providerBlocked ? [] : [{ label: 'Submit control', type: 'button' }],
         evidenceStoragePath,
         completedAt: new Date(),
         updatedAt: new Date(),

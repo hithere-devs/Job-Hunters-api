@@ -1,3 +1,4 @@
+import {providerSubmissionBlocked} from './provider-block.js'
 import { beforeSubmission } from './submission-guard.js'
 import { browserFilePayload } from '../../lib/file-payload.js'
 import type { Page } from 'playwright-core'
@@ -218,7 +219,7 @@ export async function hasSubmissionConfirmation(page: Page, url: string) {
 export interface SubmitResult {
   submitted: boolean
   /** Distinguishes a click whose server-side result could not be observed. */
-  result?: 'submitted' | 'submitted_unconfirmed' | 'not_submitted'
+  result?: 'submitted' | 'submitted_unconfirmed' | 'not_submitted' | 'provider_blocked'
   /** Set when we deliberately did not submit. */
   heldBack?: 'dry_run' | 'kill_switch' | 'no_submit_control' | 'posting_closed' | 'invalid_fields'
   confirmation?: string
@@ -281,6 +282,7 @@ export async function submitForm(params: {
   // text its bounded window before storing an uncertain submission outcome.
   await confirmation.catch(() => undefined)
   const body = await page.locator('body').innerText().catch(() => '')
+  if(providerSubmissionBlocked(body))return {submitted:false,result:'provider_blocked'}
   if (!plan.success.test(body)) {
     return { submitted: false, result: 'submitted_unconfirmed', confirmation: body.slice(0, 200) }
   }

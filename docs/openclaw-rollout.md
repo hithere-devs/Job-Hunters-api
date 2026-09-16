@@ -1,12 +1,24 @@
 # OpenClaw application rollout
 
+## Current result, 2026-09-16
+
+The tenant 2 OpenClaw extension is installed, enabled, paired and active for application reasoning. Both the API and all tenant gateways now select Gemini 3.1 Flash Lite through OpenRouter, with a 2048-token application output cap and low reasoning. No active application model route uses Anthropic.
+
+The full Gemini extension fixture passed text input, explicit saved boolean answers, location autocomplete, resume upload, exact Chrome target matching, cross-tenant authentication rejection, and final-submit denial. Flow A separately passed with gateway, relay and CDP closed during human sign-in.
+
+**The real Mercor application was not accepted.** OpenClaw filled the Fullstack Software Engineer, Agent Platform form without human answers. Huntly clicked final submit once. The saved provider page says: “We couldn't submit your application. Your application submission was flagged as possible spam.” Attempt `f3db1ab5-c2be-45fa-ae49-353f368ef995` is recorded as a provider block, not a missing-answer issue. The submission fence remains intact and no further submission was attempted. The evidence is available in Applications → Mercor → Review.
+
+Current gates: API 396 tests passed, 0 failed; typecheck and API build passed; UI build passed with the existing bundle-size warning. Guard unit tests: 35 passed. VM policy/lifecycle tests: 8 passed. Product UI verified through the existing signed-in Chrome extension session. No provider login or inbox access was automated.
+
+M3.3's accepted-live-application gate remains blocked by the provider rejection. M3.5 remains deferred until three accepted postings across two ATS families pass. Provider restrictions, model credit capacity for bulk use, and the production security items below must be resolved before claiming a production-ready release.
+
 ## Runtime
 
 - OpenClaw 2026.9.3, gateway protocol schemas pinned to 2026.8.1, protocol v4.
 - `deploy/provision-openclaw.mjs` creates ten OS-user-scoped gateways. Run as root on the VM. It reads the existing root-owned runner environment and never prints secrets.
 - Gateway base 19789, stride 1000. The operator's personal gateway remains on 18789. All gateway, browser-control, CDP, VNC and VM-agent listeners are loopback-only.
 - Each gateway attaches to `http://127.0.0.1:9200+tenant`, which is Chrome's existing Flow B profile. Flow A still has no CDP.
-- `APPLY_DRIVER=openclaw` selects the new reasoning tier after the deterministic ladder. Claude Sonnet 5 replaces Muse in both OpenClaw and the retained fallback.
+- `APPLY_DRIVER=openclaw` selects the new reasoning tier after the deterministic ladder. Gemini 3.1 Flash Lite now drives both OpenClaw and the retained fallback. Anthropic was removed from active routing after its provider balance became unavailable.
 - Root-owned per-attempt policies authorize one target, host list, deadline, explicit sensitive answers, and one resume. The plugin rejects shell tools, login/OTP/CAPTCHA, arbitrary navigation, unapproved choices and final submission.
 - Resume staging uses the documented tenant `media/inbound` directory. Policy revocation removes the staged copy. The durable original resume remains in application storage.
 - Final submit stays in Huntly's guarded code. A database submission fence prevents automatic duplicate submission after uncertain confirmation.
@@ -81,7 +93,7 @@ API typecheck and UI build passed. UI retains the existing >500 kB bundle warnin
 
 The VM resume upload symlink test passed: a root-owned sentinel remained unchanged, and the replaced destination was a regular 0600 file owned by tenant 9. This verifies the privilege fix, not only its source code.
 
-## Extension experiment status
+## Earlier extension experiment status, superseded by current result
 
 At the user's explicit request, installed the official bundled OpenClaw 2.3.0 extension assets and native messaging host for tenants 2 and 9. The browser itself still requires Chrome's Load unpacked selection. This is not a successful loaded-extension or native-relay gate.
 
