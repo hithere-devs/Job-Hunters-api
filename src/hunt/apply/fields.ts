@@ -1,9 +1,11 @@
+import { commonSensitiveQuestionId } from '../../persona/application-questions.js'
 import crypto from 'node:crypto'
 import { and, eq, isNull, or, sql } from 'drizzle-orm'
 import { z } from 'zod/v4'
 import { db } from '../../db/client.js'
 import { fieldAnswers } from '../../db/schema.js'
 import { hasModelAccess } from '../../config/env.js'
+import { badRequest } from '../../lib/errors.js'
 import { logger } from '../../lib/logger.js'
 import { structured } from '../../model/gateway.js'
 import type { PortalProfile } from '../portal-profile.js'
@@ -49,6 +51,7 @@ export interface ResolvedField {
  * honest stop.
  */
 const NEVER_AUTO: Array<[RegExp, string]> = [
+  [/^(?:current|present)\s+(?:salary|ctc|compensation)(?:\s*\([^)]*\))?[*: ]*$/i, 'salary information'],
   // Word-stem matches, not whole words: "disabilit" must catch "disability"
   // and "disabilities", and a trailing \b makes it match neither. Getting this
   // wrong means silently answering a demographic question on someone's behalf.
@@ -81,6 +84,32 @@ const NEVER_AUTO: Array<[RegExp, string]> = [
   ],
   [/\b(?:reference|referee)s?\b[\s\S]{0,12}\b(?:name|contact|email|phone|detail)/i, 'a reference’s contact details'],
 ]
+
+/** Login/verification secrets never enter the question/chat/cache pipeline. */
+export function credentialFieldReason(field: FormField): string | null {
+  if (field.type.toLowerCase() === 'password' || /\b(?:password|passphrase|passcode|captcha|otp|2fa|mfa|secret|recovery\s+code|(?:verification|security|authentication|login|one[- ]time|two[- ]factor)\s+code)\b/i.test(`${field.label} ${field.name ?? ''}`)) return 'Complete sign-in or verification yourself in browser setup. Never send credentials in chat.'
+  return null
+}
+
+export function isContextualQuestion(field: FormField): boolean {
+  return /\b(?:why|motivat\w*|cover\s*letter|this\s+(?:company|role|position|job)|our\s+(?:company|team|mission)|join\s+us)\b/i.test(field.label)
+}
+
+/** Legal commitments/reference/background answers always require this application’s review. */
+export function canReuseExplicitAnswer(field: FormField): boolean {
+  if (credentialFieldReason(field) || isContextualQuestion(field)) return false
+  const reason = sensitiveReason(field.label, field.options)
+  if (reason && /background|legal|reference/i.test(reason)) return false
+  return !/\b(?:certif\w*|attest\w*|declaration|employment\s+contract|legally\s+binding)\b/i.test(field.label)
+}
+
+export function validExplicitAnswer(field: FormField, value: string): string | null {
+  const trimmed = value.trim()
+  if (!trimmed || trimmed.length > 4000 || credentialFieldReason(field)) return null
+  if (field.options?.length) return field.options.find((option) => option.trim().toLowerCase() === trimmed.toLowerCase()) ?? null
+  if (field.type === 'checkbox') return /^(?:true|false)$/i.test(trimmed) ? trimmed.toLowerCase() : null
+  return trimmed
+}
 
 const CONSENT_LABEL = /\b(?:privacy\s+policy|personal\s+data|store\s+and\s+process|consent|terms\s+(?:of\s+use|and\s+conditions))\b/i
 const REFERRAL_LABEL = /\bhow\s+did\s+you\s+hear\s+about\s+us\b/i
@@ -183,9 +212,11 @@ export function valueFromProfile(key: string, profile: PortalProfile): string | 
     country: profile.address.country,
     noticePeriod: profile.noticePeriod,
     headline: profile.headline,
+    totalExperience: profile.totalExperience,
   }
   if (key === 'currentCompany') {
-    const current = profile.experience.find((item) => item.isCurrent)
+    const history = profile.experience ?? []
+    const current = history.find((item) => item.isCurrent) ?? [...history].sort((a, b) => (b.endedOn ?? b.startedOn ?? '').localeCompare(a.endedOn ?? a.startedOn ?? ''))[0]
     return current?.company?.trim() || null
   }
   const value = map[key]
@@ -268,19 +299,8 @@ export async function resolveField(
   field: FormField,
   context: ResolveContext,
 ): Promise<ResolvedField> {
-  // Sensitive questions stop before any rung runs. This is checked first on
-  // purpose: a cached or recipe answer must not be able to route around it.
+  if (credentialFieldReason(field)) return { value: null, via: 'skipped', blocked: 'sensitive_field' }
   const sensitive = sensitiveReason(field.label, field.options)
-  if (sensitive) return { value: null, via: 'skipped', blocked: 'sensitive_field' }
-
-  // Consent is implicit in the user's request to apply. Checkbox controls use
-  // the value only as a marker; fill.ts checks the control itself.
-  if (field.type === 'checkbox' && CONSENT_LABEL.test(field.label)) {
-    return { value: 'true', via: 'consent' }
-  }
-  if (REFERRAL_LABEL.test(field.label)) return { value: 'Job board', via: 'heuristic' }
-
-  if (context.fromRecipe) return { value: context.fromRecipe, via: 'recipe' }
 
   const signature = fieldSignature(field)
 
@@ -299,16 +319,37 @@ export async function resolveField(
     .catch(() => [])
 
   const own = cached.find((row) => row.userId === context.userId)
-  if (own?.value) {
-    void bumpUsage(own.id)
-    return { value: own.value, via: 'cache' }
+  const explicit = own?.confirmed && own.provenance === 'explicit_user' && own.value && canReuseExplicitAnswer(field) ? validExplicitAnswer(field, own.value) : null
+  if (explicit) {
+    await bumpUsage(own!.id)
+    return { value: explicit, via: 'cache' }
   }
+
+  const commonId = sensitive ? commonSensitiveQuestionId(field.label, field.type) : null
+  if (commonId && !field.options?.length) {
+    const [answer] = await db.select({ value: fieldAnswers.value }).from(fieldAnswers).where(and(eq(fieldAnswers.userId, context.userId), eq(fieldAnswers.host, 'profile'), eq(fieldAnswers.fieldSignature, `profile:${commonId}`), eq(fieldAnswers.provenance, 'explicit_user'), eq(fieldAnswers.confirmed, true))).limit(1).catch(() => [])
+    const value = answer?.value ? validExplicitAnswer(field, answer.value) : null
+    if (value) return { value, via: 'cache' }
+  }
+
+  if (sensitive) return { value: null, via: 'skipped', blocked: 'sensitive_field' }
+
+  // Consent is implicit in the user's request to apply. Checkbox controls use
+  // the value only as a marker; fill.ts checks the control itself.
+  if (field.type === 'checkbox' && CONSENT_LABEL.test(field.label)) {
+    return { value: 'true', via: 'consent' }
+  }
+  if (REFERRAL_LABEL.test(field.label)) return { value: 'Job board', via: 'heuristic' }
+
+  if (context.fromRecipe) return { value: context.fromRecipe, via: 'recipe' }
+
+
 
   const shared = cached.find((row) => row.userId === null)
   if (shared?.mapsTo) {
     const value = valueFromProfile(shared.mapsTo, context.profile)
     if (!value) return { value: null, via: 'skipped', ...(field.required ? { blocked: 'unknown_field' as const } : {}) }
-    void bumpUsage(shared.id)
+    await bumpUsage(shared.id)
     return { value, via: 'cache' }
   }
 
@@ -316,6 +357,7 @@ export async function resolveField(
   if (heuristic) {
     const value = valueFromProfile(heuristic, context.profile)
     if (value) return { value, via: 'heuristic' }
+    return { value: null, via: 'skipped', ...(field.required ? { blocked: 'unknown_field' as const } : {}) }
   }
 
   const mapped = await mapWithModel(context.userId, field)
@@ -352,7 +394,7 @@ export async function rememberMapping(
 ): Promise<void> {
   await db
     .insert(fieldAnswers)
-    .values({ userId: null, host, fieldSignature: signature, label, mapsTo })
+    .values({ userId: null, host, fieldSignature: signature, label, mapsTo, provenance: 'model_mapping' })
     .onConflictDoNothing()
     .catch(() => undefined)
 }
@@ -364,6 +406,9 @@ export async function rememberAnswer(
   field: FormField,
   value: string,
 ): Promise<void> {
+  if (!userId || !canReuseExplicitAnswer(field)) throw badRequest('This question cannot be saved for reuse.')
+  const safeValue = validExplicitAnswer(field, value)
+  if (safeValue === null) throw badRequest('Choose an exact available option or provide a valid answer.')
   const signature = fieldSignature(field)
   await db
     .insert(fieldAnswers)
@@ -372,12 +417,12 @@ export async function rememberAnswer(
       host,
       fieldSignature: signature,
       label: field.label,
-      value,
+      value: safeValue,
       confirmed: true,
+      provenance: 'explicit_user',
     })
     .onConflictDoUpdate({
       target: [fieldAnswers.userId, fieldAnswers.host, fieldAnswers.fieldSignature],
-      set: { value, confirmed: true, updatedAt: new Date() },
+      set: { value: safeValue, confirmed: true, provenance: 'explicit_user', updatedAt: new Date() },
     })
-    .catch(() => undefined)
 }

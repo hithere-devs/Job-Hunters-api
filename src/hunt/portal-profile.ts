@@ -11,6 +11,7 @@ export interface PortalProfile {
   email: string
   phone: string
   headline: string
+  totalExperience?: string
   address: {
     line1: string
     line2: string
@@ -57,18 +58,23 @@ export async function loadPortalProfile(userId: string): Promise<PortalProfile> 
   ])
   if (!kit) throw badRequest('Complete My Kit before creating portal profiles.')
   if (!baseResume) throw badRequest('Upload a base resume before creating portal profiles.')
-  if (!kit.fullName || !kit.email || !kit.phone) {
-    throw badRequest('Full name, application email, and phone are required in My Kit.')
+  const parsed = readParsedResume(baseResume.parsedProfile)
+  // Resume contact facts may fill empty profile facts, never sensitive preferences.
+  const fullName = kit.fullName || parsed?.contact.fullName
+  const email = kit.email || parsed?.contact.email
+  const phone = kit.phone || parsed?.contact.phone
+  if (!fullName || !email || !phone) {
+    throw badRequest('Full name, application email, and phone are required in My Kit or a parsed resume.')
   }
 
   const structured = resumeDocumentSchema.safeParse(baseResume.structuredDocument)
-  const parsed = readParsedResume(baseResume.parsedProfile)
   const skills = [...new Set([...(kit.skills ?? []), ...(parsed?.skills ?? [])])]
 
   return {
-    fullName: kit.fullName,
-    email: kit.email,
-    phone: kit.phone,
+    fullName,
+    email,
+    phone,
+    totalExperience: kit.totalExperience ?? (parsed?.yearsExperience !== null && parsed?.yearsExperience !== undefined ? String(parsed.yearsExperience) : ''),
     headline: kit.headline ?? parsed?.titles[0] ?? '',
     address: {
       line1: kit.addressLine1 ?? '',
@@ -89,7 +95,7 @@ export async function loadPortalProfile(userId: string): Promise<PortalProfile> 
     workAuthorization: kit.workAuthorization ?? '',
     willingToRelocate: kit.willingToRelocate ?? '',
     skills,
-    experience: history.map((employment) => ({
+    experience: (history.length ? history : (parsed?.employments ?? []).map((employment) => ({ ...employment, blurb: employment.blurb ?? '', startedOn: employment.startedOn ?? null, endedOn: employment.endedOn ?? null, isCurrent: employment.isCurrent ?? false }))).map((employment) => ({
       role: employment.role,
       company: employment.company,
       startedOn: employment.startedOn,

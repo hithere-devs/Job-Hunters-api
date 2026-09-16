@@ -1,3 +1,4 @@
+import { applyFieldsSchema } from '../../persona/application-questions.js'
 import { Router } from 'express'
 import { z } from 'zod'
 import { asyncHandler, ok } from '../../lib/http.js'
@@ -128,18 +129,7 @@ intakeRouter.get(
   }),
 )
 
-const applyFieldsSchema = z.object({
-  fullName: z.string().max(120).optional(),
-  email: z.string().max(254).optional(),
-  phone: z.string().max(40).optional(),
-  city: z.string().max(100).optional(),
-  country: z.string().max(100).optional(),
-  noticePeriod: z.string().max(80).optional(),
-  currentCtc: z.string().max(80).optional(),
-  expectedCtc: z.string().max(80).optional(),
-  workAuthorization: z.string().max(200).optional(),
-  willingToRelocate: z.string().max(200).optional(),
-})
+
 
 intakeRouter.post(
   '/apply-fields',

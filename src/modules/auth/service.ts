@@ -216,18 +216,15 @@ async function issueSession(user: User, context: RequestContext, connection?: Pi
   const tokenId = crypto.randomUUID()
   const refreshToken = signRefreshToken({ userId: user.id, tokenId })
 
-  const [insert, dto] = await Promise.all([
-    connection.insert(refreshTokens).values({
-      id: tokenId,
-      userId: user.id,
-      tokenHash: hashToken(refreshToken),
-      expiresAt: expiryFromDuration(env.JWT_REFRESH_TTL),
-      userAgent: context.userAgent ?? null,
-      ipAddress: context.ipAddress ?? null,
-    }),
-    serializeUserWithKit(user),
-  ])
-  void insert
+  const dto = await serializeUserWithKit(user)
+  await connection.insert(refreshTokens).values({
+    id: tokenId,
+    userId: user.id,
+    tokenHash: hashToken(refreshToken),
+    expiresAt: expiryFromDuration(env.JWT_REFRESH_TTL),
+    userAgent: context.userAgent ?? null,
+    ipAddress: context.ipAddress ?? null,
+  })
 
   return {
     user: dto,

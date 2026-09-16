@@ -56,3 +56,15 @@ PASS shared Redis OAuth state: one-time consume, replay rejected, malformed stat
 ```
 
 These gates do not certify SMTP delivery, provider authentication, live application submission, or tenant-profile deletion.
+
+## Application questions and profile answers
+
+`GET /me/apply-fields` and `PUT /me/apply-fields` share the existing `/intake/apply-fields` service. The catalogue contains 17 contact, location, profile, and work-preference fields. Signup can still complete without these; only the three required contact facts and a usable resume gate application execution. Existing kit values win over parsed resume contact facts. Optional salary and work-authorisation values must come from the user, never from inferred demographics or job descriptions.
+
+New writes record `field_answers.provenance = explicit_user`; existing rows retain `legacy`. The field ladder can reuse a sensitive answer only for its owner, host, exact field signature and available option, after an explicit save-for-reuse. It never trusts legacy/model literal answers as user permission. Common salary/work-authorisation profile answers only match the identical free-text question: they cannot become country-specific yes/no statements or another currency's salary.
+
+Passwords, OTPs, CAPTCHA answers, verification/recovery codes, legal commitments, criminal/background answers, and reference contact details cannot be cached for replay. Demographic answers remain optional and require the user's explicit answer/save decision when an employer asks. Company/role motivation and cover letters are application-specific, not reusable across companies.
+
+`POST /applications/questions/:questionId/draft` checks both question and application ownership and returns `{draft, needsInfo, reason?}` without persisting an answer or restarting work. Drafts use saved kit/employment/job-skill facts, never a model-generated achievement or motivation, and are limited to 60 words. Where a motivation or example is missing, `needsInfo` asks the user to supply it. Sensitive and credential questions never receive generated drafts. The user must review and approve a draft before it becomes an application answer.
+
+VM apply sessions now heartbeat the agent every 30 seconds until close. Heartbeats stop on mode loss and never launch or replace a browser themselves.

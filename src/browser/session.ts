@@ -8,7 +8,7 @@ import { serviceUnavailable } from '../lib/errors.js'
 import { logger } from '../lib/logger.js'
 import { launchAutomationBrowser } from '../hunt/browser.js'
 import { createBrowser, getBrowser, stopBrowser, type BrowserSessionInfo } from './client.js'
-import { applyTenant, stopTenant } from './vm-client.js'
+import { applyTenant, getTenantStatus, stopTenant } from './vm-client.js'
 import { createSemaphore, type Slot } from './limit.js'
 
 /**
@@ -210,6 +210,18 @@ async function openVmLocked(options: SessionOptions, slot: Slot, tx: BrowserTran
   const context = browser.contexts()[0] ?? (await browser.newContext())
   const page = context.pages()[0] ?? (await context.newPage())
   let closed = false
+  let heartbeatRunning = false
+  const heartbeat = setInterval(() => {
+    if (closed || heartbeatRunning) return
+    heartbeatRunning = true
+    void getTenantStatus(tenantIndex).then((status) => {
+      if (status.mode !== 'apply') {
+        clearInterval(heartbeat)
+        logger.warn({ tenantIndex, mode: status.mode }, 'application browser is no longer in apply mode')
+      }
+    }).catch((error) => logger.warn({ err: error, tenantIndex }, 'application browser heartbeat failed')).finally(() => { heartbeatRunning = false })
+  }, 30_000)
+  heartbeat.unref()
   return {
     browser,
     context,
@@ -220,6 +232,7 @@ async function openVmLocked(options: SessionOptions, slot: Slot, tx: BrowserTran
     async close() {
       if (closed) return
       closed = true
+      clearInterval(heartbeat)
       try { await browser.close().catch(() => undefined) } finally {
         await stopTenant(tenantIndex).catch((error) => logger.error({ err: error, tenantIndex }, 'VM browser did not stop'))
         slot.release()

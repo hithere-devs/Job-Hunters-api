@@ -1,3 +1,5 @@
+import { applyFieldsSchema } from '../../persona/application-questions.js'
+import { readApplyFields, saveApplyFields } from '../../persona/apply-fields.js'
 import { withBrowserLifecycle } from '../../browser/lifecycle.js'
 import { providerCatalogue } from '../../browser/provider-catalogue.js'
 import { and, eq, sql } from 'drizzle-orm'
@@ -398,3 +400,11 @@ meRouter.get(
     ok(res, await getOnboardingSubmissions(auth.id))
   }),
 )
+
+
+meRouter.get('/apply-fields', asyncHandler(async (req, res) => {
+  ok(res, await readApplyFields(currentUser(req).id))
+}))
+meRouter.put('/apply-fields', validate({ body: applyFieldsSchema }), asyncHandler(async (req, res) => {
+  ok(res, await saveApplyFields(currentUser(req).id, req.body))
+}))

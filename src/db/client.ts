@@ -41,6 +41,12 @@ export function getPool(): pg.Pool {
       keepAlive: true,
     })
 
+    // pg only forwards idle-client errors to the pool. An active connection
+    // can also lose TLS/network; handle its event rather than crashing Node.
+    pool.on('connect', (client) => {
+      client.on('error', (error) => logger.error({ err: error }, 'postgres connection failed'))
+    })
+
     pool.on('error', (error) => {
       logger.error({ err: error }, 'idle postgres client errored')
     })

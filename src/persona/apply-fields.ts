@@ -1,6 +1,9 @@
+import { readParsedResume } from '../services/resume-parser.js'
+import { APPLY_QUESTION_SPECS, type ApplyFieldId } from './application-questions.js'
+export type { ApplyFieldId } from './application-questions.js'
 import { and, eq } from 'drizzle-orm'
 import { db } from '../db/client.js'
-import { kits, resumes } from '../db/schema.js'
+import { fieldAnswers, kits, resumes } from '../db/schema.js'
 
 /**
  * The answers a form needs, collected at the moment they are first needed.
@@ -15,57 +18,8 @@ import { kits, resumes } from '../db/schema.js'
  * A missing field should be a prompt before the run, not a casualty during it.
  */
 
-/** Without these, `loadPortalProfile` refuses and no application can run. */
-const REQUIRED = ['fullName', 'email', 'phone'] as const
-
-/**
- * Not required to submit, but asked by most portals. Missing ones do not block
- * a run — they turn into `needs_review` attempts one at a time, which is a
- * worse way to find out.
- */
-const COMMONLY_ASKED = [
-  'city',
-  'country',
-  'noticePeriod',
-  'currentCtc',
-  'expectedCtc',
-  'workAuthorization',
-  'willingToRelocate',
-] as const
-
-export type ApplyFieldId = (typeof REQUIRED)[number] | (typeof COMMONLY_ASKED)[number]
-
-interface FieldSpec {
-  id: ApplyFieldId
-  label: string
-  help?: string
-  placeholder?: string
-  required: boolean
-}
-
-const SPECS: FieldSpec[] = [
-  { id: 'fullName', label: 'Full name', required: true, placeholder: 'As it should appear on applications' },
-  { id: 'email', label: 'Email for applications', required: true, help: 'Can differ from your login email.' },
-  { id: 'phone', label: 'Phone number', required: true, placeholder: '+91 98765 43210' },
-  { id: 'city', label: 'City', required: false },
-  { id: 'country', label: 'Country', required: false },
-  {
-    id: 'noticePeriod',
-    label: 'Notice period',
-    required: false,
-    placeholder: '30 days',
-    help: 'Copied into the form exactly as you write it.',
-  },
-  { id: 'currentCtc', label: 'Current salary', required: false, placeholder: '₹18,00,000' },
-  { id: 'expectedCtc', label: 'Expected salary', required: false, placeholder: '₹24,00,000' },
-  {
-    id: 'workAuthorization',
-    label: 'Work authorisation',
-    required: false,
-    placeholder: 'Indian citizen, no sponsorship needed',
-  },
-  { id: 'willingToRelocate', label: 'Willing to relocate?', required: false, placeholder: 'Yes, within India' },
-]
+const SPECS = APPLY_QUESTION_SPECS
+type FieldSpec = (typeof APPLY_QUESTION_SPECS)[number]
 
 export interface ApplyFieldsState {
   /** Everything a portal form might ask, with whatever we already know. */
@@ -89,12 +43,15 @@ function valueOf(kit: Record<string, unknown> | undefined, id: ApplyFieldId): st
 }
 
 export async function readApplyFields(userId: string): Promise<ApplyFieldsState> {
-  const [[kit], [baseResume]] = await Promise.all([
-    db.select().from(kits).where(eq(kits.userId, userId)).limit(1),
-    db.select({ id: resumes.id, parseStatus: resumes.parseStatus }).from(resumes).where(and(eq(resumes.userId, userId), eq(resumes.isBase,true))).limit(1),
-  ])
+  const [kit] = await db.select().from(kits).where(eq(kits.userId, userId)).limit(1)
+  const [baseResume] = await db.select({ id: resumes.id, parseStatus: resumes.parseStatus, parsedProfile: resumes.parsedProfile }).from(resumes).where(and(eq(resumes.userId, userId), eq(resumes.isBase, true))).limit(1)
+  const explicit = await db.select({ signature: fieldAnswers.fieldSignature }).from(fieldAnswers).where(and(eq(fieldAnswers.userId, userId), eq(fieldAnswers.host, 'profile'), eq(fieldAnswers.provenance, 'explicit_user'), eq(fieldAnswers.confirmed, true)))
 
-  const fields = SPECS.map((spec) => ({ ...spec, value: valueOf(kit, spec.id) }))
+
+  const parsed = baseResume?.parseStatus === 'parsed' ? readParsedResume(baseResume.parsedProfile) : null
+  const known = { ...parsed?.contact, ...Object.fromEntries(Object.entries(kit ?? {}).filter(([, value]) => value !== null && value !== '')) }
+  const explicitIds = new Set(explicit.map((row) => row.signature))
+  const fields = SPECS.map((spec) => ({ ...spec, value: valueOf(known, spec.id), explicitlyProvided: explicitIds.has(`profile:${spec.id}`) }))
   const missingRequired = fields.filter((f) => f.required && !f.value).map((f) => f.id)
   const missingOptional = fields.filter((f) => !f.required && !f.value).map((f) => f.id)
 
@@ -127,10 +84,13 @@ export async function saveApplyFields(
   }
 
   if (Object.keys(patch).length > 0) {
-    await db
-      .insert(kits)
-      .values({ userId, ...patch })
-      .onConflictDoUpdate({ target: kits.userId, set: { ...patch, updatedAt: new Date() } })
+    await db.transaction(async (tx) => {
+      await tx.insert(kits).values({ userId, ...patch }).onConflictDoUpdate({ target: kits.userId, set: { ...patch, updatedAt: new Date() } })
+      for (const spec of SPECS) {
+        if (answers[spec.id] === undefined) continue
+        await tx.insert(fieldAnswers).values({ userId, host: 'profile', fieldSignature: `profile:${spec.id}`, label: spec.label, value: patch[spec.id] ?? null, confirmed: true, provenance: 'explicit_user' }).onConflictDoUpdate({ target: [fieldAnswers.userId, fieldAnswers.host, fieldAnswers.fieldSignature], set: { value: patch[spec.id] ?? null, confirmed: true, provenance: 'explicit_user', updatedAt: new Date() } })
+      }
+    })
   }
 
   return readApplyFields(userId)
