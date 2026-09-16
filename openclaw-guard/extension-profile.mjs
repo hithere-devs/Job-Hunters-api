@@ -18,7 +18,8 @@ export function resolveExtensionProfile({ state, resolveProfile, profileName, ex
   if (typeof profileName !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(profileName) || !Number.isInteger(expectedPort) || expectedPort < 1024 || expectedPort > 65535 || typeof resolveProfile !== 'function') fail('extension_binding_invalid')
   if (state == null) fail('extension_runtime_unavailable', true)
   if (!state.resolved) fail('extension_runtime_invalid')
-  const profile = resolveProfile(state.resolved, profileName)
+  let profile
+  try { profile = resolveProfile(state.resolved, profileName) } catch { fail('extension_profile_resolution_failed') }
   if (!profile || profile.name !== profileName || profile.driver !== 'extension' || profile.cdpPort !== expectedPort) fail('extension_profile_mismatch')
   let endpoint
   try { endpoint = new URL(profile.cdpUrl) } catch { fail('extension_endpoint_invalid') }

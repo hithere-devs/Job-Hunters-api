@@ -47,3 +47,9 @@ test('only genuinely unstarted runtime or clean relay configuration permits read
   const publicHost = fixture(); publicHost.state.extensionRelays.clear(); publicHost.profile.cdpUrl = `http://example.com:${port}`
   assert.throws(() => resolveExtensionProfile(publicHost), error => error.bootstrapAllowed === false)
 })
+
+test('upstream profile resolver errors cannot expose credential-bearing URLs', () => {
+  const args = fixture()
+  args.resolveProfile = () => { throw new Error(args.profile.cdpUrl) }
+  assert.throws(() => resolveExtensionProfile(args), error => error.message === 'extension_profile_resolution_failed' && error.bootstrapAllowed === false)
+})
