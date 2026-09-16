@@ -185,7 +185,7 @@ const schema = z.object({
    */
   ANTHROPIC_WORKSPACE_ID: optionalString,
   /** Per-purpose overrides. All default to the general-purpose model. */
-  MODEL_DEFAULT: z.string().default('google/gemini-3.5-flash'),
+  MODEL_DEFAULT: z.string().default('google/gemini-3.1-flash-lite'),
   MODEL_RERANK: z.string().optional(),
   MODEL_CLASSIFY: z.string().optional(),
   MODEL_DRAFT: z.string().optional(),
@@ -195,7 +195,7 @@ const schema = z.object({
   /** Retired provider configuration retained only for historical code. */
   META_API_KEY: optionalString,
   META_API_BASE: z.string().url().default('https://api.meta.ai/v1'),
-  APPLY_AGENT_MODEL: z.string().default('google/gemini-3.5-flash'),
+  APPLY_AGENT_MODEL: z.string().default('google/gemini-3.1-flash-lite'),
   APPLY_DRIVER: z.enum(['custom', 'openclaw']).default('custom'),
   OPENCLAW_RUN_TIMEOUT_MS: z.coerce.number().int().min(10_000).max(600_000).default(300_000),
   OPENCLAW_GATEWAY_TOKENS: optionalString,
@@ -203,7 +203,7 @@ const schema = z.object({
   OPENCLAW_BASE_PORT: z.coerce.number().int().min(1024).max(54000).default(19789),
   OPENCLAW_PORT_STRIDE: z.coerce.number().int().min(120).max(1000).default(1000),
   /** Token ceiling per fallback agent step. */
-  APPLY_AGENT_MAX_TOKENS: z.coerce.number().int().positive().default(8000),
+  APPLY_AGENT_MAX_TOKENS: z.coerce.number().int().positive().default(2048),
   /**
    * Hard stop on a runaway agent loop, for the batch tier.
    *

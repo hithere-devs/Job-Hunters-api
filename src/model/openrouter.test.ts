@@ -59,3 +59,7 @@ test('JSON compatibility envelope retains complete schema validation and accepts
  assert.throws(()=>parseStructuredJson(schema,'{"answer":"Yes"}'),/envelope/)
  assert.deepEqual(parseStructuredJson(z.array(z.string()),'{"result":["Yes"]}'),['Yes'])
 })
+test('application defaults do not clamp explicit larger structured/resume output budgets',()=>{
+ const body=openRouterBody({userId:null,messages:[{role:'user',content:'synthetic resume parse'}],maxTokens:16000})
+ assert.equal(body.max_tokens,16000)
+})
