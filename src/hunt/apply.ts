@@ -38,6 +38,7 @@ import { loadPortalProfile } from './portal-profile.js'
 import { provisionPortalAccount } from './portal-accounts.js'
 import { createMinimalResumeVariant } from './tailoring.js'
 import { fillForm, hasSubmitControl, hasSubmissionConfirmation, submitForm } from './apply/fill.js'
+import { openEmbeddedApplication } from './apply/recipes.js'
 import { countryCodeFor } from './apply/work-authorisation.js'
 import { applyWithOpenClaw, loadOpenClawDossier, OpenClawApplyError, verifyOpenClawFilledFields } from './apply/openclaw-apply.js'
 import { uploadTenantResume,installOpenClawPolicy,revokeOpenClawPolicy } from '../browser/vm-client.js'
@@ -231,6 +232,13 @@ export async function applyApprovedCandidate(
       // failures in that bounded tier become an error/review outcome.
       logger.warn({ err: error, applyUrl, attemptId: attempt.id }, 'initial application navigation failed')
     }
+    const formUrl = await openEmbeddedApplication(page).catch((error) => {
+      logger.warn({ err: error, applyUrl, attemptId: attempt.id }, 'embedded application navigation failed')
+      return null
+    }) ?? applyUrl
+    if (formUrl !== applyUrl) {
+      logger.info({ attemptId: attempt.id, sourceHost: new URL(applyUrl).hostname, formHost: new URL(formUrl).hostname }, 'opened embedded application as a top-level form')
+    }
 
     // A hosted session publishes its own live URL, which is a real browser the
     // user can click in rather than a stream of frames they can only watch.
@@ -267,7 +275,7 @@ export async function applyApprovedCandidate(
     await transition({ attemptId: attempt.id, userId, state: 'filling' })
     const result = await fillForm({
       page,
-      url: applyUrl,
+      url: formUrl,
       userId,
       attemptId: attempt.id,
       profile,
@@ -315,7 +323,7 @@ export async function applyApprovedCandidate(
         // Startup's application *is* a message to the founders, for instance.
         // Without one, the generic agent runs on the same session.
         const legacy = async () => applyWithAgent({
-          session:session!,userId,applyUrl,dryRun:useOpenClaw?true:dryRun,profile,resumePath,
+          session:session!,userId,applyUrl:formUrl,dryRun:useOpenClaw?true:dryRun,profile,resumePath,
           job:{title:row.job.title,company:row.job.company},providedAnswers,
           resumeCurrentPage:true,playbook:skill?await skill.playbook():undefined,
           maxSteps:Math.min(env.APPLY_AGENT_MAX_STEPS,18),maxDurationMs:Math.max(1,600_000-agentElapsedMs-(Date.now()-agentRoundStarted)),
@@ -335,7 +343,7 @@ export async function applyApprovedCandidate(
           const policy=await installOpenClawPolicy(tenantIndex,{attemptId:attempt.id,targetId,deadlineEpoch:Date.now()+env.OPENCLAW_RUN_TIMEOUT_MS,allowedHosts:[...new Set([host,new URL(page.url()).hostname])],approvedFields:approvedFields.slice(0,200),resumePath:stagedResume.path})
           try {
             agent = await applyWithOpenClaw({
-              tenantIndex: tenantIndex, targetId, attemptId: attempt.id, applyUrl, currentUrl: page.url(), resumePath: policy.resumePath??stagedResume.path, profile, dossier,
+              tenantIndex: tenantIndex, targetId, attemptId: attempt.id, applyUrl:formUrl, currentUrl: page.url(), resumePath: policy.resumePath??stagedResume.path, profile, dossier,
               job: { title: row.job.title, company: row.job.company, countries: authorisation.jobCountries, description: row.job.descriptionText ?? undefined },
               unresolved, timeoutMs: env.OPENCLAW_RUN_TIMEOUT_MS, signal: options?.signal,
               onLifecycle: async event => {
@@ -371,7 +379,7 @@ export async function applyApprovedCandidate(
         )
         if (agent.reached === 'submitted') {
           if (!submissionWasAttempted()) await beforeSubmission()
-          agentSubmitted = await hasSubmissionConfirmation(page,applyUrl)
+          agentSubmitted = await hasSubmissionConfirmation(page,formUrl)
           if (!agentSubmitted) throw new Error('Agent reported a submit, but provider confirmation was not observed.')
         }
         submissionConfirmed = agentSubmitted
@@ -469,7 +477,7 @@ export async function applyApprovedCandidate(
           const recheck = await fillForm({
             authorisation,
             page,
-            url: applyUrl,
+            url: formUrl,
             userId,
             attemptId: attempt.id,
             profile,
@@ -477,7 +485,7 @@ export async function applyApprovedCandidate(
           })
           if (recheck.unresolved.length === 0) {
             await transition({ attemptId: attempt.id, userId, state: 'filling', detail: { dryRun, afterTakeover: true, stage:'validating_submission' } })
-            const retried = await submitForm({ page, url: applyUrl, dryRun })
+            const retried = await submitForm({ page, url: formUrl, dryRun })
             submissionConfirmed = retried.submitted
             if (retried.submitted) {
               await transition({ attemptId: attempt.id, userId, state: 'submitted', detail: { afterTakeover: true } })
@@ -514,7 +522,7 @@ export async function applyApprovedCandidate(
     await transition({ attemptId: attempt.id, userId, state: 'filling', detail: { dryRun, stage:'validating_submission' } })
     const outcome = agentSubmitted
       ? { submitted: true as const }
-      : await submitForm({ page, url: applyUrl, dryRun })
+      : await submitForm({ page, url: formUrl, dryRun })
     submissionConfirmed = outcome.submitted
     const evidenceStoragePath = await persistEvidence(userId, attempt.id, page)
 

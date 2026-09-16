@@ -42,6 +42,43 @@ export interface Recipe {
 }
 
 /**
+ * Some company career sites embed the real Greenhouse application in a
+ * cross-origin iframe. Move the owned browser tab to that verified form URL so
+ * both the deterministic reader and the guarded reasoning driver can inspect
+ * it as a normal top-level document.
+ */
+export function embeddedGreenhouseApplicationUrl(src: string | null): string | null {
+  if (!src) return null
+  try {
+    const url = new URL(src)
+    if (url.protocol !== 'https:') return null
+    if (!['job-boards.greenhouse.io', 'boards.greenhouse.io'].includes(url.hostname.toLowerCase())) return null
+    if (!/^\/embed\/job_app\/?$/i.test(url.pathname)) return null
+    return url.toString()
+  } catch {
+    return null
+  }
+}
+
+export async function openEmbeddedApplication(page: Page): Promise<string | null> {
+  const iframe = page.locator('iframe#grnhse_iframe, iframe[title*="Greenhouse" i]').first()
+  // The iframe starts below the fold and some sites report it as non-visible
+  // until the user scrolls. Its verified HTTPS source is the security boundary;
+  // viewport visibility is not required before navigating to that source.
+  await iframe.waitFor({ state: 'attached', timeout: 15_000 }).catch(() => undefined)
+  if ((await iframe.count()) === 0) return null
+  let url: string | null = null
+  for (let attempt = 0; attempt < 20 && !url; attempt += 1) {
+    url = embeddedGreenhouseApplicationUrl(await iframe.getAttribute('src'))
+    if (!url) await page.waitForTimeout(250)
+  }
+  if (!url) return null
+  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45_000 })
+  await page.waitForSelector('#application_form, form#application-form, form input', { timeout: 15_000 }).catch(() => undefined)
+  return page.url()
+}
+
+/**
  * The generic reader.
  *
  * Runs in the page so it can walk the DOM once rather than round-tripping per
