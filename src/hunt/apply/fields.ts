@@ -21,7 +21,7 @@ import { normaliseHttpUrl } from './urls.js'
  * is answered once and answered instantly forever after.
  */
 
-export type Rung = 'recipe' | 'heuristic' | 'cache' | 'model' | 'agent' | 'skipped'
+export type Rung = 'recipe' | 'heuristic' | 'cache' | 'model' | 'agent' | 'consent' | 'skipped'
 
 export interface FormField {
   /** The label as the form wrote it. */
@@ -81,6 +81,9 @@ const NEVER_AUTO: Array<[RegExp, string]> = [
   ],
   [/\b(?:reference|referee)s?\b[\s\S]{0,12}\b(?:name|contact|email|phone|detail)/i, 'a reference’s contact details'],
 ]
+
+const CONSENT_LABEL = /\b(?:privacy\s+policy|personal\s+data|store\s+and\s+process|consent|terms\s+(?:of\s+use|and\s+conditions))\b/i
+const REFERRAL_LABEL = /\bhow\s+did\s+you\s+hear\s+about\s+us\b/i
 
 /**
  * Answer values that give a demographic question away.
@@ -181,6 +184,10 @@ export function valueFromProfile(key: string, profile: PortalProfile): string | 
     noticePeriod: profile.noticePeriod,
     headline: profile.headline,
   }
+  if (key === 'currentCompany') {
+    const current = profile.experience.find((item) => item.isCurrent)
+    return current?.company?.trim() || null
+  }
   const value = map[key]
   return value && value.trim() ? value : null
 }
@@ -266,6 +273,13 @@ export async function resolveField(
   const sensitive = sensitiveReason(field.label, field.options)
   if (sensitive) return { value: null, via: 'skipped', blocked: 'sensitive_field' }
 
+  // Consent is implicit in the user's request to apply. Checkbox controls use
+  // the value only as a marker; fill.ts checks the control itself.
+  if (field.type === 'checkbox' && CONSENT_LABEL.test(field.label)) {
+    return { value: 'true', via: 'consent' }
+  }
+  if (REFERRAL_LABEL.test(field.label)) return { value: 'Job board', via: 'heuristic' }
+
   if (context.fromRecipe) return { value: context.fromRecipe, via: 'recipe' }
 
   const signature = fieldSignature(field)
@@ -293,10 +307,9 @@ export async function resolveField(
   const shared = cached.find((row) => row.userId === null)
   if (shared?.mapsTo) {
     const value = valueFromProfile(shared.mapsTo, context.profile)
-    if (value) {
-      void bumpUsage(shared.id)
-      return { value, via: 'cache' }
-    }
+    if (!value) return { value: null, via: 'skipped', ...(field.required ? { blocked: 'unknown_field' as const } : {}) }
+    void bumpUsage(shared.id)
+    return { value, via: 'cache' }
   }
 
   const heuristic = heuristicMatch(field)
