@@ -6,6 +6,7 @@ import { logger } from '../../lib/logger.js'
 import type { PortalProfile } from '../portal-profile.js'
 import { publishAttemptEvent } from './events.js'
 import { normaliseLabel, resolveField, type FormField, type Rung } from './fields.js'
+import type { AuthorisationContext } from './work-authorisation.js'
 import { GENERIC, readFields, recipeFor, type Recipe } from './recipes.js'
 import type { BlockedReason } from './state.js'
 
@@ -121,6 +122,8 @@ export async function fillForm(params: {
   attemptId: string
   profile: PortalProfile
   resumePath: string
+  /** Where the candidate is and where the job is, for deriving work authorisation. */
+  authorisation?: AuthorisationContext
 }): Promise<FillResult> {
   const { page, url, userId, attemptId, profile, resumePath } = params
 
@@ -144,7 +147,7 @@ export async function fillForm(params: {
   for (const field of fields) {
     if (field.type === 'file') continue
 
-    const resolved = await resolveField(field, { userId, host, profile })
+    const resolved = await resolveField(field, { userId, host, profile, ...(params.authorisation ? { authorisation: params.authorisation } : {}) })
 
     if (resolved.blocked) {
       // Only required fields stop an application. An optional question we

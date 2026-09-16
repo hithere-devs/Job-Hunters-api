@@ -78,6 +78,16 @@ const schema = z.object({
   APPLY_DRY_RUN: booleanish.default('true'),
   /** Stops every application immediately, without a redeploy. */
   APPLY_KILL_SWITCH: booleanish.default('false'),
+  /**
+   * Whether an application pauses for the user when a question is unresolved.
+   *
+   * Off. Pausing made every application wait ten minutes — often on questions
+   * already answered on a previous posting, and in one observed run on two
+   * optional checkboxes. An unattended run is the entire point, so unresolved
+   * questions go to the agent tier instead and a genuinely unanswerable one
+   * ends the attempt rather than holding a browser open for nobody.
+   */
+  APPLY_WAIT_FOR_HUMAN: booleanish.default('false'),
   /** How long a blocked attempt waits for a human before parking. */
   APPLY_TAKEOVER_WINDOW_MS: z.coerce.number().int().positive().default(5 * 60_000),
   /**

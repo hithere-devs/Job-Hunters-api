@@ -36,6 +36,7 @@ import { loadPortalProfile } from './portal-profile.js'
 import { provisionPortalAccount } from './portal-accounts.js'
 import { createMinimalResumeVariant } from './tailoring.js'
 import { fillForm, hasSubmitControl, hasSubmissionConfirmation, submitForm } from './apply/fill.js'
+import { countryCodeFor } from './apply/work-authorisation.js'
 import { ApplicationDeferredError } from './application-policy.js'
 import { publishAttemptEvent } from './apply/events.js'
 import { waitForApplicationAnswers } from './apply/live-questions.js'
@@ -244,6 +245,17 @@ export async function applyApprovedCandidate(
       return
     }
 
+    // Where the candidate is and where the job is. Work-authorisation questions
+    // are derived from the pair rather than asked on every posting — see
+    // `work-authorisation.ts`.
+    const authorisation = {
+      candidateCountry: countryCodeFor(profile.address.country),
+      jobCountries: (row.job.locations as Array<{ countryCode?: string | null }>)
+        .map((place) => place.countryCode)
+        .filter((code): code is string => Boolean(code)),
+      remote: row.job.remoteMode === 'remote',
+    }
+
     await transition({ attemptId: attempt.id, userId, state: 'filling' })
     const result = await fillForm({
       page,
@@ -252,6 +264,7 @@ export async function applyApprovedCandidate(
       attemptId: attempt.id,
       profile,
       resumePath,
+      authorisation,
     })
 
     let audit = result.fields.map((field) => ({
@@ -355,8 +368,15 @@ export async function applyApprovedCandidate(
     if(submissionWasAttempted()&&!agentSubmitted)throw new Error('Submission was attempted without confirmed completion; refusing another browser reasoning round.')
     const needsPostAnswerReview=unresolved.length>0
     if (!submissionWasAttempted()) {
+      // Resolve, do not wait. Parking here held every application for ten
+      // minutes on questions the owner had already answered elsewhere — and,
+      // in the run that prompted this, on two *optional* checkboxes. Anything
+      // still unresolved goes to the agent tier, which can reason about the
+      // page; a question nobody can answer ends the attempt honestly rather
+      // than holding a browser open for a human who is not there.
       unresolved = await waitForApplicationAnswers({page,userId,applicationId:application.id,attemptId:attempt.id,unresolved,
-        optionalLabels:result.fields.filter(field=>!field.filled&&field.via==='skipped').map(field=>field.label),signal:options?.signal})
+        optionalLabels:result.fields.filter(field=>!field.filled&&field.via==='skipped').map(field=>field.label),signal:options?.signal,
+        waitForHuman:env.APPLY_WAIT_FOR_HUMAN})
     }
 
       if(agentSubmitted||unresolved.length>0)break
@@ -395,6 +415,7 @@ export async function applyApprovedCandidate(
           // They said they are done. Re-read the form and carry on from
           // wherever they left it, rather than starting over.
           const recheck = await fillForm({
+            authorisation,
             page,
             url: applyUrl,
             userId,
