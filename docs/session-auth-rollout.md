@@ -37,3 +37,22 @@ Refresh rotation, password reset, and password changes serialize on the user row
 Google OAuth states now live in shared Redis with a ten-minute TTL, hashed keys, and atomic one-time consumption. Dedicated bounded Redis commands return unavailable rather than hanging during a Redis outage. This requires Redis access from every API replica.
 
 After the additive migration, run `DATABASE_POOL_MAX=1 node --env-file=.env --import tsx src/scripts/verify-auth-transactions.ts`. The fixture tests lifecycle nested queries, signup serializers, onboarding retry, refresh rotation, one-use reset, and revocation, then rolls back all fixture rows.
+
+## Executed gates (2026-09-16)
+
+- `npm run typecheck`: exit 0.
+- `npm test`: 280 tests, 53 suites, 280 pass, 0 fail, 0 skipped.
+- After migration 0023, `DATABASE_POOL_MAX=1 node --env-file=.env --import tsx src/scripts/verify-auth-transactions.ts`: exit 0.
+
+```
+PASS poolMax=1: signup/serializer, lifecycle nested queries, onboarding retry, refresh one-use, reset one-use, refresh revocation, access authVersion
+PASS fixture transaction rolled back; no user retained
+```
+
+- Shared Redis OAuth-state fixture: exit 0.
+
+```
+PASS shared Redis OAuth state: one-time consume, replay rejected, malformed state rejected; no provider login performed
+```
+
+These gates do not certify SMTP delivery, provider authentication, live application submission, or tenant-profile deletion.
