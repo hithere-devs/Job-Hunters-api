@@ -26,6 +26,8 @@ export const logger = pino({
       'resetToken',
       'VM_AGENT_TOKEN',
       'META_API_KEY',
+      'ANTHROPIC_API_KEY',
+      'OPENCLAW_GATEWAY_TOKENS',
       'BROWSER_USE_API_KEY',
       'res.headers["set-cookie"]',
       'password',

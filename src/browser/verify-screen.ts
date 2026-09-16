@@ -1,6 +1,6 @@
 import { env, hasModelAccess } from '../config/env.js'
 import { logger } from '../lib/logger.js'
-import { museSpark } from '../model/muse-spark.js'
+import { toolCompletion } from '../model/tool-client.js'
 import type { Provider } from './providers.js'
 
 /**
@@ -34,7 +34,7 @@ export async function verifyFromScreen(params: {
   }
 
   try {
-    const result = await museSpark({
+    const result = await toolCompletion({
       userId: null,
       purpose: 'classify-email',
       maxTokens: Math.min(env.APPLY_AGENT_MAX_TOKENS, 2000),

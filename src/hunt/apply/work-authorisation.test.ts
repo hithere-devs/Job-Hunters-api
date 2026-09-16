@@ -2,23 +2,13 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { answerForField, classifyAuthorisationQuestion, countryCodeFor, deriveAuthorisation } from './work-authorisation.js'
 
-/**
- * The question that kept coming back.
- *
- * A user answered "are you legally authorised to work here?" on application
- * after application, because the answer depends on the posting and a stored one
- * could never be reused. It does not need to be stored — given where the
- * candidate is and where the job is, it follows.
- */
-
 const field = (label: string, options?: string[], type = 'select') => ({ label, type, required: true, ...(options ? { options } : {}) })
 const inIndia = { candidateCountry: 'IN', jobCountries: ['US'] }
 const indiaJob = { candidateCountry: 'IN', jobCountries: ['IN'] }
 
 describe('classifying the question', () => {
   it('tells sponsorship apart from authorisation', () => {
-    // These are inverses, and "require sponsorship to work in the US" matches
-    // both wordings — so sponsorship has to win.
+    // The topics overlap in wording but are independent user facts.
     assert.equal(classifyAuthorisationQuestion('Will you now or in the future require visa sponsorship?'), 'sponsorship')
     assert.equal(classifyAuthorisationQuestion('Are you legally authorized to work in the United States?'), 'authorised')
     assert.equal(classifyAuthorisationQuestion('Do you require sponsorship to work in the US?'), 'sponsorship')
@@ -26,36 +16,28 @@ describe('classifying the question', () => {
   })
 })
 
-describe('deriving the answer', () => {
-  it('answers a US posting for a candidate in India', () => {
-    // The live case: Mercor, Infrastructure Engineer, San Francisco / NYC.
-    assert.equal(deriveAuthorisation(field('Are you legally authorized to work in the United States?'), inIndia)?.answer, false)
-    assert.equal(deriveAuthorisation(field('Will you require visa sponsorship?'), inIndia)?.answer, true)
+describe('matching explicit country answers', () => {
+  it('never derives work rights or sponsorship from home or foreign residence', () => {
+    for (const context of [inIndia, indiaJob]) {
+      assert.equal(deriveAuthorisation(field('Are you authorized to work here?'), context), null)
+      assert.equal(deriveAuthorisation(field('Will you require sponsorship?'), context), null)
+    }
   })
-
-  it('answers a home-country posting the other way', () => {
-    assert.equal(deriveAuthorisation(field('Are you authorised to work in the country where this role is located?'), indiaJob)?.answer, true)
-    assert.equal(deriveAuthorisation(field('Will you require sponsorship?'), indiaJob)?.answer, false)
+  it('uses a previously explicit sponsorship answer without assuming authorization', () => {
+    const context = { ...inIndia, explicitAnswers: { US: { sponsorship: true } } }
+    assert.equal(deriveAuthorisation(field('Will you require visa sponsorship?'), context)?.answer, true)
+    assert.equal(deriveAuthorisation(field('Are you authorized to work here?'), context), null)
   })
-
-  it('prefers the country the question names over the job’s', () => {
-    // A US company hiring into its UK entity still asks about the UK.
-    const verdict = deriveAuthorisation(field('Do you have the right to work in the United Kingdom?'), { candidateCountry: 'GB', jobCountries: ['US'] })
+  it('prefers the named country and requires an explicit answer there', () => {
+    const context = { ...inIndia, explicitAnswers: { GB: { authorised: true }, US: { authorised: false } } }
+    const verdict = deriveAuthorisation(field('Do you have the right to work in the United Kingdom?'), context)
     assert.equal(verdict?.answer, true)
     assert.equal(verdict?.jurisdiction, 'GB')
+    assert.match(verdict!.basis, /Explicit user authorised answer for GB/)
+    assert.equal(deriveAuthorisation(field('Do you have the right to work in Canada?'), context), null)
   })
-
-  it('refuses to answer when it cannot know', () => {
-    // No country on the profile, no country on the job, or a posting spanning
-    // several — each goes back to the user rather than being guessed.
-    assert.equal(deriveAuthorisation(field('Are you authorized to work here?'), { candidateCountry: null, jobCountries: ['US'] }), null)
-    assert.equal(deriveAuthorisation(field('Are you authorized to work here?'), { candidateCountry: 'IN', jobCountries: [] }), null)
-    assert.equal(deriveAuthorisation(field('Are you authorized to work here?'), { candidateCountry: 'IN', jobCountries: ['US', 'GB'] }), null)
-  })
-
-  it('records why, for the audit trail', () => {
-    const verdict = deriveAuthorisation(field('Are you legally authorized to work in the United States?'), inIndia)
-    assert.match(verdict!.basis, /IN.*US/)
+  it('does not choose a jurisdiction from an ambiguous job location', () => {
+    assert.equal(deriveAuthorisation(field('Are you authorized to work here?'), { ...inIndia, jobCountries: ['US', 'GB'], explicitAnswers: { US: { authorised: true } } }), null)
   })
 })
 

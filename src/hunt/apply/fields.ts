@@ -339,14 +339,7 @@ export interface ResolveContext {
   profile: PortalProfile
   /** A recipe's answer for this field, when the portal has one. */
   fromRecipe?: string | null
-  /**
-   * Where the candidate is and where the job is.
-   *
-   * Present, work-authorisation questions are derived rather than asked. See
-   * `work-authorisation.ts` — the answer is a function of these two facts, so
-   * a stored answer could never be reused and the user was being asked the same
-   * thing on every posting.
-   */
+  /** Job jurisdiction plus explicit user authorization/sponsorship answers. */
   authorisation?: AuthorisationContext
 }
 
@@ -357,12 +350,7 @@ export async function resolveField(
   if (credentialFieldReason(field)) return { value: null, via: 'skipped', blocked: 'sensitive_field' }
   const sensitive = sensitiveReason(field.label, field.options)
 
-  // Work authorisation, derived from where the candidate is and where the job
-  // is. This runs ahead of the refusal because it is not the act the refusal
-  // exists to prevent: nothing is being invented about anyone's immigration
-  // status, it is arithmetic on two facts already on file. An explicit
-  // `workAuthorization` on the profile wins over the derivation, and without
-  // both countries it returns null and the question still goes to the user.
+  // Only explicit country/topic answers qualify. Residence never establishes work rights.
   if (sensitive && /visa or work authorisation/i.test(sensitive) && context.authorisation && !context.profile.workAuthorization) {
     const derived = deriveAuthorisation(field, context.authorisation)
     if (derived) {

@@ -1,7 +1,7 @@
 import type { Page } from 'playwright-core'
 import { env } from '../config/env.js'
 import { logger } from '../lib/logger.js'
-import { museSpark, type MuseMessage } from '../model/muse-spark.js'
+import { toolCompletion, type ToolMessage } from '../model/tool-client.js'
 import { needsPicture, observe, renderObservation, type Observation } from './observe.js'
 import type { ProvidedFormAnswer } from './provided-answers.js'
 import { runTool, toolsFor, type AgentReport, type ToolContext } from './tools.js'
@@ -118,7 +118,7 @@ async function withDeadline<T>(label: string, ms: number, work: Promise<T>): Pro
  * tool_calls"*. That killed a live run at step six, so the cut walks backwards
  * until it is no longer separating a pair.
  */
-export function trim(messages: MuseMessage[], keep = 14): MuseMessage[] {
+export function trim(messages: ToolMessage[], keep = 14): ToolMessage[] {
   if (messages.length <= keep + 2) return messages
   let start = messages.length - keep
   while (start > 2 && messages[start]?.role === 'tool') start -= 1
@@ -195,7 +195,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     .filter(Boolean)
     .join('\n')
 
-  const messages: MuseMessage[] = [
+  const messages: ToolMessage[] = [
     { role: 'system', content: system },
     {
       role: 'user',
@@ -304,9 +304,10 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       result = await withDeadline(
         'agent: think',
         Math.max(1,Math.min(stepTimeout,deadlineAt-Date.now())),
-        museSpark({
+        toolCompletion({
           userId,
           purpose: 'apply-agent',
+          signal: AbortSignal.timeout(Math.max(1, Math.min(stepTimeout, deadlineAt - Date.now()))),
           messages: trim(messages),
           tools,
           maxTokens: env.APPLY_AGENT_MAX_TOKENS,

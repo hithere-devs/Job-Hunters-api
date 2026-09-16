@@ -2,9 +2,9 @@ import { and, desc, eq, inArray, isNotNull } from 'drizzle-orm'
 import { z } from 'zod/v4'
 import { db } from '../db/client.js'
 import { applications, employments, fieldAnswers, kits, pendingApplicationQuestions, resumes } from '../db/schema.js'
-import { env, hasModelAccess } from '../config/env.js'
+import { hasModelAccess } from '../config/env.js'
 import { badRequest, notFound } from '../lib/errors.js'
-import { structured } from '../model/gateway.js'
+import { structured, modelFor } from '../model/gateway.js'
 import { readParsedResume } from '../services/resume-parser.js'
 import { resumeDocumentSchema } from '../hunt/resume-document.js'
 import { credentialFieldReason } from '../hunt/apply/fields.js'
@@ -13,7 +13,7 @@ import { answerTopic, askAnswer, canUsePriorHumanAnswer, countriesIn, sourcesFor
 export type { AnswerSource, ResolverQuestion, ResolvedApplicationAnswer } from './answer-resolver-policy.js'
 export { validateAnswerProposal } from './answer-resolver-policy.js'
 
-export const ANSWER_RESOLVER_MODEL = 'muse-spark-1.3-contributor'
+export const ANSWER_RESOLVER_MODEL = modelFor('map-field')
 
 const outputSchema = z.object({ answers: z.array(z.object({
   questionId: z.string(), decision: z.enum(['known', 'draft', 'ask']), answer: z.string().max(4000).nullable(), confidence: z.number().min(0).max(1),
@@ -57,12 +57,12 @@ export async function resolveAnswerBatch(input: { userId: string | null; questio
   }
   const deadline = Date.now() + 40_000
   for (const group of groups.values()) {
-    if (!hasModelAccess || env.MODEL_PROVIDER !== 'muse' || Date.now() >= deadline) { for (const item of group) results.set(item.question.id, askAnswer(item.question, !hasModelAccess || env.MODEL_PROVIDER !== 'muse' ? 'muse_1_3_contributor_unavailable' : 'resolver_time_limit')); continue }
+    if (!hasModelAccess || Date.now() >= deadline) { for (const item of group) results.set(item.question.id, askAnswer(item.question, !hasModelAccess ? 'model_unavailable' : 'resolver_time_limit')); continue }
     const request = group.map(({ question, sources }) => ({ question, sources }))
     let timer: ReturnType<typeof setTimeout> | undefined
     try {
       const output = await Promise.race([
-        structured(outputSchema, { purpose: 'map-field', model: ANSWER_RESOLVER_MODEL, userId: input.userId, system: SYSTEM, prompt: JSON.stringify({ requests: request }), effort: 'low', think: false, maxTokens: Math.min(12_000, 1000 * group.length + 500) }),
+        structured(outputSchema, { signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())), purpose: 'map-field', model: ANSWER_RESOLVER_MODEL, userId: input.userId, system: SYSTEM, prompt: JSON.stringify({ requests: request }), effort: 'low', think: false, maxTokens: Math.min(12_000, 1000 * group.length + 500) }),
         new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('answer resolver deadline')), Math.max(1, deadline - Date.now())) }),
       ])
       for (const item of group) {

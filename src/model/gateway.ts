@@ -7,31 +7,15 @@ import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod'
 import type { z } from 'zod/v4'
 import { env, hasModelAccess } from '../config/env.js'
 import { assertWithinBudget, monthlySpendUsd, recordUsage, type Purpose } from './meter.js'
-import { museStructured, museText } from './muse-structured.js'
 
-/**
- * Every model call in the product goes through here.
- *
- * Two reasons it is a chokepoint rather than a convenience wrapper. First,
- * metering: a flat monthly price only works if the variable cost underneath it
- * is visible. Second, portability — and portability stopped being theoretical
- * the day Muse Spark became the default brain. `MODEL_PROVIDER` switches every
- * purpose in the product between two providers that share nothing but this
- * file's two functions, and no caller changed to make that happen.
- *
- * Callers never construct a provider client themselves.
- */
+/** Structured/text model gateway. All calls enforce budget and record usage. */
 
 export { ModelBudgetExceededError, monthlySpendUsd } from './meter.js'
 export type { Purpose } from './meter.js'
 
 export class ModelUnavailableError extends Error {
   constructor() {
-    super(
-      env.MODEL_PROVIDER === 'muse'
-        ? 'META_API_KEY is not set — model-backed features are disabled.'
-        : 'ANTHROPIC_API_KEY is not set — model-backed features are disabled.',
-    )
+    super('ANTHROPIC_API_KEY is not set. Model-backed features are disabled.')
     this.name = 'ModelUnavailableError'
   }
 }
@@ -45,10 +29,11 @@ export interface CallOptions {
   system?: string
   prompt: string
   maxTokens?: number
-  /** Anthropic-only. Muse Spark decides its own reasoning depth. */
+  /** Reasoning effort when thinking is enabled. */
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   /** Adaptive thinking is on by default; turn it off for cheap classification. */
   think?: boolean
+  signal?: AbortSignal
 }
 
 /**
@@ -76,7 +61,7 @@ export function modelFor(purpose: Purpose): string {
     }
   })()
   if (override) return override
-  return env.MODEL_PROVIDER === 'muse' ? env.MUSE_MODEL : env.MODEL_DEFAULT
+  return env.MODEL_DEFAULT
 }
 
 let client: Anthropic | undefined
@@ -85,6 +70,8 @@ function anthropic(): Anthropic {
   if (!env.ANTHROPIC_API_KEY) throw new ModelUnavailableError()
   client ??= new Anthropic({
     apiKey: env.ANTHROPIC_API_KEY,
+    timeout: 90_000,
+    maxRetries: 0,
     ...(env.ANTHROPIC_WORKSPACE_ID
       ? { defaultHeaders: { 'anthropic-workspace-id': env.ANTHROPIC_WORKSPACE_ID } }
       : {}),
@@ -115,7 +102,7 @@ async function anthropicStructured<T extends z.ZodType>(
         ...(options.effort ? { effort: options.effort } : {}),
       },
       messages: [{ role: 'user', content: options.prompt }],
-    })
+    }, { signal: options.signal })
 
     await recordUsage({
       userId: options.userId,
@@ -158,7 +145,7 @@ async function anthropicText(options: CallOptions): Promise<string> {
       ...(options.think === false ? {} : { thinking: { type: 'adaptive' as const } }),
       ...(options.effort ? { output_config: { effort: options.effort } } : {}),
       messages: [{ role: 'user', content: options.prompt }],
-    })
+    }, { signal: options.signal })
     const message = await stream.finalMessage()
 
     await recordUsage({
@@ -205,17 +192,13 @@ export async function structured<T extends z.ZodType>(
   options: CallOptions,
 ): Promise<z.infer<T>> {
   if (!hasModelAccess) throw new ModelUnavailableError()
-  return env.MODEL_PROVIDER === 'muse'
-    ? museStructured(schema, { ...options, model: options.model ?? modelFor(options.purpose) })
-    : anthropicStructured(schema, options)
+  return anthropicStructured(schema, options)
 }
 
 /** A call whose answer is prose — drafts, summaries. */
 export async function text(options: CallOptions): Promise<string> {
   if (!hasModelAccess) throw new ModelUnavailableError()
-  return env.MODEL_PROVIDER === 'muse'
-    ? museText({ ...options, model: options.model ?? modelFor(options.purpose) })
-    : anthropicText(options)
+  return anthropicText(options)
 }
 
 export const modelGateway = { structured, text, monthlySpendUsd, modelFor }

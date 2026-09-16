@@ -151,7 +151,7 @@ const schema = z.object({
    * Hands a failed flow to Browser Use's own managed agent as a last resort.
    *
    * Off by default, and it should stay off: that agent reasons with a model
-   * from their list, not with Muse Spark, so every run through it puts a
+   * from their list, so every run through it puts a
    * different brain in the loop than the rest of the product uses.
    */
   BROWSER_USE_MANAGED_FALLBACK: booleanish.default('false'),
@@ -165,18 +165,10 @@ const schema = z.object({
   FIRECRAWL_API_KEY: optionalString,
   FIRECRAWL_API_BASE: z.string().url().default('https://api.firecrawl.dev/v2'),
 
-  /**
-   * Which provider reasons.
-   *
-   * `muse` is the default: Muse Spark answers every purpose in the product,
-   * from reranking a job to deciding the next click in a form. Anthropic stays
-   * reachable because Muse is a single point of failure otherwise — a bad key
-   * or an outage would take down rerank, classification, drafting and applying
-   * at the same moment.
-   */
-  MODEL_PROVIDER: z.enum(['muse', 'anthropic']).default('muse'),
-  /** The Muse Spark model the gateway calls for ordinary purposes. */
-  MUSE_MODEL: z.string().default('muse-spark-1.3-contributor'),
+  /** Anthropic is the active provider. Historical Muse modules are not routed. */
+  MODEL_PROVIDER: z.enum(['anthropic']).default('anthropic'),
+  // Retained only so historical, unrouted Muse modules compile.
+  MUSE_MODEL: z.string().default('retired'),
 
   /**
    * Model access. Absent, the gateway reports itself as unconfigured and every
@@ -191,28 +183,23 @@ const schema = z.object({
    */
   ANTHROPIC_WORKSPACE_ID: optionalString,
   /** Per-purpose overrides. All default to the general-purpose model. */
-  MODEL_DEFAULT: z.string().default('claude-opus-5'),
+  MODEL_DEFAULT: z.string().default('claude-sonnet-5'),
   MODEL_RERANK: z.string().optional(),
   MODEL_CLASSIFY: z.string().optional(),
   MODEL_DRAFT: z.string().optional(),
   /** Per-user monthly ceiling in USD. 0 disables the check. */
   MODEL_MONTHLY_BUDGET_USD: z.coerce.number().min(0).default(20),
 
-  /**
-   * Muse Spark, through Meta's OpenAI-compatible Model API.
-   *
-   * This is the key the whole product reasons with, not just the apply agent:
-   * without it `MODEL_PROVIDER=muse` has nothing to call and every
-   * model-backed feature drops to its deterministic fallback.
-   */
+  /** Retired provider configuration retained only for historical code. */
   META_API_KEY: optionalString,
   META_API_BASE: z.string().url().default('https://api.meta.ai/v1'),
-  APPLY_AGENT_MODEL: z.string().default('muse-spark-1.3-contributor'),
-  /**
-   * Muse Spark is a reasoning model and spends most of its budget thinking —
-   * a one-word reply measured 434 reasoning tokens — so this ceiling is per
-   * agent step, not per application, and is deliberately generous.
-   */
+  APPLY_AGENT_MODEL: z.string().default('claude-sonnet-5'),
+  APPLY_DRIVER: z.enum(['custom', 'openclaw']).default('custom'),
+  OPENCLAW_RUN_TIMEOUT_MS: z.coerce.number().int().min(10_000).max(600_000).default(300_000),
+  OPENCLAW_GATEWAY_TOKENS: optionalString,
+  OPENCLAW_BASE_PORT: z.coerce.number().int().min(1024).max(54000).default(18789),
+  OPENCLAW_PORT_STRIDE: z.coerce.number().int().min(120).max(1000).default(1000),
+  /** Token ceiling per fallback agent step. */
   APPLY_AGENT_MAX_TOKENS: z.coerce.number().int().positive().default(8000),
   /**
    * Hard stop on a runaway agent loop, for the batch tier.
@@ -354,7 +341,7 @@ export const hasPortalCredentialVault = Boolean(env.PORTAL_CREDENTIALS_KEY)
  * feature reports itself available and then throws on first use.
  */
 export const hasModelAccess =
-  env.MODEL_PROVIDER === 'muse' ? Boolean(env.META_API_KEY) : Boolean(env.ANTHROPIC_API_KEY)
+  Boolean(env.ANTHROPIC_API_KEY)
 
 /** Discovery keeps its API connectors without this; only HTML sources need it. */
 export const hasFirecrawl = Boolean(env.FIRECRAWL_API_KEY)
@@ -391,6 +378,6 @@ export const hasDodoPayments = Boolean(
  * The agent tier falls back to the deterministic recipe ladder without a key,
  * the same posture every other model-backed feature takes.
  */
-export const hasApplyAgent = Boolean(env.META_API_KEY)
+export const hasApplyAgent = hasModelAccess
 
 export type Env = typeof env

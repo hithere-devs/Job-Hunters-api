@@ -1,4 +1,4 @@
-/** Real, metered Muse call using synthetic facts only; no user profile or provider login. */
+/** Real, metered configured-provider call using synthetic facts only; no user profile or provider login. */
 import assert from 'node:assert/strict'
 import { and, eq, gte, isNull } from 'drizzle-orm'
 import { db, getPool } from '../db/client.js'

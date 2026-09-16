@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { finalizeAgentReport, trim } from './loop.js'
-import type { MuseMessage } from '../model/muse-spark.js'
+import type { ToolMessage } from '../model/tool-client.js'
 
 /**
  * A tool reply separated from the assistant message that requested it is a 400
@@ -9,12 +9,12 @@ import type { MuseMessage } from '../model/muse-spark.js'
  * concern, not a cost one. A live run died at step six on exactly this.
  */
 describe('conversation trimming', () => {
-  const pinned: MuseMessage[] = [
+  const pinned: ToolMessage[] = [
     { role: 'system', content: 'rules' },
     { role: 'user', content: 'goal' },
   ]
 
-  function turn(index: number): MuseMessage[] {
+  function turn(index: number): ToolMessage[] {
     return [
       { role: 'user', content: `observation ${index}` },
       { role: 'assistant', content: '', tool_calls: [{ id: `call_${index}` }] },

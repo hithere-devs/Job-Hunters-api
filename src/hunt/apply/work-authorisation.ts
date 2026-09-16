@@ -1,31 +1,15 @@
 import type { FormField } from './fields.js'
 
-/**
- * Answering work-authorisation questions by deriving them, not guessing them.
- *
- * "Are you authorised to work here?" has no fixed answer — it depends on two
- * facts the product already holds: where the candidate lives, and where the job
- * is. Same person, yes in Bengaluru and no in New York. That is why these
- * questions kept coming back to the user even after they had answered them:
- * the answer is a function of the posting, so a stored one cannot be reused.
- *
- * It can, however, be *computed*. Given a country on the profile and a country
- * on the job, the answer follows. That is a derivation from known facts, which
- * is a different act from a model inventing an immigration status — and the
- * refusal list still blocks the latter everywhere.
- *
- * The derivation is deliberately conservative. Without a country for the
- * candidate or for the job it returns null and the question goes to the user,
- * because a wrong answer here is a lie on a real application.
- */
-
+/** Work rights are explicit user facts, never inferred from residence. */
 export interface AuthorisationContext {
-  /** ISO-3166 alpha-2 for where the candidate has the right to work. */
+  /** Residence only. This does not establish authorization or sponsorship. */
   candidateCountry: string | null
   /** ISO-3166 alpha-2 codes the posting is located in. */
   jobCountries: string[]
   /** True when the posting is remote and location may not bind. */
   remote?: boolean
+  /** Explicit answers keyed by country and question topic. Never populate from residence. */
+  explicitAnswers?: Record<string, { authorised?: boolean; sponsorship?: boolean }>
 }
 
 /** Countries named in question text, mapped to the codes the job data uses. */
@@ -56,7 +40,7 @@ export type AuthorisationQuestion = 'authorised' | 'sponsorship' | null
 
 export function classifyAuthorisationQuestion(label: string): AuthorisationQuestion {
   // Sponsorship first: "will you require sponsorship to work in the US" also
-  // matches the authorisation wording, and the answers are inverses.
+  // may match the authorisation wording. The answers are separate facts.
   if (/\b(?:sponsor\w*|visa\s+status|work\s+permit|require\s+.{0,20}visa)\b/i.test(label)) return 'sponsorship'
   if (/\b(?:authori[sz]ed|authori[sz]ation|right\s+to\s+work|eligible\s+to\s+work|permission\s+to\s+work|legally\s+able)\b/i.test(label)) return 'authorised'
   return null
@@ -83,7 +67,6 @@ export function deriveAuthorisation(
 ): DerivedAuthorisation | null {
   const kind = classifyAuthorisationQuestion(field.label)
   if (!kind) return null
-  if (!context.candidateCountry) return null
 
   const named = countryNamedIn(field.label)
   // A remote posting with several countries has no single jurisdiction to
@@ -92,18 +75,12 @@ export function deriveAuthorisation(
   const jurisdiction = named ?? (distinct.length === 1 ? distinct[0]! : null)
   if (!jurisdiction) return null
 
-  const sameCountry = jurisdiction === context.candidateCountry
-  // Authorised at home, needing sponsorship away. This is the whole rule; it is
-  // right for the common case and wrong for a candidate who holds a permit for
-  // somewhere they do not live, which is why the profile's own
-  // `workAuthorization` takes precedence over anything derived here.
-  const answer = kind === 'authorised' ? sameCountry : !sameCountry
+  const answer = context.explicitAnswers?.[jurisdiction]?.[kind]
+  if (typeof answer !== 'boolean') return null
   return {
     answer,
     jurisdiction,
-    basis: sameCountry
-      ? `Candidate is in ${context.candidateCountry} and the role is in ${jurisdiction}.`
-      : `Candidate is in ${context.candidateCountry} and the role is in ${jurisdiction}, a different country.`,
+    basis: `Explicit user ${kind} answer for ${jurisdiction}.`,
   }
 }
 
