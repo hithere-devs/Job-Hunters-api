@@ -9,18 +9,22 @@ import { saveCommonQuestionAnswer } from '../../persona/apply-fields.js'
 import { incompleteLegacyField,looksLikeLegacyQuestion,forbiddenQuestion, readableQuestionLabel, validateLiveAnswer, type liveAnswerSchema } from '../../hunt/apply/question-policy.js'
 import { safeRetryReason } from '../../hunt/application-policy.js'
 import { applicationJobInfo } from '../../hunt/application-queue.js'
+import { correctedFieldLabel } from '../../hunt/apply/recipes.js'
 import { retryApplication } from './actions.js'
 import type { z } from 'zod'
 
 type Question = typeof pendingApplicationQuestions.$inferSelect
-export function questionField(q:Question):FormField {return {label:q.label,type:q.type,name:q.fieldName??undefined,required:q.required,options:q.options}}
+export function questionField(q:Question):FormField {
+ const field={label:q.label,type:q.type,name:q.fieldName??undefined,required:q.required,options:q.options}
+ return {...field,label:correctedFieldLabel(field)}
+}
 export function storedAnswerState(q:Pick<Question,'answer'|'status'|'label'|'type'|'fieldName'|'required'|'options'>){
  const answerPresent=q.answer!==null
  let answerValid=false
  if(answerPresent)try{validateLiveAnswer({label:q.label,type:q.type,name:q.fieldName??undefined,required:q.required,options:q.options},{answer:q.answer!,remember:false,skip:false});answerValid=true}catch{}
  return {answerPresent,answerValid,requiresNewAnswer:q.status!=='skipped'&&!answerValid}
 }
-export function questionDto(q:Question){return {id:q.id,label:q.label,kind:q.type,type:q.type,options:q.options,required:q.required,sensitive:q.sensitive,canRemember:canReuseExplicitAnswer(questionField(q)),status:q.status,expiresAt:q.expiresAt.toISOString(),blockedReason:q.blockedReason,answerSource:q.answer===null?null:(q.answerMeta.source??'user'),resolution:q.answerMeta,...storedAnswerState(q)}}
+export function questionDto(q:Question){const field=questionField(q);return {id:q.id,label:field.label,kind:q.type,type:q.type,options:q.options,required:q.required,sensitive:q.sensitive,canRemember:canReuseExplicitAnswer(field),status:q.status,expiresAt:q.expiresAt.toISOString(),blockedReason:q.blockedReason,answerSource:q.answer===null?null:(q.answerMeta.source??'user'),resolution:q.answerMeta,...storedAnswerState({...q,label:field.label})}}
 
 async function ownedLatest(userId:string,applicationId:string){
  const [app]=await db.select().from(applications).where(and(eq(applications.id,applicationId),eq(applications.userId,userId))).limit(1)
@@ -106,11 +110,11 @@ export async function listQuestionInbox(userId:string){
   const needsCapture=!appQuestions.length||appQuestions.some(row=>legacyNeedsCapture(row.question)||(['radio','select','select-one'].includes(row.question.type)&&row.question.options.length===0))
   if(reason||needsCapture)blockedApplications.push({applicationId:app.id,reason:reason??'Readable questions and exact options need to be loaded from the provider browser.',canRecoverQuestions:!reason&&needsCapture})
  }
- const inferredAnswers=await db.select({id:pendingApplicationQuestions.id,label:pendingApplicationQuestions.label,answer:pendingApplicationQuestions.answer,answerMeta:pendingApplicationQuestions.answerMeta,updatedAt:pendingApplicationQuestions.updatedAt,company:applications.company,role:applications.role})
+ const inferredAnswers=await db.select({id:pendingApplicationQuestions.id,label:pendingApplicationQuestions.label,fieldName:pendingApplicationQuestions.fieldName,type:pendingApplicationQuestions.type,options:pendingApplicationQuestions.options,required:pendingApplicationQuestions.required,answer:pendingApplicationQuestions.answer,answerMeta:pendingApplicationQuestions.answerMeta,updatedAt:pendingApplicationQuestions.updatedAt,company:applications.company,role:applications.role})
   .from(pendingApplicationQuestions).innerJoin(applications,and(eq(applications.id,pendingApplicationQuestions.applicationId),eq(applications.userId,userId)))
   .where(and(eq(pendingApplicationQuestions.userId,userId),sql`${pendingApplicationQuestions.answer} is not null`,sql`${pendingApplicationQuestions.answerMeta}->>'source'='profile_ai'`))
   .orderBy(desc(pendingApplicationQuestions.updatedAt)).limit(20)
- return {groups:[...groups.values()],blockedApplications,inferredAnswers:inferredAnswers.map(row=>({id:row.id,label:row.label,answer:row.answer!,company:row.company,role:row.role,reason:String(row.answerMeta.reason??'Inferred from your saved profile'),at:row.updatedAt.toISOString()}))}
+ return {groups:[...groups.values()],blockedApplications,inferredAnswers:inferredAnswers.map(row=>({id:row.id,label:correctedFieldLabel({label:row.label,name:row.fieldName??undefined,type:row.type,options:row.options,required:row.required}),answer:row.answer!,company:row.company,role:row.role,reason:String(row.answerMeta.reason??'Inferred from your saved profile'),at:row.updatedAt.toISOString()}))}
 }
 export type AnswerInput=z.infer<typeof liveAnswerSchema>&{questionId:string}
 export interface AnswerWriteContext {source:'profile_ai';metadata:Record<string,Record<string,unknown>>;autoResume?:boolean}

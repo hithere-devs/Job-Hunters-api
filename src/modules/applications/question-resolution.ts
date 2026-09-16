@@ -18,7 +18,7 @@ export function approvedResolvedAnswer(q:Question,result:ResolvedApplicationAnsw
  const boundedInference=result.reason===INFERRED_ANSWER_REASON
  const safeDefault=result.reason===DEFAULT_ANSWER_REASON
  if(!result.evidence.length&&!safeDefault)return false
- if(result.decision==='known'&&result.confidence<(boundedInference ? .8 : .95))return false
+ if(result.decision==='known'&&result.confidence<(boundedInference||safeDefault ? .8 : .95))return false
  if(result.decision==='draft'&&(q.sensitive||sensitiveReason(q.label,q.options)||result.answer.trim().split(/\s+/).length>60))return false
  if(!['known','draft'].includes(result.decision))return false
  try{validateLiveAnswer(questionField(q),{answer:result.answer,remember:false,skip:false});return true}catch{return false}

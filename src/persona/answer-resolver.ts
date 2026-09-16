@@ -8,6 +8,7 @@ import { structured, modelFor } from '../model/gateway.js'
 import { readParsedResume } from '../services/resume-parser.js'
 import { resumeDocumentSchema } from '../hunt/resume-document.js'
 import { credentialFieldReason } from '../hunt/apply/fields.js'
+import { correctedFieldLabel } from '../hunt/apply/recipes.js'
 import { APPLY_QUESTION_SPECS } from './application-questions.js'
 import { answerTopic, askAnswer, canUsePriorHumanAnswer, countriesIn, inferApplicationAnswer, sourcesForQuestion, validateAnswerProposal, type AnswerSource, type ResolverQuestion, type ResolvedApplicationAnswer } from './answer-resolver-policy.js'
 export type { AnswerSource, ResolverQuestion, ResolvedApplicationAnswer } from './answer-resolver-policy.js'
@@ -93,7 +94,8 @@ export async function resolveApplicationAnswers(userId: string, questionIds: str
   const questions: ResolverQuestion[] = rows.map(({ question, application, jobLocations }) => {
     const places = Array.isArray(jobLocations) ? jobLocations as Array<{ raw?: string; countryCode?: string }> : []
     const location = [application.location, ...places.flatMap(place => [place.raw, place.countryCode]).filter((value): value is string => Boolean(value))].filter(Boolean).join('; ') || null
-    return { id: question.id, applicationId: application.id, label: question.label, type: question.type, name: question.fieldName ?? undefined, options: question.options, required: question.required, role: application.role, company: application.company, location }
+    const field={label:question.label,type:question.type,name:question.fieldName??undefined,options:question.options,required:question.required}
+    return { id: question.id, applicationId: application.id, ...field, label: correctedFieldLabel(field), role: application.role, company: application.company, location }
   })
   const [kit] = await db.select().from(kits).where(eq(kits.userId, userId)).limit(1)
   const [resume] = await db.select().from(resumes).where(and(eq(resumes.userId, userId), eq(resumes.isBase, true))).limit(1)

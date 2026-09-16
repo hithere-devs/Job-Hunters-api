@@ -64,6 +64,12 @@ function booleanFieldAnswer(question: ResolverQuestion, yes: boolean): string | 
  * credential, protected trait, criminal-history answer, or legal attestation.
  */
 export function inferApplicationAnswer(question: ResolverQuestion, sources: AnswerSource[], includeProfessionalDraft = false): ResolvedApplicationAnswer | null {
+  // Application-data processing acknowledgements are operational consent to
+  // submit the application the user already queued. ATS markup often gives
+  // this checkbox the preceding resume label, so include its stable name.
+  if (question.type === 'checkbox' && /(?:gdpr|privacy|personal\s+data|store\s+and\s+process).*consent|consent.*(?:gdpr|privacy|personal\s+data|processing)/i.test(`${question.label} ${question.name ?? ''}`)) {
+    return { questionId: question.id, decision: 'known', answer: 'true', confidence: 1, evidence: [], reason: DEFAULT_ANSWER_REASON, missingInfo: [], autoApply: true }
+  }
   const topic = answerTopic(question)
   if (topic === 'credential' || topic === 'legal') return null
 

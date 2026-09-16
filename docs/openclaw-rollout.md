@@ -2,7 +2,7 @@
 
 ## Current result, 2026-09-16
 
-The tenant 2 OpenClaw extension is installed, enabled, paired and active for application reasoning. Both the API and all tenant gateways now select Gemini 3.1 Flash Lite through OpenRouter, with a 2048-token application output cap and low reasoning. No active application model route uses Anthropic.
+The tenant 2 OpenClaw extension is installed, enabled, paired and active for application reasoning. Both the API and all tenant gateways now select Gemini 2.5 Flash through GCP Vertex AI, with a 2048-token application output cap and low reasoning. No active application model route uses Anthropic or an API-key proxy.
 
 The full Gemini extension fixture passed text input, explicit saved boolean answers, location autocomplete, resume upload, exact Chrome target matching, cross-tenant authentication rejection, and final-submit denial. Flow A separately passed with gateway, relay and CDP closed during human sign-in.
 
@@ -18,7 +18,8 @@ M3.3's accepted-live-application gate remains blocked by the provider rejection.
 - `deploy/provision-openclaw.mjs` creates ten OS-user-scoped gateways. Run as root on the VM. It reads the existing root-owned runner environment and never prints secrets.
 - Gateway base 19789, stride 1000. The operator's personal gateway remains on 18789. All gateway, browser-control, CDP, VNC and VM-agent listeners are loopback-only.
 - Each gateway attaches to `http://127.0.0.1:9200+tenant`, which is Chrome's existing Flow B profile. Flow A still has no CDP.
-- `APPLY_DRIVER=openclaw` selects the new reasoning tier after the deterministic ladder. Gemini 3.1 Flash Lite now drives both OpenClaw and the retained fallback. Anthropic was removed from active routing after its provider balance became unavailable.
+- `APPLY_DRIVER=openclaw` selects the new reasoning tier after the deterministic ladder. Gemini 2.5 Flash on Vertex AI now drives both OpenClaw and the retained fallback. The VM uses its service-account identity; no Google model API key is stored.
+- Vertex setup requires `aiplatform.googleapis.com`, `roles/aiplatform.user` on the VM service account, the VM `cloud-platform` OAuth scope, and `MODEL_PROVIDER=vertex`, `GOOGLE_CLOUD_PROJECT`, and `GOOGLE_CLOUD_LOCATION` in the root-owned runner environment. Re-run `deploy/provision-openclaw.mjs` after changing these values.
 - Root-owned per-attempt policies authorize one target, host list, deadline, explicit sensitive answers, and one resume. The plugin rejects shell tools, login/OTP/CAPTCHA, arbitrary navigation, unapproved choices and final submission.
 - Resume staging uses the documented tenant `media/inbound` directory. Policy revocation removes the staged copy. The durable original resume remains in application storage.
 - Final submit stays in Huntly's guarded code. A database submission fence prevents automatic duplicate submission after uncertain confirmation.

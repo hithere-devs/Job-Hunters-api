@@ -64,6 +64,7 @@ it('infers repeatable application answers and marks them as inferred', () => {
   })
   assert.equal(inferApplicationAnswer({ ...question, label: 'SMS consent', type: 'select', options: ['Yes', 'No'] }, [])?.answer, 'No')
   assert.equal(inferApplicationAnswer({ ...question, label: 'What are your compensation expectations?', type: 'text', options: [] }, [])?.answer, 'Open to discussion based on the role scope and total compensation.')
+  assert.equal(inferApplicationAnswer({ ...question, label: 'Resume/CV*', name: 'gdpr_demographic_data_consent_given', type: 'checkbox', options: [] }, [])?.answer, 'true')
 })
 it('does not turn total years into skill-specific years or a date digit into experience', () => {
   const q = { ...question, label: 'How many years of experience do you have with React?', type: 'number', options: [] }
