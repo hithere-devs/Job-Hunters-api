@@ -106,6 +106,14 @@ Observed gate:
 {"gate":"extension-guarded-dom-fixture","tenant":2,"attemptId":"7ecdf33c-5ea2-4c03-b42a-5793dfcb4230","transport":"extension","physicalTargetMatch":true,"wrongTenantRejected":true,"syntheticResumeUploaded":true,"finalSubmitDenied":true,"status":"ok","quiescent":true,"stepEvents":77,"nameFilled":true,"authorizationExplicitFalse":true,"locationCommitted":true,"finalSubmitUntouched":true}
 ```
 
+A read-only projection of that fixture's tool result and preceding snapshot
+also confirmed the denial targeted the actual final button, not another blocked
+control:
+
+```json
+{"gate":"fixture-final-control-proof","seq":34,"ref":"e12","refIsSubmitApplication":true}
+```
+
 The committed script adds explicit authorization and paused-queue preflight
 checks around the successful fixture body. Its syntax was checked; do not rerun
 it against a resumed production queue merely to exercise those preflight checks.
