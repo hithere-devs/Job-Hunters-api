@@ -80,3 +80,19 @@ An older, different Mercor application has an uncertain submission fence. It was
 API typecheck and UI build passed. UI retains the existing >500 kB bundle warning. `db:generate` reported no schema changes.
 
 The VM resume upload symlink test passed: a root-owned sentinel remained unchanged, and the replaced destination was a regular 0600 file owned by tenant 9. This verifies the privilege fix, not only its source code.
+
+## Extension experiment status
+
+At the user's explicit request, installed the official bundled OpenClaw 2.3.0 extension assets and native messaging host for tenants 2 and 9. The browser itself still requires Chrome's Load unpacked selection. This is not a successful loaded-extension or native-relay gate.
+
+- Tenant 2 bundle: `/home/huntly-u2/.openclaw-huntly-u2/browser/chrome-extension`.
+- Tenant 2 extension ID: `jokcobodfhaacmclpfhefkmjigchihkj`; experimental relay 127.0.0.1:20801.
+- Tenant 9 bundle: `/home/huntly-u9/.openclaw-huntly-u9/browser/chrome-extension`.
+- Tenant 9 extension ID: `nnjejldhmknpmnilfgjgpgemabpcodal`; experimental relay 127.0.0.1:27801.
+- Permissions: debugger, tabs, tabGroups, storage, alarms, nativeMessaging.
+- Installer native-host issues: empty. Manual setup is still required. Custom Chrome user-data-dir bootstrap discovery must be checked after loading.
+- The extension uses an alternate CDP transport. Native target-ID/ref-cache compatibility still requires a real fixture; it is not assumed to improve parsing.
+- Optional per-tenant API routing and an authenticated in-process relay guard are committed locally, not activated on the VM. Default driver routing remains unchanged.
+- API final gate: 380 tests passed, zero failed; typecheck passed. Guard extension helper/routing gate: 34 tests passed.
+- Earlier full-suite handshake failures under local resource pressure exposed 100ms fixture deadlines. Fixture handshake headroom was increased without changing production deadlines or test assertions; the final full suite passed.
+- Browser extension control became unavailable while opening the VM Chrome Load unpacked chooser. Installation confirmation and the live extension test are parked until browser control reconnects. The application queue is paused with no active jobs, preserving all records.
