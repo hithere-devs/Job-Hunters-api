@@ -91,3 +91,10 @@ test('proven Ashby No uses explicit false, never toggles an unchecked boolean to
  assert.equal((await check(event({kind:'click',ref:'e1'}),p,facts(),{...no,name:'Yes',choiceValue:'true'})).block,true)
  assert.equal((await check(event({kind:'click',ref:'e1'}),{...p,approvedFields:[{label,type:'checkbox',value:'No'}]},facts(),no)).block,true)
 })
+test('only nonsensitive referenced autocomplete choices are permitted',async()=>{
+ const location={...node(),tag:'div',type:'option',role:'option',name:'Bengaluru, Karnataka, India',label:'Where are you currently located?',choiceContext:true,autocompleteChoice:true}
+ assert.equal((await check(event({kind:'click',ref:'e1'}),policy(),facts(),location)).block,undefined)
+ const nationality={...location,label:'Nationality'}
+ const p={...policy(),approvedFields:[{label:'Nationality',type:'option',value:location.name}]}
+ assert.equal((await check(event({kind:'click',ref:'e1'}),p,facts(),nationality)).block,true)
+})

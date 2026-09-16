@@ -35,6 +35,27 @@ export function describeElement(element) {
       ashbyBoolean = true
     }
   }
+  const ashbyAutocompleteLabel = control => {
+    if (control.tagName !== 'INPUT' || control.getAttribute('role') !== 'combobox' || !control.classList?.contains('ashby-application-form-input-autocomplete')) return ''
+    const entry = control.closest('.ashby-application-form-field-entry')
+    const labels = Array.from(entry?.querySelectorAll('label') || []).filter(label => label.closest('.ashby-application-form-field-entry') === entry && !label.querySelector('input,select,textarea,button'))
+    return labels.length === 1 && entry.querySelectorAll('[role="combobox"]').length === 1 ? labels[0].textContent?.trim() || '' : ''
+  }
+  let autocompleteChoice = false
+  if (element.getAttribute('role') === 'combobox') groupName = ashbyAutocompleteLabel(element) || groupName
+  if (element.getAttribute('role') === 'option' && element.classList?.contains('ashby-application-form-input-autocomplete-popup-result')) {
+    const listbox = element.closest('[role="listbox"]')
+    if (listbox?.id && !element.querySelector('input,select,textarea,button,a')) {
+      const controllers = Array.from(element.ownerDocument.querySelectorAll('[role="combobox"]')).filter(control => control.getAttribute('aria-expanded') === 'true' && (control.getAttribute('aria-controls') || '').split(/\s+/).includes(listbox.id))
+      if (controllers.length === 1) {
+        const control = controllers[0], question = ashbyAutocompleteLabel(control), box = control.getBoundingClientRect(), style = control.ownerDocument.defaultView.getComputedStyle(control)
+        if (question && question.length <= 600 && box.width > 0 && box.height > 0 && style.display !== 'none' && style.visibility !== 'hidden' && !control.disabled && control.getAttribute('aria-disabled') !== 'true') {
+          groupName = question
+          autocompleteChoice = true
+        }
+      }
+    }
+  }
   const ownLabels = Array.from(element.labels || []).map(label => label.textContent?.trim() || '').join(' ')
   const label = groupName || ownLabels || element.getAttribute('aria-label') || element.getAttribute('placeholder') || name
   const role = element.getAttribute('role') || ''
@@ -44,6 +65,7 @@ export function describeElement(element) {
   return {
     tag: element.tagName.toLowerCase(), type: ashbyBoolean ? 'checkbox' : element.getAttribute('type')?.toLowerCase() || (element.tagName === 'TEXTAREA' ? 'textarea' : element.tagName === 'SELECT' ? 'select' : ['radio', 'checkbox', 'option'].includes(role) ? role : 'text'),
     role, name: name || ownLabels, label, choiceContext,
+    ...(autocompleteChoice ? { autocompleteChoice: true } : {}),
     ...(ashbyBoolean ? { choiceValue: String(name.trim().toLowerCase() === 'yes') } : {}),
     visible: box.width > 0 && box.height > 0 && style.visibility !== 'hidden' && style.display !== 'none',
     disabled: Boolean(element.disabled) || element.getAttribute('aria-disabled') === 'true',

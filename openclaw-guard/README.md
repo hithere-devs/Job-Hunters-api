@@ -150,3 +150,15 @@ Read-only inspection of the authorized public Mercor form showed a third child i
 All four Yes buttons and the New York location checkbox passed hypothetical guard classification against fresh native refs on the public form, without clicking or filling anything. The location checkbox already resolved correctly as an input with checkbox type; no extra click permission was added for it. Old-run ref failures should not be treated as proof of a missing permission.
 
 Snapshots now preserve static question labels with `interactive:false` and `compact:false`, retaining the 18,000-character cap. The full native public-form snapshot contained the work-authorization question. This avoids handing the model four indistinguishable Yes/No pairs without their questions. The tool permissions and exact sensitive-answer policy did not change.
+
+### Portaled location suggestions
+
+The observed Ashby location suggestion is a `role=option` inside a portaled listbox. Its owning combobox references the listbox ID through `aria-controls` while `aria-expanded=true`. The guard now follows that exact relationship to the sole local Ashby field-entry label instead of treating the location text itself as a question.
+
+Only the observed Ashby autocomplete classes qualify. There must be one visible, enabled, expanded input controller and one question label. Wrong IDs, duplicate controllers, collapsed owners and sensitive questions remain denied. No stored input value is read to establish this relationship.
+
+```text
+PASS native portaled autocomplete: option bound to sole expanded nonsensitive field selected; collapsed controller denied.
+```
+
+`verify-autocomplete.mjs` proves the actual hook and native click using a synthetic portaled suggestion in tenant 9, then verifies that collapsing its controller removes permission.

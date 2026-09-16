@@ -53,3 +53,18 @@ test('unproven or submit-bearing Ashby-like groups cannot become choices',()=>{
   assert.equal(button.choiceValue,undefined);assert.equal(button.choiceContext,false)
  }
 })
+function autocompleteOption({controls='list1',expanded='true',duplicate=false,label='Where are you currently located?',extraLabel=false,visible=true}={}){
+ const doc={defaultView:{getComputedStyle:()=>({display:'block',visibility:'visible'})},getElementById:()=>null,querySelectorAll:()=>duplicate?[control,control]:[control]}
+ const labelNode={textContent:label,closest:()=>entry,querySelector:()=>null}
+ const entry={querySelectorAll:s=>s==='label'?(extraLabel?[labelNode,labelNode]:[labelNode]):s==='[role="combobox"]'?[control]:[]}
+ const control={tagName:'INPUT',classList:{contains:n=>n==='ashby-application-form-input-autocomplete'},ownerDocument:doc,getAttribute:k=>({'role':'combobox','aria-controls':controls,'aria-expanded':expanded}[k]??null),getBoundingClientRect:()=>({width:visible?100:0,height:30}),closest:()=>entry}
+ const option={tagName:'DIV',textContent:'Bengaluru, Karnataka, India',classList:{contains:n=>n==='ashby-application-form-input-autocomplete-popup-result'},ownerDocument:doc,getAttribute:k=>k==='role'?'option':null,querySelector:()=>null,closest:s=>s==='[role="listbox"]'?{id:'list1'}:null,getBoundingClientRect:()=>({width:200,height:30})}
+ return describeElement(option)
+}
+test('portaled Ashby autocomplete option resolves sole expanded controller and local question',()=>{
+ const option=autocompleteOption()
+ assert.equal(option.autocompleteChoice,true);assert.equal(option.choiceContext,true);assert.equal(option.label,'Where are you currently located?');assert.equal(option.type,'option')
+})
+test('disconnected, ambiguous, collapsed or hidden autocomplete owners fail closed',()=>{
+ for(const options of [{controls:'other'},{expanded:'false'},{duplicate:true},{extraLabel:true},{visible:false}])assert.equal(autocompleteOption(options).autocompleteChoice,undefined)
+})
