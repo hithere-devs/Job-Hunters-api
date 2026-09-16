@@ -1,0 +1,3 @@
+#!/bin/sh
+set -eu
+i="$1"; display=$((10 + i)); vnc=$((5900 + i)); exec /usr/bin/x11vnc -display ":$display" -rfbport "$vnc" -localhost -nopw -forever -shared -noxdamage -wait 20 -defer 20

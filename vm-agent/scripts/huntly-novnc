@@ -1,0 +1,3 @@
+#!/bin/sh
+set -eu
+i="$1"; vnc=$((5900 + i)); ws=$((6100 + i)); exec /usr/bin/websockify --web=/usr/share/novnc "127.0.0.1:$ws" "127.0.0.1:$vnc"
