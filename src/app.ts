@@ -8,6 +8,7 @@ import { globalLimiter } from './middleware/rateLimit.js'
 import { httpLogger, requestId, responseTime } from './middleware/requestId.js'
 import { adminFlagsRouter } from './modules/applications/admin-flags.js'
 import { questionDraftsRouter } from './modules/applications/question-drafts.js'
+import { applicationNudgesRouter } from './modules/applications/nudges.js'
 import { applicationsRouter } from './modules/applications/routes.js'
 import { authRouter } from './modules/auth/routes.js'
 import { billingRouter } from './modules/billing/routes.js'
@@ -102,6 +103,7 @@ export function createApp(): Express {
   app.use('/hunt', huntRouter)
   app.use('/intake', intakeRouter)
   app.use('/applications', questionDraftsRouter)
+  app.use('/applications', applicationNudgesRouter)
   app.use('/applications', applicationsRouter)
   app.use('/admin', adminFlagsRouter)
   app.use('/referrals', referralsRouter)

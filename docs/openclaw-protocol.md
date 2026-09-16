@@ -50,7 +50,7 @@ password is involved. The caller must resolve a tenant from the authenticated
 user's session; this low-level module accepts a validated tenant number, not a
 user-supplied gateway URL.
 
-Defaults are `ws://127.0.0.1:18789`, stride 1000, tenants 1 through 10. Operators
+Defaults are `ws://127.0.0.1:19789`, stride 1000, tenants 1 through 10. Operators
 may set `OPENCLAW_BASE_PORT` and `OPENCLAW_PORT_STRIDE` to avoid existing services.
 Stride below 120, invalid tenant numbers, public hosts and port overflow are
 rejected. Tests may override the endpoint only to another `127.0.0.1` socket.

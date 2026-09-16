@@ -76,7 +76,7 @@ export async function waitForApplicationAnswers(params:{page:Page;userId:string;
   * against *this* field's current options, so a stale or mismatched answer
   * becomes a question again rather than being forced in.
   */
- const priorRows=await db.select().from(pendingApplicationQuestions).where(and(eq(pendingApplicationQuestions.userId,userId),ne(pendingApplicationQuestions.attemptId,attemptId),inArray(pendingApplicationQuestions.status,['answered','applied','skipped']))).orderBy(desc(pendingApplicationQuestions.updatedAt)).limit(400)
+ const priorRows=await db.select().from(pendingApplicationQuestions).where(and(eq(pendingApplicationQuestions.userId,userId),ne(pendingApplicationQuestions.attemptId,attemptId),inArray(pendingApplicationQuestions.status,['answered','applied','skipped','failed']))).orderBy(desc(pendingApplicationQuestions.updatedAt)).limit(400)
  const plainLabel=(value:string)=>normaliseLabel(value).toLowerCase().replace(/\s*[-–—]\s*no fact provided$/i,'')
  for(const field of captured){
   const signature=fieldSignature(field)
@@ -86,8 +86,9 @@ export async function waitForApplicationAnswers(params:{page:Page;userId:string;
   // Same host first — an option list is a property of the form, not of the
   // question. Only carry an answer to a different host when it is a question
   // we recognise generically, or plain free text with no options to mismatch.
-  const prior=priorRows.find(q=>q.host===host&&matches(q))
-   ?? priorRows.find(q=>q.host!==host&&matches(q)&&(Boolean(commonKey)||((field.options??[]).length===0&&q.options.length===0)))
+  const reusableRows=priorRows.filter(q=>q.status!=='failed'||(q.answerMeta.source==='user'&&(q.applicationId===applicationId||(q.remember&&canReuseExplicitAnswer(capturedField(q))))))
+  const prior=reusableRows.find(q=>q.host===host&&matches(q))
+   ?? reusableRows.find(q=>q.host!==host&&matches(q)&&(Boolean(commonKey)||((field.options??[]).length===0&&q.options.length===0)))
   let inherited:string|null=null
   if(prior?.answer){try{inherited=validateLiveAnswer(field,{answer:prior.answer,remember:prior.remember,skip:false})}catch{}}
   // Remembering is the default for anything safe to reuse. Defaulting to false
@@ -97,7 +98,7 @@ export async function waitForApplicationAnswers(params:{page:Page;userId:string;
   // here exactly as they are everywhere else.
   const sensitive=Boolean(sensitiveReason(field.label,field.options))
   const remember=prior?.answerMeta.source==='profile_ai'?false:(prior?.remember??(!sensitive&&canReuseExplicitAnswer(field)))
-  await db.insert(pendingApplicationQuestions).values({userId,applicationId,attemptId,host,fieldSignature:signature,fieldName:field.name??null,label:field.label,type:field.type,options:field.options??[],required:field.required,sensitive,status:inherited?'answered':prior?.status==='skipped'&&!field.required?'skipped':'pending',answer:inherited,remember,answerMeta:inherited?(prior?.answerMeta??{}):{},expiresAt,blockedReason:prior?.answer&&!inherited?'Your previous answer is saved, but does not match the provider’s current options. Please confirm a choice for this exact question.':null}).onConflictDoNothing()
+  await db.insert(pendingApplicationQuestions).values({userId,applicationId,attemptId,host,fieldSignature:signature,fieldName:field.name??null,label:field.label,type:field.type,options:field.options??[],required:field.required,sensitive,status:inherited?'answered':prior?.status==='skipped'&&!field.required?'skipped':'pending',answer:inherited,remember,answerMeta:inherited?(prior?.answerMeta??{}):{},answeredAt:inherited?(prior?.answeredAt??null):null,expiresAt,blockedReason:prior?.answer&&!inherited?'Your previous answer is saved, but does not match the provider’s current options. Please confirm a choice for this exact question.':null}).onConflictDoNothing()
  }
  if(params.resolveWithProfile!==false){
   await transition({attemptId,userId,state:'resolving_answers',detail:{questionCount:captured.length}})

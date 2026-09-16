@@ -36,7 +36,7 @@ interface Run {
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' ? value as Record<string, unknown> : {}
 export function openClawGatewayUrl(tenant: number): string {
   if (!Number.isInteger(tenant) || tenant < 1 || tenant > 10) throw new OpenClawRunError('Invalid OpenClaw tenant', true)
-  const base = Number(process.env.OPENCLAW_BASE_PORT ?? 18789)
+  const base = Number(process.env.OPENCLAW_BASE_PORT ?? 19789)
   const stride = Number(process.env.OPENCLAW_PORT_STRIDE ?? 1000)
   if (!Number.isInteger(base) || base < 1024 || !Number.isInteger(stride) || stride < 120 || base + 9 * stride + 110 > 65535) throw new OpenClawRunError('Invalid OpenClaw port allocation', true)
   return `ws://127.0.0.1:${base + (tenant - 1) * stride}`

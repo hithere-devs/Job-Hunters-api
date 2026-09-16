@@ -1,7 +1,8 @@
 import http from 'node:http';
+import {validAttemptId,validateOpenClawPolicy} from './openclaw-policy.ts';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync, mkdirSync, writeFileSync, chownSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, chownSync, chmodSync, renameSync, readFileSync, unlinkSync } from 'node:fs';
 
 import { disconnectAllowed, MAX_RESUME_BYTES } from './lifecycle-policy.ts';
 
@@ -31,10 +32,15 @@ function state(index: number): TenantState {
   return s;
 }
 function validIndex(path: string): number | null { const m = path.match(/^\/tenants\/(\d+)(?:\/|$)/); if (!m) return null; const i = Number(m[1]); return i >= 1 && i <= 10 ? i : null; }
-function display(i: number) { return `:${10 + i}`; }
+function display(i: number) { return `:${i === 10 ? 30 : 10 + i}`; }
 function vncPort(i: number) { return 5900 + i; }
 function cdpPort(i: number) { return 9200 + i; }
 function profile(i: number) { return `/home/huntly-u${i}/profile`; }
+function openClawResumePath(i:number,attemptId:string){return `/home/huntly-u${i}/.openclaw-huntly-u${i}/media/inbound/${attemptId}-resume.pdf`;}
+async function removeOpenClawPolicy(i:number){
+  const file=`/run/huntly-openclaw/tenant-${i}.json`;
+  try{const policy=JSON.parse(readFileSync(file,'utf8'));unlinkSync(file);if(validAttemptId(policy.attemptId)){await execFileAsync('sudo',['-u',`huntly-u${i}`,'/usr/bin/node','-e',`try{require('fs').unlinkSync(process.argv[1])}catch(e){if(e.code!=='ENOENT')throw e}`,openClawResumePath(i,policy.attemptId)]);}}catch{}
+}
 function resumePath(i: number) { return `/home/huntly-u${i}/run/huntly-resume.pdf`; }
 /**
  * Where Chrome keeps its cookie store.
@@ -122,7 +128,7 @@ async function screenshot(i: number): Promise<Buffer | null> {
 }
 async function stopProcess(i: number): Promise<boolean> {
   const s = state(i);
-  if (!s.pid) { s.mode='idle'; s.expiresAt=null; return false; }
+  if (!s.pid) { s.mode='idle'; s.expiresAt=null; await removeOpenClawPolicy(i); return false; }
   const pid=s.pid;
   if (s.idleTimer) clearTimeout(s.idleTimer);
   try { process.kill(-pid, 'SIGTERM'); } catch { try { process.kill(pid, 'SIGTERM'); } catch {} }
@@ -134,13 +140,19 @@ async function stopProcess(i: number): Promise<boolean> {
     try { process.kill(-pid, 'SIGKILL'); } catch {}
   }
   s.mode='idle';s.child=null;s.pid=null;s.startedAt=null;s.expiresAt=null;
+  await removeOpenClawPolicy(i);
   return forced;
 }
 async function launch(i: number, mode: Exclude<Mode,'idle'>) {
   const s = state(i); if (s.mode !== 'idle' && s.child) return null;
-  // Flow B uses CDP frames only. Physically disconnect VNC, including stale
-  // clients that still hold a previously authenticated stream URL.
-  await execFileAsync('systemctl', [mode === 'connect' ? 'start' : 'stop', `huntly-novnc@${i}`, `huntly-x11vnc@${i}`]);
+  // Sever old interactive clients before switching modes. The X server, not
+  // the UI, enforces read-only input during application execution.
+  await execFileAsync('systemctl', ['stop', `huntly-novnc@${i}`, `huntly-x11vnc@${i}`]);
+  const watchRoot='/run/huntly-vnc-viewonly',marker=`${watchRoot}/${i}`;
+  mkdirSync(watchRoot,{recursive:true,mode:0o755});
+  if(mode==='apply')writeFileSync(marker,'view-only\n',{mode:0o644});
+  else {try{unlinkSync(marker);}catch{}}
+  await execFileAsync('systemctl', ['start', `huntly-x11vnc@${i}`, `huntly-novnc@${i}`]);
   // `--hide-crash-restore-bubble`: any ungraceful stop — an agent restart, an
   // OOM — makes Chrome greet the next launch with "Chrome didn't shut down
   // correctly", a bubble that covers the top-right of the page and swallows the
@@ -177,6 +189,31 @@ async function handleTenant(req: http.IncomingMessage, res: http.ServerResponse)
   const i=validIndex(path); if (i===null) return json(res,404,{error:'not_found'});
   const s=state(i);
   if (path.endsWith('/status') || path.endsWith('/connect') || path.endsWith('/resume')) { s.lastActivity=Date.now(); if(s.mode !== 'idle') s.expiresAt=new Date(s.lastActivity+IDLE_MS).toISOString(); }
+  if ((method==='POST'||method==='DELETE') && path.endsWith('/openclaw-policy')) {
+    let size=0;const chunks:Buffer[]=[];
+    for await(const chunk of req){const data=Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk);size+=data.length;if(size>400000)return json(res,413,{error:'policy_too_large'});chunks.push(data);}
+    let body:any;try{body=JSON.parse(Buffer.concat(chunks).toString('utf8'));}catch{return json(res,400,{error:'invalid_policy'});}
+    if(!body||!validAttemptId(body.attemptId))return json(res,400,{error:'invalid_attempt'});
+    const root='/run/huntly-openclaw',file=`${root}/tenant-${i}.json`;
+    if(method==='DELETE'){
+      if(existsSync(file)){const existing=JSON.parse(readFileSync(file,'utf8'));if(existing.attemptId!==body.attemptId)return json(res,409,{error:'different_attempt'});await removeOpenClawPolicy(i);}
+      return json(res,200,{revoked:true});
+    }
+    if(s.mode!=='apply')return json(res,409,{error:'busy',mode:s.mode});
+    const invalid=validateOpenClawPolicy(body,i);if(invalid)return json(res,400,{error:invalid});
+    if(existsSync(file)){const old=JSON.parse(readFileSync(file,'utf8'));if(old.deadlineEpoch>Date.now()&&old.attemptId!==body.attemptId)return json(res,409,{error:'policy_busy'});if(old.attemptId===body.attemptId)body.deadlineEpoch=Math.min(old.deadlineEpoch,body.deadlineEpoch);}
+    const stagedPath=body.resumePath?openClawResumePath(i,body.attemptId):null;
+    if(stagedPath){
+      // Copy as the tenant, never write into user-controlled paths as root.
+      await execFileAsync('sudo',['-u',`huntly-u${i}`,'/usr/bin/node','-e',
+        `const fs=require('fs'),path=require('path');const [src,dest]=process.argv.slice(1);fs.mkdirSync(path.dirname(dest),{recursive:true,mode:0o700});try{fs.copyFileSync(src,dest,fs.constants.COPYFILE_EXCL);fs.chmodSync(dest,0o600);}catch(e){if(e.code!=='EEXIST')throw e;const s=fs.lstatSync(dest);if(!s.isFile()||s.nlink!==1)throw Error('Invalid staged resume');}`,
+        resumePath(i),stagedPath]);
+    }
+    mkdirSync(root,{recursive:true,mode:0o711});chmodSync(root,0o711);
+    const gid=Number((await execFileAsync('id',['-g',`huntly-u${i}`])).stdout.trim());const tmp=`${file}.tmp`;
+    writeFileSync(tmp,JSON.stringify({attemptId:body.attemptId,targetId:body.targetId,deadlineEpoch:body.deadlineEpoch,allowedHosts:body.allowedHosts,approvedFields:body.approvedFields,resumePath:stagedPath}),{mode:0o640});chmodSync(tmp,0o640);chownSync(tmp,0,gid);renameSync(tmp,file);
+    return json(res,200,{installed:true,attemptId:body.attemptId,deadlineEpoch:body.deadlineEpoch,resumePath:stagedPath});
+  }
   if (method==='POST' && path.endsWith('/connect')) { if (s.mode!=='idle') return json(res,409,{error:'busy',mode:s.mode}); const x=await launch(i,'connect'); return json(res,200,{mode:'connect',display:display(i),vncPort:vncPort(i),pid:x?.pid ?? null,expiresAt:x?.expiresAt}); }
   if (method==='POST' && path.endsWith('/apply')) { if (s.mode!=='idle') return json(res,409,{error:'busy',mode:s.mode}); const x=await launch(i,'apply'); return json(res,200,{mode:'apply',cdpUrl:`http://127.0.0.1:${cdpPort(i)}`,pid:x?.pid ?? null,expiresAt:x?.expiresAt}); }
   if (method==='PUT' && path.endsWith('/resume')) {
@@ -186,11 +223,13 @@ async function handleTenant(req: http.IncomingMessage, res: http.ServerResponse)
     const bytes = Buffer.concat(chunks)
     if (bytes.length === 0 || bytes.length > MAX_RESUME_BYTES) return json(res, 400, { error: 'invalid_resume_size' })
     const target = resumePath(i)
-    mkdirSync(`/home/huntly-u${i}/run`, { recursive: true })
-    writeFileSync(target, bytes, { mode: 0o600 })
-    const {stdout: uid}=await execFileAsync('id',['-u',`huntly-u${i}`]);
-    const {stdout: gid}=await execFileAsync('id',['-g',`huntly-u${i}`]);
-    chownSync(target,Number(uid.trim()),Number(gid.trim()));
+    // The destination is tenant-controlled. Never follow its symlinks as root.
+    await new Promise<void>((resolve,reject)=>{
+      const child=execFile('sudo',['-u',`huntly-u${i}`,'/usr/bin/node','-e',
+        `const fs=require('fs'),path=require('path'),crypto=require('crypto');const dest=process.argv[1],dir=path.dirname(dest),tmp=path.join(dir,'.resume-'+crypto.randomUUID());const chunks=[];process.stdin.on('data',x=>chunks.push(x));process.stdin.on('end',()=>{fs.mkdirSync(dir,{recursive:true,mode:0o700});try{fs.writeFileSync(tmp,Buffer.concat(chunks),{mode:0o600,flag:'wx'});fs.renameSync(tmp,dest);}finally{try{fs.unlinkSync(tmp)}catch{}}});`,target],
+        {timeout:30000,maxBuffer:4096},error=>error?reject(error):resolve());
+      child.stdin?.on('error',reject);child.stdin?.end(bytes);
+    });
     return json(res, 200, { path: target, bytes: bytes.length })
   }
   if (method==='POST' && path.endsWith('/stop')) { await stopProcess(i); return json(res,200,{stopped:true}); }
@@ -202,7 +241,7 @@ async function handleTenant(req: http.IncomingMessage, res: http.ServerResponse)
     if (!png) return json(res,503,{error:'screenshot_failed'});
     res.writeHead(200,{'content-type':'image/png','content-length':png.length}); return res.end(png);
   }
-  if (method==='GET' && path.endsWith('/status')) { let bytes=0; try { const {stdout}=await execFileAsync('du',['-sb',profile(i)]); bytes=Number(stdout.split(/\s+/)[0])||0; } catch {} return json(res,200,{mode:s.mode,pid:s.pid,uptimeMs:s.startedAt?Date.now()-s.startedAt:0,profileBytes:bytes}); }
+  if (method==='GET' && path.endsWith('/status')) { let bytes=0; try { const {stdout}=await execFileAsync('du',['-sb',profile(i)]); bytes=Number(stdout.split(/\s+/)[0])||0; } catch {} return json(res,200,{mode:s.mode,vncReadOnly:s.mode==='apply'&&existsSync(`/run/huntly-vnc-viewonly/${i}`),pid:s.pid,uptimeMs:s.startedAt?Date.now()-s.startedAt:0,profileBytes:bytes}); }
   if (method==='GET' && path.endsWith('/cookies')) { if (s.mode!=='idle') return json(res,409,{error:'browser_running'}); return json(res,200,{domains:await cookies(i),cookies:await cookieRows(i)}); }
   return json(res,404,{error:'not_found'});
 }

@@ -197,7 +197,7 @@ const schema = z.object({
   APPLY_DRIVER: z.enum(['custom', 'openclaw']).default('custom'),
   OPENCLAW_RUN_TIMEOUT_MS: z.coerce.number().int().min(10_000).max(600_000).default(300_000),
   OPENCLAW_GATEWAY_TOKENS: optionalString,
-  OPENCLAW_BASE_PORT: z.coerce.number().int().min(1024).max(54000).default(18789),
+  OPENCLAW_BASE_PORT: z.coerce.number().int().min(1024).max(54000).default(19789),
   OPENCLAW_PORT_STRIDE: z.coerce.number().int().min(120).max(1000).default(1000),
   /** Token ceiling per fallback agent step. */
   APPLY_AGENT_MAX_TOKENS: z.coerce.number().int().positive().default(8000),

@@ -40,8 +40,8 @@ async function fixture(options: { complete?: boolean; noStop?: boolean; dropAgen
   return { client, requests }
 }
 test('gateway allocations are non-overlapping and reject invalid tenants', () => {
-  assert.equal(openClawGatewayUrl(1), 'ws://127.0.0.1:18789')
-  assert.equal(openClawGatewayUrl(10), 'ws://127.0.0.1:27789')
+  assert.equal(openClawGatewayUrl(1), 'ws://127.0.0.1:19789')
+  assert.equal(openClawGatewayUrl(10), 'ws://127.0.0.1:28789')
   assert.throws(() => openClawGatewayUrl(11))
 })
 test('challenge handshake signs v3 device payload, starts once, streams, and waits for terminal proof', async () => {
@@ -104,7 +104,7 @@ test('ambiguous disconnect never replays the agent RPC automatically', async () 
 test('rejects cross-tenant files and non-loopback targets', async () => {
   const { client } = await fixture()
   await assert.rejects(client.startRun(9, { attemptId: 'wrong-file', prompt: 'Fill', files: ['/home/huntly-u3/private.pdf'] }))
-  const publicClient = new OpenClawClient({ tokenForTenant: () => 'token', urlForTenant: () => 'ws://example.com:18789', cancelTimeoutMs: 10 })
+  const publicClient = new OpenClawClient({ tokenForTenant: () => 'token', urlForTenant: () => 'ws://example.com:19789', cancelTimeoutMs: 10 })
   await assert.rejects(publicClient.startRun(9, { attemptId: 'public-host', prompt: 'Fill' }))
   await publicClient.close()
 })

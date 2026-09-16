@@ -38,7 +38,7 @@ import { createMinimalResumeVariant } from './tailoring.js'
 import { fillForm, hasSubmitControl, hasSubmissionConfirmation, submitForm } from './apply/fill.js'
 import { countryCodeFor } from './apply/work-authorisation.js'
 import { applyWithOpenClaw, loadOpenClawDossier, OpenClawApplyError, verifyOpenClawFilledFields } from './apply/openclaw-apply.js'
-import { uploadTenantResume } from '../browser/vm-client.js'
+import { uploadTenantResume,installOpenClawPolicy,revokeOpenClawPolicy } from '../browser/vm-client.js'
 import { parseVmProfile } from '../browser/profile-policy.js'
 import { ApplicationDeferredError } from './application-policy.js'
 import { publishAttemptEvent } from './apply/events.js'
@@ -324,9 +324,16 @@ export async function applyApprovedCandidate(
           const tenantIndex = parseVmProfile(profileId, env.VM_ID)
           const stagedResume = await uploadTenantResume(tenantIndex, Buffer.from(resumeBytes))
           const dossier = await loadOpenClawDossier(userId, attempt.id, [host, new URL(page.url()).hostname])
+          const guardSession=await page.context().newCDPSession(page)
+          const targetInfo=await guardSession.send('Target.getTargetInfo')
+          await guardSession.detach()
+          const targetId=targetInfo.targetInfo.targetId
+          const approvalCandidates=[...providedAnswers.filter(field=>field.source==='user').map(field=>({label:field.label,type:field.type,value:field.value})),...dossier.answers.filter(answer=>answer.source==='explicit_user'&&['reusable','this_attempt'].includes(answer.scope)).map(answer=>({label:answer.label,type:answer.type,value:answer.value}))]
+          const approvedFields=[...new Map(approvalCandidates.map(field=>[JSON.stringify([field.label.trim().replace(/\s+/g,' ').toLowerCase(),field.type]),field])).values()]
+          const policy=await installOpenClawPolicy(tenantIndex,{attemptId:attempt.id,targetId,deadlineEpoch:Date.now()+env.OPENCLAW_RUN_TIMEOUT_MS,allowedHosts:[...new Set([host,new URL(page.url()).hostname])],approvedFields:approvedFields.slice(0,200),resumePath:stagedResume.path})
           try {
             agent = await applyWithOpenClaw({
-              tenantIndex: tenantIndex, attemptId: attempt.id, applyUrl, currentUrl: page.url(), resumePath: stagedResume.path, profile, dossier,
+              tenantIndex: tenantIndex, targetId, attemptId: attempt.id, applyUrl, currentUrl: page.url(), resumePath: policy.resumePath??stagedResume.path, profile, dossier,
               job: { title: row.job.title, company: row.job.company, countries: authorisation.jobCountries, description: row.job.descriptionText ?? undefined },
               unresolved, timeoutMs: env.OPENCLAW_RUN_TIMEOUT_MS, signal: options?.signal,
               onLifecycle: async event => {
@@ -346,10 +353,15 @@ export async function applyApprovedCandidate(
             await transition({ attemptId: attempt.id, userId, state: 'filling', detail: { tier: 'legacy_fallback', reason: 'openclaw_stopped' } })
             // Kept until three postings across two ATS families pass. This
             // driver also stops before submit; only submitForm below clicks it.
+            await revokeOpenClawPolicy(tenantIndex,attempt.id)
             agent = await legacy()
-          }
+          } finally { await revokeOpenClawPolicy(tenantIndex,attempt.id).catch(()=>undefined) }
         } else agent = await legacy()
-        if (useOpenClaw) agent.filled = await verifyOpenClawFilledFields(page, agent.filled)
+        if (useOpenClaw) {
+          agent.filled = await verifyOpenClawFilledFields(page, agent.filled)
+          const verifiedLabels=agent.filled.map(field=>field.label)
+          if(verifiedLabels.length)await db.update(pendingApplicationQuestions).set({status:'applied',blockedReason:null,updatedAt:new Date()}).where(and(eq(pendingApplicationQuestions.userId,userId),eq(pendingApplicationQuestions.attemptId,attempt.id),inArray(pendingApplicationQuestions.label,verifiedLabels),inArray(pendingApplicationQuestions.status,['answered','failed'])))
+        }
         agentCanSubmit=agent.canSubmit===true
         logger.info(
           { attemptId: attempt.id, skill: skill?.manifest.id ?? null, reached: agent.reached, filled: agent.filled.length, blocked: agent.blocked.length },

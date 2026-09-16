@@ -164,3 +164,14 @@ export async function ensureTenantConnected(index: number): Promise<EnsureConnec
     return { expiresAt: null, outcome: 'reused' }
   }
 }
+
+export interface OpenClawPolicy {
+  attemptId:string;targetId:string;deadlineEpoch:number;allowedHosts:string[];
+  approvedFields:Array<{label:string;type:string;value:string}>;resumePath:string|null;
+}
+export async function installOpenClawPolicy(index:number,policy:OpenClawPolicy):Promise<{resumePath:string|null}>{
+  return call(`/tenants/${index}/openclaw-policy`,{method:'POST',body:JSON.stringify(policy)})
+}
+export async function revokeOpenClawPolicy(index:number,attemptId:string):Promise<void>{
+  await call(`/tenants/${index}/openclaw-policy`,{method:'DELETE',body:JSON.stringify({attemptId})})
+}

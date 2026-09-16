@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { runWithDatabase, type DatabaseTransaction } from '../../db/client.js'
 import { OpenClawRunError, type RunResult } from '../../browser/openclaw-client.js'
-import { applyWithOpenClaw, buildOpenClawApplyPrompt, loadOpenClawDossier, OpenClawApplyError, parseOpenClawApplyReport, verifyOpenClawFilledFields, type OpenClawApplyInput } from './openclaw-apply.js'
+import { applyWithOpenClaw, buildOpenClawApplyPrompt, preferredOpenClawAnswers, loadOpenClawDossier, OpenClawApplyError, parseOpenClawApplyReport, verifyOpenClawFilledFields, type OpenClawApplyInput } from './openclaw-apply.js'
 import type { Page } from 'playwright-core'
 import type { PortalProfile } from '../portal-profile.js'
 
@@ -84,6 +84,19 @@ describe('OpenClaw application handoff', () => {
     const fields = ['Filled', 'Empty', 'Missing', 'Password'].map(label => ({ label, value: 'Never expose field values' }))
     assert.deepEqual(await verifyOpenClawFilledFields(page, fields), [{ label: 'Filled', value: '[provided]' }])
   })
+  it('checks Ashby pressed-state when its boolean buttons have no label association', async () => {
+    let checked=false
+    const page={url:()=> 'https://jobs.ashbyhq.com/company/job/application',getByLabel:()=>({first:()=>({isVisible:async()=>false})}),evaluate:async(_fn:unknown,label:string)=>{checked=true;return label==='Authorized?'}} as unknown as Page
+    assert.deepEqual(await verifyOpenClawFilledFields(page,[{label:'Authorized?',value:'[provided]'}]),[{label:'Authorized?',value:'[provided]'}])
+    assert.equal(checked,true)
+  })
+  it('does not authorize old and corrected answers to the same question',()=>{
+    const old={...input.dossier.answers[0]!,updatedAt:'2026-09-15T00:00:00Z',value:'Yes'}
+    const latest={...old,updatedAt:'2026-09-16T00:00:00Z',value:'No'}
+    assert.deepEqual(preferredOpenClawAnswers([old,latest]),[latest])
+    const current={...old,scope:'this_attempt' as const}
+    assert.deepEqual(preferredOpenClawAnswers([latest,current]),[current])
+  })
   it('does not start a run after queue lease abort', async () => {
     const mock = clientWith()
     let started = false
@@ -95,14 +108,17 @@ describe('OpenClaw application handoff', () => {
     const base = { userId: 'owner', host: 'jobs.ashbyhq.com', confirmed: true, provenance: 'explicit_user' }
     const rows = [
       [ { ...base, label: 'Current employer', value: 'Fixture' }, { ...base, label: 'API key', value: 'NEVER_INCLUDE' }, { ...base, label: 'Phone', userId: 'other', value: 'OTHER_USER' }, { ...base, userId: null, label: 'Name', value: 'SHARED' }, { ...base, label: 'Work authorization in Canada', value: 'No' } ],
-      [ { userId: 'owner', host: 'jobs.ashbyhq.com', attemptId: 'old-attempt', label: 'Gender', type: 'select', required: false, options: ['Male','Female'], answer: 'Female', answerMeta: { source: 'user' }, answeredAt: new Date(), remember: true, status: 'applied' },
+      [ { userId:'owner',host:'jobs.ashbyhq.com',attemptId:'attempt-9',label:'Are you legally authorized to work in the United States?',type:'checkbox',required:true,options:[],answer:'false',answerMeta:{source:'user'},answeredAt:null,remember:false,status:'failed'},
+        { userId: 'owner', host: 'jobs.ashbyhq.com', attemptId: 'old-attempt', label: 'Gender', type: 'select', required: false, options: ['Male','Female'], answer: 'Female', answerMeta: { source: 'user' }, answeredAt: new Date(), remember: true, status: 'applied' },
         { userId: 'owner', host: 'jobs.ashbyhq.com', attemptId: 'old-attempt', label: 'Gender', type: 'select', required: false, options: ['Male','Female'], answer: 'Male', answerMeta: { source: 'profile_ai' }, answeredAt: new Date(), remember: true, status: 'applied' } ],
       [ { userId: 'owner', slot: 'target_titles', value: ['Engineer'], source: 'asked' }, { userId: 'owner', slot: 'access_token', value: 'NEVER_INCLUDE', source: 'asked' } ],
     ]
     let index = 0
-    const database = { select: () => ({ from: () => ({ where: () => Promise.resolve(rows[index++]) }) }) } as unknown as DatabaseTransaction
+    const database = { select: () => ({ from: () => ({ where: () => {const result=rows[index++];return Object.assign(Promise.resolve(result),{orderBy:()=>Promise.resolve(result)})} }) }) } as unknown as DatabaseTransaction
     const dossier = await runWithDatabase(database, () => loadOpenClawDossier('owner', 'attempt-9', ['jobs.ashbyhq.com']))
-    assert.equal(dossier.answers.length, 3)
+    assert.equal(dossier.answers.length, 4)
+    assert.equal(dossier.answers.find(a=>a.type==='checkbox')?.source,'explicit_user')
+    assert.equal(dossier.answers.find(a=>a.type==='checkbox')?.scope,'this_attempt')
     assert.equal(dossier.answers.find(a => a.label === 'Gender')?.value, 'Female')
     assert.equal(dossier.persona.length, 1)
     assert.doesNotMatch(JSON.stringify(dossier), /NEVER_INCLUDE|OTHER_USER|SHARED/)
