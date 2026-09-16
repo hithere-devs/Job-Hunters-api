@@ -1,0 +1,14 @@
+[Unit]
+Description=Huntly VM browser agent
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/huntly/vm-agent
+ExecStart=/usr/bin/node --import tsx /opt/huntly/vm-agent/server.ts
+EnvironmentFile=/etc/huntly/vm-agent.env
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

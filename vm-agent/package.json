@@ -1,0 +1,1 @@
+{"type":"module","scripts":{"start":"node --import tsx server.ts"},"dependencies":{"tsx":"^4.20.6","typescript":"^5.9.3"}}
