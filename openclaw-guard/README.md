@@ -71,3 +71,19 @@ This is **not** a network firewall or a proof that arbitrary third-party JavaScr
 Unsupported custom controls, unlabelled fields, external iframes and wizard pages with no positive step counter stop the driver. Report these as guard blocks; do not bypass them with evaluate or shell.
 
 Run `npm test` in this directory. Before production use, additionally prove plugin loading and actual native ref resolution against a tenant 9 fixture. Unit tests alone do not establish that the installed gateway invoked the hook. No real provider login or real application submission belongs in that fixture gate.
+
+### Verified fixture, 2026-09-16
+
+`sudo node verify-tenant9.mjs` ran through the real tenant 9 gateway and Claude Sonnet 5. The backend created an artificial form with `page.setContent()` under `https://example.com`; no employer form or user account was used.
+
+First run failed because the model called `fill` without its required fields array. The guard denied it, the ordinary name stayed empty, and the DOM assertion failed. Sponsorship was filled and final submit was denied. The fixture prompt was corrected to specify OpenClaw's documented `act:type` request. No policy was relaxed.
+
+Second run, `e86df806-73cb-4dba-ae34-25832f26a739`, passed:
+
+```text
+PASS tenant9 gateway plugin: native browser filled Fixture Ada and approved sponsorship Yes; fixture final submit stayed unexecuted.
+```
+
+The native final click returned `huntly_guard:final_submit_or_unproven_click`. Post-run DOM assertions proved both filled values and no submit event. Cleanup removed policy and fixture page, then stopped Chrome through VM agent. Follow-up status was `mode=idle`, `pid=null`; gateway remained active.
+
+This gate proves actual hook invocation, native reference resolution, permitted writes and refusal of the final control on the fixture. It does not certify all ATS widgets or turn the before-tool hook into a network firewall.

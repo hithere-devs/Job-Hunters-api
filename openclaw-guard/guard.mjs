@@ -68,7 +68,7 @@ export async function decide(event, policy, facts, resolveRef, now = Date.now())
   if (r.submit || r.modifiers?.length || r.doubleClick || r.button && r.button !== 'left') return deny('implicit_submission_or_modified_action')
   const request = { targetId: policy.targetId, timeoutMs: 5000 }
   if (r.kind === 'fill') {
-    if (!Array.isArray(r.fields) || !r.fields.length || r.fields.length > 40) return deny('invalid_fill')
+    if (!Array.isArray(r.fields) || !r.fields.length || r.fields.length > 40) return deny('invalid_fill_use_fields_array_or_kind_type_with_ref_and_text')
     const fields = []
     for (const field of r.fields) {
       if (typeof field.ref !== 'string' || typeof field.value !== 'string') return deny('invalid_fill_field')
