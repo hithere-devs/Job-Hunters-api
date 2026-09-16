@@ -70,7 +70,7 @@ const NEVER_AUTO: Array<[RegExp, string]> = [
     'salary expectation',
   ],
   [
-    /\b(?:sponsorship|visa\b|work\s+authori[sz]ation|right\s+to\s+work|legally\s+authorized|require\s+sponsorship)/i,
+    /\b(?:sponsorship|visa\b|work\s+authori[sz]ation|right\s+to\s+work|(?:legally\s+)?authori[sz]ed\s+to\s+work|eligible\s+to\s+work|permission\s+to\s+work|require\s+sponsorship)/i,
     'visa or work authorisation',
   ],
   [/\b(?:criminal|conviction|convicted|background\s+check|felony)\b/i, 'background question'],
