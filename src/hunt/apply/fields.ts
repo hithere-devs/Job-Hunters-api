@@ -1,4 +1,4 @@
-import { commonSensitiveQuestionId } from '../../persona/application-questions.js'
+import { canonicalCommonQuestionKey, commonSensitiveQuestionId } from '../../persona/application-questions.js'
 import crypto from 'node:crypto'
 import { and, eq, isNull, or, sql } from 'drizzle-orm'
 import { z } from 'zod/v4'
@@ -99,7 +99,7 @@ export function isContextualQuestion(field: FormField): boolean {
 export function canReuseExplicitAnswer(field: FormField): boolean {
   if (credentialFieldReason(field) || isContextualQuestion(field)) return false
   const reason = sensitiveReason(field.label, field.options)
-  if (reason && /background|legal|reference/i.test(reason)) return false
+  if (reason && /background|legal|reference|visa|authorisation/i.test(reason)) return false
   return !/\b(?:certif\w*|attest\w*|declaration|employment\s+contract|legally\s+binding)\b/i.test(field.label)
 }
 
@@ -325,11 +325,13 @@ export async function resolveField(
     return { value: explicit, via: 'cache' }
   }
 
-  const commonId = sensitive ? commonSensitiveQuestionId(field.label, field.type) : null
-  if (commonId && !field.options?.length) {
+  const commonId = sensitive ? commonSensitiveQuestionId(field.label, field.type) : canonicalCommonQuestionKey(field)
+  const profileKey = commonId ? ({ linkedinUrl: 'linkedin', githubUrl: 'github', portfolioUrl: 'portfolio' } as Record<string, string>)[commonId] ?? commonId : null
+  const alreadyKnown = !sensitive && profileKey ? valueFromProfile(profileKey, context.profile) : null
+  if (commonId && !alreadyKnown && !field.options?.length) {
     const [answer] = await db.select({ value: fieldAnswers.value }).from(fieldAnswers).where(and(eq(fieldAnswers.userId, context.userId), eq(fieldAnswers.host, 'profile'), eq(fieldAnswers.fieldSignature, `profile:${commonId}`), eq(fieldAnswers.provenance, 'explicit_user'), eq(fieldAnswers.confirmed, true))).limit(1).catch(() => [])
     const value = answer?.value ? validExplicitAnswer(field, answer.value) : null
-    if (value) return { value, via: 'cache' }
+    if (value && !(commonId === 'workAuthorization' && /^(?:yes|no|true|false)$/i.test(value.trim()))) return { value, via: 'cache' }
   }
 
   if (sensitive) return { value: null, via: 'skipped', blocked: 'sensitive_field' }

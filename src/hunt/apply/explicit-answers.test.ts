@@ -52,3 +52,8 @@ describe('explicit answer provenance', () => {
     assert.equal(valueFromProfile('totalExperience', profile), '5')
   })
 })
+it('never reuses a generic work-authorisation or sponsorship yes/no across jobs', () => {
+  for (const label of ['Are you legally authorized to work in the country where you are applying?', 'Will you require sponsorship?', 'Are you authorized to work in the USA?']) {
+    assert.equal(canReuseExplicitAnswer({ label, type: 'select', options: ['Yes', 'No'], required: true }), false)
+  }
+})

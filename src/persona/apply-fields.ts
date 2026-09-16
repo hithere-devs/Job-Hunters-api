@@ -1,5 +1,7 @@
+import { badRequest } from '../lib/errors.js'
+import { normaliseHttpUrl } from '../hunt/apply/urls.js'
 import { readParsedResume } from '../services/resume-parser.js'
-import { APPLY_QUESTION_SPECS, type ApplyFieldId } from './application-questions.js'
+import { APPLY_QUESTION_SPECS, applyFieldsSchema, canonicalCommonQuestionKey, type CommonQuestionField, type ApplyFieldId } from './application-questions.js'
 export type { ApplyFieldId } from './application-questions.js'
 import { and, eq } from 'drizzle-orm'
 import { db } from '../db/client.js'
@@ -105,4 +107,16 @@ export function describeMissing(ids: ApplyFieldId[]): string {
   if (labels.length === 0) return ''
   if (labels.length === 1) return labels[0] ?? ''
   return `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`
+}
+
+
+/** Called only after the user explicitly opts to remember a common application fact. */
+export async function saveCommonQuestionAnswer(userId: string, field: CommonQuestionField, answer: string): Promise<ApplyFieldId | null> {
+  const key = canonicalCommonQuestionKey(field)
+  if (!key) return null
+  const value = key.endsWith('Url') ? normaliseHttpUrl(answer) : answer.trim()
+  const validated = applyFieldsSchema.safeParse({ [key]: value })
+  if (!validated.success) throw badRequest('Enter a valid profile value before saving this answer for reuse.')
+  await saveApplyFields(userId, validated.data)
+  return key
 }

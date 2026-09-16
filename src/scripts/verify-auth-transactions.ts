@@ -1,4 +1,4 @@
-import { saveApplyFields } from '../persona/apply-fields.js'
+import { readApplyFields, saveApplyFields, saveCommonQuestionAnswer } from '../persona/apply-fields.js'
 import { rememberAnswer, resolveField } from '../hunt/apply/fields.js'
 import type { PortalProfile } from '../hunt/portal-profile.js'
 import { draftForOwnedQuestion } from '../modules/applications/question-drafts.js'
@@ -29,10 +29,14 @@ try {
     await completeOnboarding(userId, { roles: 'Overwrite attempt' })
     const submissions = await db.select().from(onboardingSubmissions).where(eq(onboardingSubmissions.userId, userId))
     assert.equal(submissions.length, 1)
+    assert.equal(await saveCommonQuestionAnswer(userId, { label: 'LinkedIn Profile - no fact provided', type: 'text' }, 'linkedin.com/in/isolated-fixture'), 'linkedinUrl')
+    assert.equal((await readApplyFields(userId)).fields.find((field) => field.id === 'linkedinUrl')?.value, 'https://linkedin.com/in/isolated-fixture')
+    assert.equal(await saveCommonQuestionAnswer(userId, { label: 'Preferred name', type: 'text' }, 'Not a full name'), null)
     const fields = await saveApplyFields(userId, { expectedCtc: 'INR 2400000 per year', workAuthorization: 'Authorized to work in India' })
     assert.equal(fields.fields.find((field) => field.id === 'expectedCtc')?.value, 'INR 2400000 per year')
-    const profile = {} as PortalProfile
+    const profile = { fullName: 'Fixture Person', email: '', phone: '', headline: '', noticePeriod: '', links: { linkedin: '', github: '', portfolio: '' }, address: { line1: '', city: '', region: '', postalCode: '', country: '' }, experience: [] } as unknown as PortalProfile
     const context = { userId, host: 'jobs.example.test', profile }
+    assert.equal((await resolveField({ label: 'LinkedIn URL', type: 'text', required: true }, context)).value, 'https://linkedin.com/in/isolated-fixture')
     const salary = await resolveField({ label: 'Expected salary', type: 'text', required: true }, context)
     assert.equal(salary.value, 'INR 2400000 per year')
     const countryQuestion = await resolveField({ label: 'Are you legally authorized to work in the USA?', type: 'text', required: true }, context)
@@ -43,7 +47,7 @@ try {
     assert.equal((await resolveField(demographic, { ...context, userId: crypto.randomUUID() })).value, null)
     await assert.rejects(() => rememberAnswer(userId, context.host, { label: 'Password', type: 'password', required: true }, 'never-store-this'))
     await assert.rejects(() => draftForOwnedQuestion(userId, crypto.randomUUID()))
-    console.log('PASS explicit answers: saved profile salary, no country inference, scoped opt-in reuse, other-user rejection, credential refusal, unknown question ownership rejection')
+    console.log('PASS explicit answers: common LinkedIn aliases update profile, preferred-name separation, saved profile salary, no country inference, scoped opt-in reuse, other-user rejection, credential refusal, unknown question ownership rejection')
     const refreshed = await refreshSession(session.refreshToken, {})
     await assert.rejects(() => refreshSession(session.refreshToken, {}))
     const token = crypto.randomBytes(32).toString('base64url')
