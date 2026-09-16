@@ -84,6 +84,7 @@ export interface OpenClawApplyInput {
 }
 
 export function buildOpenClawApplyPrompt(input: OpenClawApplyInput): string {
+  const browserProfile=gateway.openClawBrowserProfile(input.tenantIndex)
   const p = input.profile
   const candidate = { fullName: p.fullName, email: p.email, phone: p.phone, headline: p.headline, address: p.address,
     links: p.links, noticePeriod: p.noticePeriod, totalExperience: p.totalExperience, willingToRelocate: p.willingToRelocate,
@@ -99,8 +100,8 @@ export function buildOpenClawApplyPrompt(input: OpenClawApplyInput): string {
     'Continue through intermediate pages and upload only the attached resume. DO NOT press final Submit/Send application, call a submission API, use keyboard shortcuts to submit, or claim submitted. Only Huntly code holds submission authority and verifies the provider receipt. Stop BEFORE final submit.',
     'Only reuse explicit sensitive answers when the question context, country, and options match. Never infer protected traits from name, location or resume. The refusal list is also enforced by the tool guard.',
     'Return ONLY JSON: {"reached":"nothing"|"form","canSubmit":boolean,"filled":[{"label":string}],"blocked":[{"label":string,"why":string}],"assumptions":[{"label":string,"basis":string}],"note":string}. canSubmit means all required fields are visibly filled and a final submit control is visible, not that anything was submitted.',
-    JSON.stringify({ browserRoute:{profile:'tenant',target:'host',targetId:input.targetId}, applyUrl: input.applyUrl, currentUrl: input.currentUrl, job: input.job, candidate, savedAnswers: input.dossier.answers, persona: input.dossier.persona, remainingFields: input.unresolved, resumePath: input.resumePath }),
-    'Allowed tools: browser action snapshot, screenshot, upload; or action act with ONE request kind type, fill, select, click, scrollIntoView. Always use supplied targetId and profile tenant. Do not call text, open, navigate, tabs, batch, resize, press, or evaluate. For text use request:{kind:"type",ref:"eN",text:"value",submit:false}. Read the full question around a choice. If an action is denied, do not repeat it unchanged: use a supported referenced control or return a precise blocker. Once all required fields are filled, return the JSON report immediately without clicking final submit.',
+    JSON.stringify({ browserRoute:{profile:browserProfile,target:'host',targetId:input.targetId}, applyUrl: input.applyUrl, currentUrl: input.currentUrl, job: input.job, candidate, savedAnswers: input.dossier.answers, persona: input.dossier.persona, remainingFields: input.unresolved, resumePath: input.resumePath }),
+    `Allowed tools: browser action snapshot, screenshot, upload; or action act with ONE request kind type, fill, select, click, scrollIntoView. Always use supplied targetId and profile ${browserProfile}. Do not call text, open, navigate, tabs, batch, resize, press, or evaluate. For text use request:{kind:"type",ref:"eN",text:"value",submit:false}. Read the full question around a choice. If an action is denied, do not repeat it unchanged: use a supported referenced control or return a precise blocker. Once all required fields are filled, return the JSON report immediately without clicking final submit.`,
   ].join('\n\n')
 }
 

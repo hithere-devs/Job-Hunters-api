@@ -3,7 +3,7 @@ import { generateKeyPairSync, createPublicKey, verify } from 'node:crypto'
 import { afterEach, test } from 'node:test'
 import { WebSocketServer } from 'ws'
 import { validateAgentParams, validateAgentWaitParams, validateChatAbortParams, validateChatSendParams, validateConnectParams } from '@openclaw/gateway-protocol'
-import { OpenClawClient, OpenClawRunError, openClawGatewayUrl } from './openclaw-client.js'
+import { OpenClawClient, OpenClawRunError, openClawGatewayUrl, openClawBrowserProfile } from './openclaw-client.js'
 const cleanup: Array<() => Promise<void>> = []
 afterEach(async () => { for (const close of cleanup.splice(0)) await close() })
 async function fixture(options: { complete?: boolean; noStop?: boolean; dropAgent?: boolean; waitUntilAbort?: boolean } = {}) {
@@ -35,7 +35,9 @@ async function fixture(options: { complete?: boolean; noStop?: boolean; dropAgen
   assert.ok(address && typeof address !== 'string')
   const pair = generateKeyPairSync('ed25519')
   const identity = { privateKeyPem: pair.privateKey.export({ format: 'pem', type: 'pkcs8' }).toString(), publicKeyPem: pair.publicKey.export({ format: 'pem', type: 'spki' }).toString() }
-  const client = new OpenClawClient({ urlForTenant: () => `ws://127.0.0.1:${address.port}`, tokenForTenant: (tenant) => `tenant-${tenant}-token`, identityForTenant: () => identity, requestTimeoutMs: 100, cancelTimeoutMs: 50 })
+  // Leave handshake headroom under the full parallel suite; deadline behavior
+  // is asserted separately after acceptance, not by a 100ms scheduling race.
+  const client = new OpenClawClient({ urlForTenant: () => `ws://127.0.0.1:${address.port}`, tokenForTenant: (tenant) => `tenant-${tenant}-token`, identityForTenant: () => identity, requestTimeoutMs: 2000, cancelTimeoutMs: 500 })
   cleanup.push(async () => { await client.close(); for (const ws of server.clients) ws.terminate(); await new Promise<void>((resolve) => server.close(() => resolve())) })
   return { client, requests }
 }
@@ -64,8 +66,8 @@ test('challenge handshake signs v3 device payload, starts once, streams, and wai
 })
 test('hard deadline cancels even when nobody calls waitForRun', async () => {
   const { client, requests } = await fixture()
-  const { runId } = await client.startRun(9, { attemptId: 'deadline', prompt: 'Fill test form', timeoutMs: 60 })
-  await new Promise((resolve) => setTimeout(resolve, 100))
+  const { runId } = await client.startRun(9, { attemptId: 'deadline', prompt: 'Fill test form', timeoutMs: 2000 })
+  await new Promise((resolve) => setTimeout(resolve, 2100))
   const result = await client.waitForRun(runId, { timeoutMs: 500 })
   assert.equal(result.status, 'timeout'); assert.equal(result.cancelConfirmed, true)
   assert.equal(requests.filter((request) => request.method === 'chat.abort').length, 1)
@@ -114,4 +116,14 @@ test('timeout reason wins when an in-flight wait returns a terminal error during
   const { runId } = await client.startRun(9, { attemptId: 'abort-race', prompt: 'Fill test form', timeoutMs: 10000 })
   const result = await client.waitForRun(runId, { timeoutMs: 20 })
   assert.equal(result.status, 'timeout'); assert.equal(result.cancelConfirmed, true)
+})
+
+test('extension browser is an explicit per-tenant opt-in',()=>{
+ const before=process.env.OPENCLAW_BROWSER_PROFILES
+ try{
+  process.env.OPENCLAW_BROWSER_PROFILES='{"2":"extension-test"}'
+  assert.equal(openClawBrowserProfile(2),'extension-test');assert.equal(openClawBrowserProfile(9),'tenant')
+  process.env.OPENCLAW_BROWSER_PROFILES='{"3":"untrusted-profile"}'
+  assert.throws(()=>openClawBrowserProfile(3))
+ }finally{if(before===undefined)delete process.env.OPENCLAW_BROWSER_PROFILES;else process.env.OPENCLAW_BROWSER_PROFILES=before}
 })

@@ -41,6 +41,14 @@ export function openClawGatewayUrl(tenant: number): string {
   if (!Number.isInteger(base) || base < 1024 || !Number.isInteger(stride) || stride < 120 || base + 9 * stride + 110 > 65535) throw new OpenClawRunError('Invalid OpenClaw port allocation', true)
   return `ws://127.0.0.1:${base + (tenant - 1) * stride}`
 }
+/** Explicit opt-in per tenant; experimental transports never affect other users. */
+export function openClawBrowserProfile(tenant:number):'tenant'|'extension-test'{
+  if(!Number.isInteger(tenant)||tenant<1||tenant>10)throw new OpenClawRunError('Invalid OpenClaw tenant',true)
+  let profiles:unknown
+  try{profiles=JSON.parse(process.env.OPENCLAW_BROWSER_PROFILES??'{}')}catch{throw new OpenClawRunError('Invalid OpenClaw browser profile map',true)}
+  if(!profiles||typeof profiles!=='object'||Array.isArray(profiles)||Object.entries(profiles).some(([key,value])=>!/^([1-9]|10)$/.test(key)||!['tenant','extension-test'].includes(value as string)))throw new OpenClawRunError('Invalid OpenClaw browser profile map',true)
+  return (profiles as Record<string,'tenant'|'extension-test'>)[String(tenant)]??'tenant'
+}
 function assertLoopback(url: string): void {
   const parsed = new URL(url)
   if (parsed.protocol !== 'ws:' || parsed.hostname !== '127.0.0.1' || parsed.username || parsed.password) throw new OpenClawRunError('OpenClaw must use a loopback WebSocket', true)
