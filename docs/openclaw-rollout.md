@@ -41,6 +41,8 @@ Mercor Fullstack Software Engineer, Agent Platform:
 - Attempt `e4e5a03f-18c9-4eae-992d-0b1c3b81fdfe`: OpenClaw deadline, confirmed cancellation, fallback ended `needs_review`. No submission intent. Found missing native Ashby boolean recognition and previously saved answers excluded after failed DOM fills.
 - Attempt `7f9e1003-868c-47d6-bd16-fa372945ab69`: also ended `needs_review`, no submission intent. Tool-result diagnostics showed unsupported actions and legitimate choice refs rejected as unproven clicks. Do not count either as a completed application.
 
+- Attempt `8917cb98-cd18-4e3b-bb7f-b62460dfd13e`: ended `needs_review`, no submission intent. The portaled location suggestion could not be associated with its owning question. Native fixture now verifies the corrected association. At the user's request, the next experiment uses the official browser extension instead of another direct-driver retry.
+
 An older, different Mercor application has an uncertain submission fence. It was not retried or cleared.
 
 ## Plan corrections
@@ -62,3 +64,19 @@ An older, different Mercor application has an uncertain submission fence. It was
 - Set transcript retention/deletion for the tenant SQLite state, which contains application dossiers and tool results. Session state is not "no data stored".
 - Fix database TLS certificate-chain verification before public production deployment.
 - Keep login and provider challenges human-driven. Do not read inboxes or credentials.
+
+## Final code gates before extension experiment
+
+```text
+ℹ tests 379
+ℹ suites 61
+ℹ pass 379
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+```
+
+API typecheck and UI build passed. UI retains the existing >500 kB bundle warning. `db:generate` reported no schema changes.
+
+The VM resume upload symlink test passed: a root-owned sentinel remained unchanged, and the replaced destination was a regular 0600 file owned by tenant 9. This verifies the privilege fix, not only its source code.

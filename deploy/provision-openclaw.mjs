@@ -1,6 +1,9 @@
 /** Run on the VM as root. Never prints secrets; does not start Chrome. */
 import fs from 'node:fs';import crypto from 'node:crypto';import{execFileSync}from'node:child_process';
 const root='/opt/huntly/openclaw-runtime/node_modules/openclaw';
+// Native messaging refuses writable runtime executables. Preserve that check.
+execFileSync('chown',['-R','root:root','/opt/huntly/openclaw-runtime']);
+execFileSync('chmod',['-R','go-w','/opt/huntly/openclaw-runtime']);
 const {parse}=await import('/opt/huntly/api/node_modules/dotenv/lib/main.js');
 const credentials=parse(fs.readFileSync('/etc/huntly/runner.env'));
 if(!credentials.ANTHROPIC_API_KEY)throw new Error('Verified Anthropic model key is required');
