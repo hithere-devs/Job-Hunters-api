@@ -155,6 +155,14 @@ export interface FullKitDto {
   expectedCtc: string | null
   workAuthorization: string | null
   willingToRelocate: string | null
+  visaSponsorship: string | null
+  workMode: string | null
+  gender: string | null
+  sexualOrientation: string | null
+  ethnicity: string | null
+  veteranStatus: string | null
+  disabilityStatus: string | null
+  boundByAgreements: string | null
   skills: string[]
   photoFileName: string | null
   photoUrl: string | null
@@ -192,6 +200,8 @@ const COMPLETENESS_FIELDS: (keyof Kit)[] = [
   'postalCode',
   'country',
   'linkedinUrl',
+  'githubUrl',
+  'portfolioUrl',
   'noticePeriod',
   'totalExperience',
   'currentCtc',
@@ -235,6 +245,14 @@ export function serializeKit(kit: Kit | undefined): FullKitDto {
     maxYearsExperience: kit?.maxYearsExperience ?? 5,
     currentCtc: kit?.currentCtc ?? null,
     expectedCtc: kit?.expectedCtc ?? null,
+    visaSponsorship: kit?.visaSponsorship ?? null,
+    workMode: kit?.workMode ?? null,
+    gender: kit?.gender ?? null,
+    sexualOrientation: kit?.sexualOrientation ?? null,
+    ethnicity: kit?.ethnicity ?? null,
+    veteranStatus: kit?.veteranStatus ?? null,
+    disabilityStatus: kit?.disabilityStatus ?? null,
+    boundByAgreements: kit?.boundByAgreements ?? null,
     workAuthorization: kit?.workAuthorization ?? null,
     willingToRelocate: kit?.willingToRelocate ?? null,
     skills: kit?.skills ?? [],

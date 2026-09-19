@@ -11,6 +11,7 @@ import { structured } from '../../model/gateway.js'
 import type { PortalProfile } from '../portal-profile.js'
 import { normaliseHttpUrl } from './urls.js'
 import { answerForField, deriveAuthorisation, type AuthorisationContext } from './work-authorisation.js'
+import { draftApplicationAnswer } from './answer-draft.js'
 
 /**
  * Working out what a form field is asking, and what to put in it.
@@ -27,6 +28,8 @@ import { answerForField, deriveAuthorisation, type AuthorisationContext } from '
 export type Rung = 'recipe' | 'heuristic' | 'cache' | 'model' | 'agent' | 'consent' | 'derived' | 'skipped'
 
 export interface FormField {
+  /** Opaque handle stamped at inventory. Writes go to this node, never a label match. */
+  fid?: string
   /** The label as the form wrote it. */
   label: string
   /** `text`, `email`, `tel`, `select`, `textarea`, `checkbox`, `radio`, `file`. */
@@ -153,8 +156,104 @@ export function validExplicitAnswer(field: FormField, value: string): string | n
   return trimmed
 }
 
-const CONSENT_LABEL = /\b(?:privacy\s+policy|personal\s+data|store\s+and\s+process|consent|terms\s+(?:of\s+use|and\s+conditions))\b/i
-const REFERRAL_LABEL = /\bhow\s+did\s+you\s+hear\s+about\s+us\b/i
+const CONSENT_LABEL = /\b(?:privacy\s+(?:policy|notice)|personal\s+data|store\s+and\s+process|consent|terms\s+(?:of\s+use|and\s+conditions)|acknowledge\s*\/\s*confirm|acknowledge\/confirm)\b/i
+const MARKETING_CONSENT_LABEL = /\b(?:sms|whatsapp|text\s+message|marketing|newsletter|recruiting\s+updates)\b/i
+export const REFERRAL_QUESTION =
+  /\b(?:how|where)\s+did\s+you\s+(?:hear|learn|find(?:\s+out)?|come\s+to\s+(?:know|hear|learn)|get\s+to\s+know)\b|\breferral\s+source\b|\bsource\s+of\s+(?:this\s+)?(?:job|application|role|opportunity)\b/i
+
+export function isReferralQuestion(label: string, options?: string[]): boolean {
+  if (REFERRAL_QUESTION.test(label)) return true
+  const opts = (options ?? []).map((option) => option.trim()).filter((option) => option && !/^select/i.test(option))
+  if (opts.length < 3) return false
+  return opts.filter((option) => /linkedin|naukri|indeed|glassdoor|instahyre|iim\s*jobs|referral|others?|job\s*site|job\s*board/i.test(option)).length >= 2
+}
+
+export function referralAnswer(options?: string[]): string {
+  const opts = (options ?? []).map((option) => option.trim()).filter((option) => option && !/^select/i.test(option))
+  if (!opts.length) return 'Job board'
+  return opts.find((option) => /^others?$/i.test(option))
+    ?? opts.find((option) => /linkedin/i.test(option))
+    ?? opts.find((option) => /job\s*(?:site|board)/i.test(option))
+    ?? opts[0]!
+}
+
+function foldCity(value: string): string {
+  const aliases: Record<string, string> = {
+    bangalore: 'bengaluru',
+    bengaluru: 'bengaluru',
+    bombay: 'mumbai',
+    mumbai: 'mumbai',
+    calcutta: 'kolkata',
+    kolkata: 'kolkata',
+    poona: 'pune',
+    pune: 'pune',
+    gurgaon: 'gurugram',
+    gurugram: 'gurugram',
+  }
+  const key = value.toLowerCase().replace(/[^a-z]/g, '')
+  return aliases[key] ?? key
+}
+
+/** Yes/No that the kit already knows: city of residence, relocate, people-management. */
+export function derivedLocalAnswer(field: FormField, profile: PortalProfile): string | null {
+  const label = normaliseLabel(field.label)
+  const yes = field.options?.find((option) => /^yes\b/i.test(option.trim()))
+  const no = field.options?.find((option) => /^no\b/i.test(option.trim()))
+  const city = profile.address.city?.trim()
+  const based = /based\s+(?:out\s+of|in)\s+([a-z .]+)\??$/i.exec(label) || /(?:live|located)\s+in\s+([a-z .]+)\??$/i.exec(label)
+  if (based?.[1] && yes && no && city) return foldCity(city) === foldCity(based[1]) || foldCity(city).includes(foldCity(based[1])) || foldCity(based[1]).includes(foldCity(city)) ? yes : no
+  if (/\brelocate\b/i.test(label) && (yes || !field.options?.length)) return yes ?? 'Yes'
+  if (/\bnotice period\b/i.test(label)) {
+    const raw = profile.noticePeriod?.trim()
+    if (raw) {
+      const days = raw.match(/(\d+)/)
+      if (/\bdays\b/i.test(label) && days) return days[1]!
+      if (/immediate/i.test(raw)) return /\bdays\b/i.test(label) ? '0' : raw
+      return raw
+    }
+    return /\bdays\b/i.test(label) ? '0' : 'Immediate'
+  }
+  if (/\b(?:current|present|most\s+recent)\b.{0,40}\b(?:salary|ctc|compensation)\b|\b(?:salary|ctc|compensation)\b.{0,40}\b(?:current|present)\b/i.test(label) && !/\b(?:expect\w*|desired)\b/i.test(label)) {
+    return profile.currentCtc?.trim() || '0'
+  }
+  if (/\bmanag(?:e|ing)\s+(?:a\s+)?team\b|\bpeople\s+manag|\bteam\s+management\b/i.test(label) && yes && no) {
+    const blob = [profile.headline, profile.totalExperience, ...(profile.experience ?? []).map((item) => `${item.role} ${item.company}`)].join(' ')
+    return /\b(?:manager|director|head of|\bvp\b|vice president|team lead|engineering manager)\b/i.test(blob) ? yes : no
+  }
+  return null
+}
+
+/** Country/city before phone so E.164 widgets keep the national number valid. */
+export function prioritizeFillOrder(fields: FormField[]): FormField[] {
+  return [...fields].sort((left, right) => fillRank(left) - fillRank(right))
+}
+
+function fillRank(field: FormField): number {
+  const label = field.label.replace(/[\u2731\u066D\uFF0A*†‡]/g, '').trim()
+  if (/^country\b/i.test(label)) return 0
+  if (/^location\b/i.test(label) || /location\s*\(/i.test(label)) return 1
+  if (field.type === 'tel' || /^phone\b/i.test(label)) return 3
+  return 2
+}
+
+/** Prefer-not-to-say is a refusal, not an identity guess. */
+export function declineToIdentifyOption(options?: string[]): string | null {
+  if (!options?.length) return null
+  return options.find((option) => /prefer\s+not|decline\s+to|do\s+not\s+wish|don'?t\s+wish|i\s+don'?t\s+wish/i.test(option)) ?? null
+}
+
+/** Apply-required privacy yes; marketing/SMS/WhatsApp no unless the user already answered. */
+export function impliedConsentValue(field: FormField): string | null {
+  const blob = `${field.label} ${(field.options ?? []).join(' ')}`
+  const marketing = MARKETING_CONSENT_LABEL.test(field.label) || MARKETING_CONSENT_LABEL.test(blob)
+  const consent = CONSENT_LABEL.test(field.label) || CONSENT_LABEL.test(blob)
+  if (!marketing && !consent) return null
+  if (field.type === 'checkbox' && !(field.options?.length)) return marketing ? 'false' : 'true'
+  const no = field.options?.find((option) => /^(?:no\b|i\s+do\s+not|disagree|decline)/i.test(option.trim()))
+  const yes = field.options?.find((option) => /^(?:yes\b|i\s+agree|agree\b)/i.test(option.trim()))
+  if (marketing) return no ?? null
+  return yes ?? (field.options?.some((option) => /^(?:yes|no)\b/i.test(option)) ? 'Yes' : null)
+}
 
 /**
  * Answer values that give a demographic question away.
@@ -257,6 +356,7 @@ export function valueFromProfile(key: string, profile: PortalProfile): string | 
     postalCode: profile.address.postalCode,
     country: profile.address.country,
     noticePeriod: profile.noticePeriod,
+    currentCtc: profile.currentCtc,
     headline: profile.headline,
     totalExperience: profile.totalExperience,
   }
@@ -346,6 +446,7 @@ export interface ResolveContext {
 export async function resolveField(
   field: FormField,
   context: ResolveContext,
+  options?: { skipModel?: boolean },
 ): Promise<ResolvedField> {
   if (credentialFieldReason(field)) return { value: null, via: 'skipped', blocked: 'sensitive_field' }
   const sensitive = sensitiveReason(field.label, field.options)
@@ -391,14 +492,38 @@ export async function resolveField(
     if (value && !(commonId === 'workAuthorization' && /^(?:yes|no|true|false)$/i.test(value.trim()))) return { value, via: 'cache' }
   }
 
+  if (sensitive && /demographic question/i.test(sensitive)) {
+    const decline = declineToIdentifyOption(field.options)
+    if (decline) return { value: decline, via: 'heuristic' }
+  }
+  if (sensitive && /salary information/i.test(sensitive) && /\b(?:current|present|most\s+recent)\b/i.test(field.label) && !/\b(?:expect\w*|desired|require\w*)\b/i.test(field.label)) {
+    const ctc = context.profile.currentCtc?.trim()
+    if (ctc) return { value: ctc, via: 'heuristic' }
+    if (field.required) return { value: '0', via: 'derived' }
+  }
   if (sensitive) return { value: null, via: 'skipped', blocked: 'sensitive_field' }
 
-  // Consent is implicit in the user's request to apply. Checkbox controls use
-  // the value only as a marker; fill.ts checks the control itself.
-  if (field.type === 'checkbox' && CONSENT_LABEL.test(field.label)) {
-    return { value: 'true', via: 'consent' }
+  const consent = impliedConsentValue(field)
+  if (consent) return { value: consent, via: 'consent' }
+  const local = derivedLocalAnswer(field, context.profile)
+  if (local) return { value: local, via: 'derived' }
+  if (isReferralQuestion(field.label, field.options)) return { value: referralAnswer(field.options), via: 'heuristic' }
+
+  if (!options?.skipModel && isContextualQuestion(field) && ['text', 'textarea'].includes(field.type)) {
+    const drafted = draftApplicationAnswer(field, {
+      role: '',
+      company: '',
+      headline: context.profile.headline,
+      skills: context.profile.skills ?? [],
+      jobSkills: context.profile.skills ?? [],
+      experience: (context.profile.experience ?? []).map((item) => ({
+        role: item.role,
+        company: item.company,
+        description: item.description,
+      })),
+    })
+    if (drafted.draft) return { value: drafted.draft, via: 'heuristic' }
   }
-  if (REFERRAL_LABEL.test(field.label)) return { value: 'Job board', via: 'heuristic' }
 
   if (context.fromRecipe) return { value: context.fromRecipe, via: 'recipe' }
 
@@ -416,6 +541,10 @@ export async function resolveField(
   if (heuristic) {
     const value = valueFromProfile(heuristic, context.profile)
     if (value) return { value, via: 'heuristic' }
+    return { value: null, via: 'skipped', ...(field.required ? { blocked: 'unknown_field' as const } : {}) }
+  }
+
+  if (options?.skipModel) {
     return { value: null, via: 'skipped', ...(field.required ? { blocked: 'unknown_field' as const } : {}) }
   }
 

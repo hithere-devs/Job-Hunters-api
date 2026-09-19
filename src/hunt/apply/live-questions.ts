@@ -4,21 +4,24 @@ import type { Page } from 'playwright-core'
 import { canonicalCommonQuestionKey } from '../../persona/application-questions.js'
 import { db } from '../../db/client.js'
 import { attemptFlags,pendingApplicationQuestions } from '../../db/schema.js'
+import { env } from '../../config/env.js'
 import { fieldSignature,normaliseLabel,sensitiveReason,canReuseExplicitAnswer,rememberAnswer,type FormField } from './fields.js'
 import { forbiddenQuestion,readableQuestionLabel,validateLiveAnswer } from './question-policy.js'
 import { readFields } from './recipes.js'
+import { fillPageField, inventoryFields } from './extension-page.js'
 import { setValue,type FillResult } from './fill.js'
 import { transition } from './state.js'
 import { publishAttemptEvent } from './events.js'
+import { classifyApplyQuestion } from './apply-preferences.js'
 
 export const LIVE_QUESTION_TIMEOUT_MS=10*60_000
 function capturedField(q:typeof pendingApplicationQuestions.$inferSelect):FormField{return {label:q.label,type:q.type,name:q.fieldName??undefined,required:q.required,options:q.options}}
 async function applyCapturedAnswer(page:Page,field:FormField,host:string,value:string){
  if(new URL(page.url()).hostname!==host)return false
- // Re-read current controls; never apply an answer to a moved/renamed field.
- const current=(await readFields(page)).find(f=>fieldSignature(f)===fieldSignature(field))
+ const current=((env.APPLY_DRIVER==='extension'?await inventoryFields(page):await readFields(page))).find(f=>fieldSignature(f)===fieldSignature(field))
  if(!current||forbiddenQuestion(current))return false
  try{validateLiveAnswer(current,{answer:value,remember:false,skip:false})}catch{return false}
+ if(env.APPLY_DRIVER==='extension') return fillPageField(page,current,value)
  if(!await setValue(page,current,value))return false
  // Native HTML validation catches required/pattern/range constraints. Selectors
  // are from the captured DOM name, never a selector provided by the answer.
@@ -34,7 +37,7 @@ export async function waitForApplicationAnswers(params:{page:Page;userId:string;
  const {page,userId,applicationId,attemptId}=params
  const captureUrl=page.url()
  const host=new URL(captureUrl).hostname
- const fields=await readFields(page)
+ const fields=env.APPLY_DRIVER==='extension'?await inventoryFields(page):await readFields(page)
  const wanted=new Set([...params.unresolved.map(f=>normaliseLabel(f.label)),...(params.optionalLabels??[]).map(normaliseLabel)])
  const captured=fields.filter(f=>wanted.has(normaliseLabel(f.label))&&!forbiddenQuestion(f)&&readableQuestionLabel(f.label,f.options)&&!['file','hidden','button'].includes(f.type)).slice(0,30)
  if(!captured.length)return params.unresolved
@@ -91,6 +94,8 @@ export async function waitForApplicationAnswers(params:{page:Page;userId:string;
    ?? reusableRows.find(q=>q.host!==host&&matches(q)&&(Boolean(commonKey)||((field.options??[]).length===0&&q.options.length===0)))
   let inherited:string|null=null
   if(prior?.answer){try{inherited=validateLiveAnswer(field,{answer:prior.answer,remember:prior.remember,skip:false})}catch{}}
+  // My Kit beats review-application answers for known preference questions.
+  if(classifyApplyQuestion(field.label)!=='other'&&prior?.answerMeta?.source!=='profile_ai')inherited=null
   // Remembering is the default for anything safe to reuse. Defaulting to false
   // meant a user had to opt in per question, and almost nobody does — so the
   // long-term `field_answers` cache stayed empty and every answer was thrown

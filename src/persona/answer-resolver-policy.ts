@@ -28,7 +28,7 @@ export function answerTopic(field: Pick<FormField, 'label' | 'type' | 'name' | '
 }
 
 const COUNTRIES: Array<[string, RegExp]> = [
-  ['US', /\b(?:USA|U\.S\.A\.?|US|[Uu]nited [Ss]tates(?: of [Aa]merica)?)\b/g],
+  ['US', /\b(?:USA|U\.S\.A\.?|US|[Uu]nited [Ss]tates(?: of [Aa]merica)?|Austin|NYC|New York|San Francisco|Seattle|California|Texas)\b/g],
   ['IN', /\bIndia\b/gi], ['GB', /\b(?:UK|United Kingdom|Great Britain)\b/gi],
   ['CA', /\bCanada\b/gi], ['AU', /\bAustralia\b/gi], ['DE', /\bGermany\b/gi],
   ['SG', /\bSingapore\b/gi], ['FR', /\bFrance\b/gi], ['NL', /\bNetherlands\b/gi],
@@ -36,12 +36,26 @@ const COUNTRIES: Array<[string, RegExp]> = [
 export function countriesIn(text: string): string[] {
   return COUNTRIES.filter(([, regex]) => { regex.lastIndex = 0; return regex.test(text) }).map(([code]) => code)
 }
+export function jobCountriesForQuestion(question: ResolverQuestion): string[] {
+  const named = countriesIn(question.label)
+  if (named.length) return [...new Set(named)]
+  return [...new Set(countriesIn(question.location ?? ''))]
+}
 export function countryForQuestion(question: ResolverQuestion): string | null {
-  const explicit = countriesIn(question.label)
-  if (explicit.length === 1) return explicit[0]!
-  if (explicit.length > 1) return null
-  const locations = countriesIn(question.location ?? '')
-  return locations.length === 1 ? locations[0]! : null
+  const jobs = jobCountriesForQuestion(question)
+  return jobs.length === 1 ? jobs[0]! : null
+}
+function residenceSource(sources: AnswerSource[]): AnswerSource | null {
+  return sources.find((source) => source.id === 'kit:residence' && source.country) ?? sources.find((source) => source.topic === 'work_authorization' && source.kind === 'profile' && source.country) ?? null
+}
+/** Uniform home/abroad vs residence. Mixed posting countries stay null. */
+function residenceAuthorised(question: ResolverQuestion, sources: AnswerSource[]): { authorised: boolean; source: AnswerSource } | null {
+  const home = residenceSource(sources)
+  const jobs = jobCountriesForQuestion(question)
+  if (!home?.country || !jobs.length) return null
+  if (jobs.every((code) => code === home.country)) return { authorised: true, source: home }
+  if (jobs.every((code) => code !== home.country)) return { authorised: false, source: home }
+  return null
 }
 
 export function askAnswer(question: ResolverQuestion, reason: string, missingInfo?: string[]): ResolvedApplicationAnswer {
@@ -75,18 +89,28 @@ export function inferApplicationAnswer(question: ResolverQuestion, sources: Answ
 
   if (topic === 'sponsorship' || topic === 'work_authorization') {
     const country = countryForQuestion(question)
-    if (!country) return null
-    const matches = sources
-      .filter(source => source.kind === 'explicit_answer' && source.topic === topic)
-      .map(source => ({ source, value: conditionalCountryAnswer(source, country) }))
-      .filter((entry): entry is { source: AnswerSource; value: 'yes' | 'no' } => entry.value !== null)
-    const values = new Set(matches.map(entry => entry.value))
-    if (values.size !== 1) return null
-    const value = [...values][0]!
-    const answer = booleanFieldAnswer(question, value === 'yes')
-    if (!answer) return null
-    const source = matches.find(entry => entry.value === value)!.source
-    return { questionId: question.id, decision: 'known', answer, confidence: 1, evidence: [{ sourceId: source.id, quote: source.text }], reason: INFERRED_ANSWER_REASON, missingInfo: [], autoApply: true }
+    if (country) {
+      const matches = sources
+        .filter(source => source.kind === 'explicit_answer' && source.topic === topic)
+        .map(source => ({ source, value: conditionalCountryAnswer(source, country) }))
+        .filter((entry): entry is { source: AnswerSource; value: 'yes' | 'no' } => entry.value !== null)
+      const values = new Set(matches.map(entry => entry.value))
+      if (values.size === 1) {
+        const value = [...values][0]!
+        const answer = booleanFieldAnswer(question, value === 'yes')
+        if (answer) {
+          const source = matches.find(entry => entry.value === value)!.source
+          return { questionId: question.id, decision: 'known', answer, confidence: 1, evidence: [{ sourceId: source.id, quote: source.text }], reason: INFERRED_ANSWER_REASON, missingInfo: [], autoApply: true }
+        }
+      }
+    }
+    const derived = residenceAuthorised(question, sources)
+    if (derived) {
+      const yes = topic === 'work_authorization' ? derived.authorised : !derived.authorised
+      const answer = booleanFieldAnswer(question, yes)
+      if (answer) return { questionId: question.id, decision: 'known', answer, confidence: 1, evidence: [{ sourceId: derived.source.id, quote: derived.source.text }], reason: INFERRED_ANSWER_REASON, missingInfo: [], autoApply: true }
+    }
+    return null
   }
 
   if (/\b(?:sms|text messages?|whats ?app|marketing|job alerts?|career updates?)\b/i.test(question.label)) {
@@ -228,17 +252,20 @@ export function validateAnswerProposal(question: ResolverQuestion, sources: Answ
   if (!professional && !derivable && cited.some((source) => source.kind !== 'explicit_answer')) return askAnswer(question, 'sensitive_answer_requires_user_fact')
   if (topic === 'sponsorship' || topic === 'work_authorization') {
     const country = countryForQuestion(question)
-    if (!country) return askAnswer(question, 'country_context_missing', ['Which country does this application’s work-authorisation question refer to?'])
     const polarity = binary(answer)
+    const derived = residenceAuthorised(question, sources)
+    if (!country && !derived) return askAnswer(question, 'country_context_missing', ['Which country does this application’s work-authorisation question refer to?'])
     // An explicit country-specific statement is still the strongest evidence
     // and is accepted outright. Failing that, a residence or stated-authorisation
     // fact from the profile is enough for the model to reason from — which is
     // the whole point of citing it.
-    const statedForCountry = cited.some((source) => conditionalCountryAnswer(source, country) === polarity)
+    const statedForCountry = country ? cited.some((source) => conditionalCountryAnswer(source, country) === polarity) : false
     const profileFact = cited.some((source) => source.topic === 'work_authorization' && source.kind === 'profile')
+    const matchesResidence = Boolean(derived && polarity && ((topic === 'work_authorization' ? derived.authorised : !derived.authorised) === (polarity === 'yes')))
     if (polarity) {
       if (!statedForCountry && !profileFact) return askAnswer(question, 'country_answer_not_explicit')
-    } else if (!cited.some((source) => countriesIn(source.text).includes(country) && normalized(source.text).includes(normalized(answer))) && !profileFact) return askAnswer(question, 'country_answer_not_explicit')
+      if (!country && !matchesResidence) return askAnswer(question, 'country_context_missing', ['Which country does this application’s work-authorisation question refer to?'])
+    } else if (country && !cited.some((source) => countriesIn(source.text).includes(country) && normalized(source.text).includes(normalized(answer))) && !profileFact) return askAnswer(question, 'country_answer_not_explicit')
   }
   if (topic.startsWith('salary') && !cited.every((source) => salaryContextMatches(question, source))) return askAnswer(question, 'salary_currency_or_period_missing')
   const subjective = /\b(?:why|motivat\w*|cover\s*letter|describe|tell\s+us|example|a time|personal story)\b/i.test(question.label)

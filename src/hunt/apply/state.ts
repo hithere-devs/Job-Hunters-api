@@ -30,6 +30,8 @@ export type AttemptState =
 export type BlockedReason =
   | 'automation_limit'
   | 'provider_blocked'
+  /** The browser landed on a listing, error page, or empty document. */
+  | 'no_form'
   /** A required field we could not answer. The user can answer it. */
   | 'needs_input'
   /** A CAPTCHA. Only a human can pass it, and that is by design. */
@@ -40,6 +42,8 @@ export type BlockedReason =
   | 'unknown_field'
   /** A field we will not answer on the user's behalf without permission. */
   | 'sensitive_field'
+  /** Greenhouse/ATS says this job is gone. */
+  | 'posting_closed'
 
 export interface TransitionInput {
   attemptId: string

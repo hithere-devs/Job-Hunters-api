@@ -14,10 +14,12 @@ it('uploads private prepared resume bytes without exposing runner filesystem pat
   const payload=await browserFilePayload(file)
   assert.equal(payload.name,'resume.pdf');assert.equal(payload.mimeType,'application/pdf');assert.equal(payload.buffer.toString(),'%PDF-1.4 fixture')
   let received:unknown
+  let attachClicked=0
   const input={getAttribute:async()=>'',setInputFiles:async(value:unknown)=>{received=value}}
-  const page={locator:()=>({count:async()=>1,nth:()=>input})} as unknown as Page
+  const page={locator:()=>({count:async()=>1,nth:()=>input}),getByRole:()=>{attachClicked++;return {count:async()=>0,first(){return this}}}} as unknown as Page
   assert.equal(await attachResume(page,file),true)
   assert.equal(typeof received,'object')
+  assert.equal(attachClicked,0)
   input.setInputFiles=async()=>{throw new Error('fixture upload failure')}
   assert.equal(await attachResume(page,file),false)
  } finally {await rm(dir,{recursive:true,force:true})}

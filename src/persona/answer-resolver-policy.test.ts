@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { answerTopic, conditionalCountryAnswer, countryForQuestion, inferApplicationAnswer, sourcesForQuestion, validateAnswerProposal, type AnswerSource, type ProposedAnswer, type ResolverQuestion } from './answer-resolver-policy.js'
+import { answerTopic, conditionalCountryAnswer, countriesIn, countryForQuestion, inferApplicationAnswer, sourcesForQuestion, validateAnswerProposal, type AnswerSource, type ProposedAnswer, type ResolverQuestion } from './answer-resolver-policy.js'
 
 const question: ResolverQuestion = { id: 'q', applicationId: 'app', label: 'Will you require employment sponsorship in the United States?', type: 'select', options: ['Yes', 'No'], required: true, role: 'Engineer', company: 'ExampleCo', location: 'United States' }
 const source: AnswerSource = { id: 'source', label: 'Will you require sponsorship?', text: 'India no; USA yes', kind: 'explicit_answer', topic: 'sponsorship' }
@@ -119,6 +119,40 @@ describe('work authorisation reasoned from the profile', () => {
   it('still needs a country from the question or the posting', () => {
     const vague = { ...usQuestion, label: 'Will you require sponsorship?', location: null }
     assert.equal(validateAnswerProposal(vague, [residence], cite('Yes')).decision, 'ask')
+  })
+
+  it('reads US from Austin or NYC hub wording', () => {
+    assert.deepEqual(countriesIn('Austin, TX or NYC'), ['US'])
+    const hub = { ...usQuestion, label: 'Will you require immigration sponsorship to work at Cloudflare?', location: 'Austin, TX or NYC' }
+    assert.equal(validateAnswerProposal(hub, [residence], cite('Yes')).autoApply, true)
+  })
+
+  it('answers an unlabeled question when every posting country is abroad', () => {
+    const vague = {
+      ...usQuestion,
+      label: 'Are you legally authorized to work in the country where you are applying?',
+      type: 'checkbox',
+      options: ['Yes', 'No'],
+      location: 'US; Remote: United States; CA; Remote: Canada',
+    }
+    const inferred = inferApplicationAnswer(vague, [residence])
+    assert.equal(inferred?.answer, 'No')
+    assert.equal(inferred?.autoApply, true)
+    const sponsor = { ...vague, label: 'Will you now or in the future require visa sponsorship for employment?' }
+    assert.equal(inferApplicationAnswer(sponsor, [residence])?.answer, 'Yes')
+    assert.equal(validateAnswerProposal(vague, [residence], cite('No')).autoApply, true)
+  })
+
+  it('answers the home-country posting from residence', () => {
+    const home = {
+      ...usQuestion,
+      label: 'Are you legally authorized to work in the country where you are applying?',
+      type: 'checkbox',
+      options: ['Yes', 'No'],
+      location: 'Bangalore, India',
+    }
+    assert.equal(inferApplicationAnswer(home, [residence])?.answer, 'Yes')
+    assert.equal(inferApplicationAnswer({ ...home, label: 'Will you now or in the future require visa sponsorship for employment?' }, [residence])?.answer, 'No')
   })
 
   it('does not extend the relaxation to demographics or salary', () => {

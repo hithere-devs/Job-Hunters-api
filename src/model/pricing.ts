@@ -20,6 +20,12 @@ const RATES: Record<string, Rate> = {
   // OpenRouter /api/v1/models catalog verified 2026-09-16; actual API cost preferred.
   'google/gemini-3.5-flash': { input: 1.5, output: 9 },
   'google/gemini-3.1-flash-lite': { input: 0.25, output: 1.5 },
+  // DeepSeek V4.1 Flash off-peak published rates, 2026-09-10.
+  'deepseek-flash': { input: 0.15, output: 0.6 },
+  'deepseek/deepseek-flash': { input: 0.15, output: 0.6 },
+  // TypeSafe Jev, published 2026-09: $0.042 / million input, output free.
+  'jev-latest': { input: 0.042, output: 0 },
+  jev: { input: 0.042, output: 0 },
   'claude-fable-5': { input: 10, output: 50 },
   'claude-mythos-5': { input: 10, output: 50 },
   'claude-opus-5': { input: 5, output: 25 },

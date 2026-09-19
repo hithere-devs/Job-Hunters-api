@@ -176,7 +176,7 @@ applicationsRouter.post('/:id/cancel', validate({params:idParamSchema}), asyncHa
 applicationsRouter.post('/:id/retry', validate({params:idParamSchema,body:z.object({confirmedNotSubmitted:z.literal(true)})}), asyncHandler(async(req,res) => {
   const preflight = await applicationPreflight(currentUser(req).id)
   if (!preflight.canApply) throw badRequest('Resolve application readiness issues before retrying.', {gaps:preflight.gaps})
-  ok(res, await retryApplication(currentUser(req).id,pathParam(req,'id')))
+  ok(res, await retryApplication(currentUser(req).id,pathParam(req,'id'),{confirmedNotSubmitted:true}))
 }))
 applicationsRouter.post('/:id/flag', validate({params:idParamSchema,body:z.object({note:z.string().trim().max(1000).optional()})}), asyncHandler(async(req,res) => {
   ok(res, await flagApplication(currentUser(req).id,pathParam(req,'id'),req.body.note))
@@ -333,7 +333,7 @@ applicationsRouter.get(
     ok(res, {
       ...serializeApplication(row),
       attemptId: latestAttempt?.id ?? null,
-      retryBlockedReason: safeRetryReason(row.status,latestAttempt?[latestAttempt]:[],phases),
+      retryBlockedReason: safeRetryReason(row.status,latestAttempt?[latestAttempt]:[],phases,{confirmedNotSubmitted:true}),
       canCancel: row.status === 'queued' && !(await applicationRuntimes(auth.id,[row.id])).get(row.id)?.active,
       attemptTimeline: phases.map(phase=>({state:phase.state,reason:phase.reason,at:phase.at.toISOString()})),
       jobDescription: row.jobDescription,

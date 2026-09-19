@@ -8,7 +8,7 @@
 - Existing VM-agent/VNC tunnels remain necessary for laptop API streaming. Production API hosting must provide durable equivalent connectivity or run alongside the VM.
 - `huntly-runner.service` runs `/opt/huntly/api/dist/application-runner.js` as unprivileged `huntly-runner`. This replaces the browser runner on this VM, not a fourth permanent process. LinkedIn/outreach workers are not started here.
 - VM credentials: `/etc/huntly/runner.env` and `/etc/huntly/vm-agent.env`, root-owned mode 0600.
-- Browser provider: vm. Application model and answer resolver: `muse-spark-1.3-contributor`.
+- Browser provider: vm. Application model, OpenClaw reasoning, and answer resolver: DeepSeek V4.1 Flash (`deepseek-flash`) via `MODEL_PROVIDER=deepseek`.
 - Live submission was explicitly authorized by the user during rollout. `APPLY_DRY_RUN=false`; global application queue is resumed.
 - One saved VM profile is used sequentially. Renewed ownership leases prevent two applications driving it at once.
 

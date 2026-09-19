@@ -63,7 +63,148 @@ Wellfound → Instahyre entirely inside the Apply tab, and
 
 ---
 
-## 1. The two flows, and only two
+## 0.5 Milestone 2 — applying, both ways, with the mail loop closed
+
+Milestone 1 proves a user can connect their accounts. This one makes those
+accounts *do* something: apply, on platforms that need a login and platforms
+that do not, and use the user's own Gmail — already signed in from Milestone 1 —
+to read verification codes mid-application and confirm receipts afterwards.
+
+**Out of scope:** payments. Set up separately.
+
+### The two application paths
+
+| Path | Example | Session | What is hard |
+|---|---|---|---|
+| **Anonymous** | Greenhouse, Lever, Ashby | none needed | May email a verification code mid-form |
+| **Authenticated** | Wellfound, Instahyre | the user's VM profile | Platform-specific flows, but the résumé is often already on file |
+
+Both run in the **same Chrome profile** on the same tenant slot, in Flow B
+(CDP) mode. That is what makes the mail loop possible: Gmail is signed in *in
+that profile*, so reading a code is opening a second tab, not an OAuth scope.
+
+### Why this needs no Gmail API
+
+`gmail.readonly` is a Google *restricted* scope needing an annual CASA
+assessment. We need none of it. The user signed into Google in their own
+browser in Milestone 1; that session lives in the profile; a second tab on
+`mail.google.com` is already authenticated.
+
+This is read-only, incidental, and invisible. **Do not surface it as a
+feature** — the user connected their Google account for the platforms, and
+nothing in the UI should imply we are monitoring their mail. It is an internal
+confidence signal on an application record, nothing more.
+
+### M2.1 — Move the runner onto the VM
+
+The runner is the only process that touches a browser, and `docs/deployment.md`
+already splits it out for exactly this reason.
+
+It has to be co-located with Chrome because of file uploads. `applyApprovedCandidate`
+downloads the résumé variant to a temp dir and calls `setInputFiles(resumePath)`.
+Playwright resolves that path **on the machine running the code** — so a runner
+on the laptop hands Chrome a path that does not exist on the VM. Co-locating
+makes it a plain local file and the existing code works untouched.
+
+Redis moves too: the runner needs the same queue the API writes to, and the
+current `REDIS_URL` points at a container on the laptop. Run Redis on the VM;
+the laptop API reaches it over the existing SSH tunnel (`-L 6379:127.0.0.1:6379`).
+
+- [ ] Redis on the VM, bound to loopback
+- [ ] Runner unit on the VM, `BROWSER_PROVIDER=vm`
+- [ ] Extend the dev tunnel with the Redis port
+- [ ] Gate: `npm run queue:smoke` from the laptop drives a job on the VM runner
+
+### M2.2 — `POST /tenants/:i/apply`
+
+The half of the agent contract Milestone 1 deliberately omitted. Same profile
+directory, Chrome launched **with** `--remote-debugging-port=92XX`, returns the
+CDP URL. Mode exclusivity already exists — `ensureTenantConnected` has the
+reconnect-or-replace policy and `ensureTenantApplying` is its mirror.
+
+- [ ] Agent endpoint returning `{ mode: 'apply', cdpUrl, expiresAt }`
+- [ ] `ensureTenantApplying()` in `vm-client.ts`, symmetric with the connect one
+- [ ] Gate: connect → apply returns 409, then closes and relaunches in CDP mode
+      with the Google session still live
+
+### M2.3 — The VM browser provider
+
+- [ ] `openVmSession()` in `src/browser/session.ts` — `openLocal` with
+      `connectOverCDP` in place of `launchAutomationBrowser`, and a `close()`
+      that disconnects without killing a browser it does not own
+- [ ] `'vm'` in the `BROWSER_PROVIDER` enum (`src/config/env.ts:107`)
+- [ ] Route by `portal_accounts`: a user with a ready session applies through
+      their VM profile; everyone else keeps the current provider
+- [ ] `liveUrl` stays `null` so `apply.ts:210` takes the screencast branch
+
+### M2.4 — Verification codes, mid-application
+
+New: `src/hunt/apply/email-code.ts`.
+
+Some forms email a code and wait. Today that is an `unknown_field` and the
+application parks. With Gmail in the same profile it is a second tab.
+
+```ts
+readLatestCode({ session, since, from?, subjectHint? }): Promise<string | null>
+```
+
+- Opens a **new tab** — never navigates the application away from a half-filled
+  form. Closes it after.
+- Searches `newer_than:1h` plus the sender hint, and **only reads messages newer
+  than `since`**, which is the moment the application started. A code from an
+  earlier attempt is worse than no code.
+- Extracts with a regex first (`\b\d{4,8}\b`), model second.
+- Add a `email_code` rung to the field ladder that calls it instead of blocking.
+- Hard timeout ~90 s, then fall back to blocking as today.
+
+Gate: a unit test over captured Gmail HTML, plus one live run against a form
+that actually mails a code.
+
+### M2.5 — Confirmation receipts, after the application
+
+New: `src/hunt/apply/confirm-email.ts`.
+
+This closes the loop on `submitted_unconfirmed`, which Phase 0 introduced for
+"we clicked, we could not verify". A confirmation email is exactly the missing
+evidence.
+
+- After a submit, open a Gmail tab and search `newer_than:1h` for the company
+  and role.
+- Classify: `confirmed` · `rejected` · `not_found`.
+- Write `application_receipts` (applicationId, kind, subject, snippet, at).
+- **Upgrade `submitted_unconfirmed` → `submitted` on a confirmation.** Never
+  downgrade on `not_found` — plenty of employers send nothing.
+- Run it on a delay (~3 min) as a queued job, not inline. Confirmation mail is
+  not instant and the apply lane should not be held open waiting.
+- Internal only. No UI surface.
+
+### M2.6 — The watch view
+
+Deferred from Milestone 1.
+
+- [ ] `readOnly` prop on `LiveView.tsx`: no takeover controls, no input channel
+- [ ] **Flag for review** → `POST /applications/:id/flag`, writes `attempt_flags`,
+      pauses that user's apply queue via a Redis key the worker checks
+- [ ] Admin list of open flags with last frame and event trail
+
+### M2.7 — Prove it both ways
+
+The acceptance test. Both run end to end, `APPLY_DRY_RUN=false`, one real
+application each.
+
+1. **Anonymous** — a live Greenhouse posting. Ladder fills it, submits,
+   confirmation receipt lands within the delay window. If it mails a code, M2.4
+   handles it without a human.
+2. **Authenticated** — a live Wellfound posting through the user's session.
+   Résumé uploaded from Huntly storage, profile fields from the kit, submitted,
+   receipt recorded.
+
+Capture the attempt event trail and the receipt row for both.
+
+### What Milestone 2 does *not* finish
+
+LinkedIn (needs per-user residential egress — see §13), the second VM for users
+11–20, founder-email outreach, the session-decay verifier, and payments.
 
 If a feature does not serve one of these, it is out of scope.
 
@@ -94,11 +235,146 @@ the code and stop routing to it. Two reasons:
 
 ---
 
+## 0.7 Milestone 3 — OpenClaw drives the application
+
+**Why.** The deterministic ladder works and holds its safety rules. The thing
+that keeps failing is our own agent loop: on 2026-09-16 a tenant sat in `apply`
+mode for 12.6 minutes with a live Chrome and zero events written, because there
+is no watchdog above that loop — BullMQ's 15-minute lock eventually fails the
+job having achieved nothing. Before that, `no_submit_control` on Ashby three
+runs running. We are maintaining a bespoke agent runtime, badly, next to one
+that is purpose-built, already installed on the VM, and already used by hand
+successfully on these exact forms.
+
+**What changes.** OpenClaw replaces `src/agent/` as the reasoning tier. It does
+not replace the ladder, the answer store, the refusal list, or submit authority.
+
+### What stays ours, and why
+
+| Stays | Reason |
+|---|---|
+| The deterministic ladder | Free, fast, fills most of the form before any model runs |
+| The answer store + derivation | OpenClaw *reads* it. This is what stops the re-asking. |
+| The refusal list | Enforced on arguments, not asked for in a prompt |
+| `APPLY_DRY_RUN`, `APPLY_KILL_SWITCH` | Checked immediately before the click |
+| Submission confirmation | A run that says "submitted" is still not evidence |
+
+### M3.1 — One OpenClaw per tenant
+
+`openclaw --profile huntly-u<N>` auto-scopes `OPENCLAW_CONFIG_PATH` and
+`OPENCLAW_STATE_DIR`, and suffixes the unit to `openclaw-gateway-huntly-u<N>`.
+Run it as the tenant's OS user so config, state, memory and workspace are
+isolated at the filesystem level as well as by config.
+
+**Base ports must be at least 120 apart.** Each instance derives its
+browser-control port at base+2 and a CDP range up to base+110. Adjacent base
+ports silently share a CDP port — which is exactly the cross-user session
+mixing this design exists to prevent.
+
+```
+huntly-u1 → 19789    huntly-u2 → 20789    huntly-u3 → 21789 …
+```
+
+The operator already owns gateway 18789, so tenant allocations start at 19789.
+The tested 2026.9.3 guard uses native Playwright refs with raw-CDP `attachOnly`;
+`driver: "existing-session"` uses a different reference backend.
+
+Point each at the tenant's existing Chrome profile, the one Flow A already
+populated with Google, Wellfound and Instahyre sessions:
+
+```jsonc
+// ~huntly-u2/.openclaw-huntly-u2/openclaw.json
+{ "gateway": { "port": 20789, "bind": "loopback" },
+  "browser": { "defaultProfile": "tenant",
+    "attachOnly": true,
+    "profiles": { "tenant": { "attachOnly": true,
+                              "cdpUrl": "http://127.0.0.1:9202" } } } }
+```
+
+- [x] Provision script, tenants 1–10 (`deploy/provision-openclaw.mjs`)
+- [ ] Gate: two gateways up at once, each run touching only its own profile.
+      Verify by signing into a throwaway site on tenant 1 and confirming
+      tenant 2 cannot see the cookie.
+
+### M3.2 — Gateway client
+
+`src/browser/openclaw-client.ts`, on `@openclaw/gateway-protocol` (pin
+`2026.8.1`). WebSocket, connect frame first, `auth.token` from the per-tenant
+`OPENCLAW_GATEWAY_TOKEN`.
+
+```ts
+startRun(tenant, { prompt, files }): Promise<{ runId }>
+waitForRun(runId, { timeoutMs }): Promise<RunResult>   // agent.wait
+streamEvents(runId, onEvent): Unsubscribe
+cancelRun(runId): Promise<void>
+```
+
+Side-effecting methods need an idempotency key — use the attempt id, so a
+reconnect cannot start a second application for the same attempt.
+
+**Every run carries a hard deadline.** The 12.6-minute hang is the failure mode
+to design against: `waitForRun` owns its own timeout and calls `cancelRun`,
+independently of BullMQ's lock.
+
+- [ ] Gate: a run started, streamed, and cancelled on deadline, browser released.
+
+### M3.3 — The apply task
+
+`src/hunt/apply/openclaw-apply.ts`. Runs *after* the ladder, on the leftovers —
+the same position `src/agent/` holds today.
+
+The prompt carries everything, so OpenClaw never has to ask what it can be told:
+
+- the apply URL, and the job's title, company and **country**
+- the candidate dossier from the kit and persona
+- every stored answer for this host from `pending_application_questions` and
+  `field_answers`, including the derived work-authorisation answer
+- the never-answer list, as a refusal instruction *and* enforced on our side
+- the résumé attached to the run (already on the VM at the tenant's path)
+
+Two prompt rules that matter:
+
+- **Do not ask. Decide.** Where a question cannot be answered from the dossier,
+  choose the most reasonable answer for this candidate and record what was
+  assumed. Parking for a human is what this milestone removes.
+- **Stop before the final submit** and report what is filled. Our code presses
+  submit, under the kill switch, and verifies. A run claiming "submitted" is
+  never evidence — that was true of our agent and is true of this one.
+
+- [ ] Gate: one live Ashby posting completed end to end with zero human input.
+
+### M3.4 — Streaming and intervention
+
+Reuse Flow A's noVNC path — built, proven, same tenant, same display. The user
+watches the real browser rather than a second stream.
+
+- [ ] Agent steps published to the existing attempt event channel, so the UI
+      shows reasoning beside the browser
+- [ ] **Nudge**: a prompt box that sends a follow-up into the same OpenClaw
+      session when a run is visibly stuck. The "act as judge" case — available,
+      never required.
+- [ ] Flag for review still writes `attempt_flags` and pauses that user's queue
+
+### M3.5 — Retire `src/agent/`
+
+Only once M3.3's gate passes on three postings across two ATS families. Keep the
+module until then: a failed OpenClaw run should fall back to it rather than
+losing the ladder's work.
+
+### Resource note
+
+Ten Node gateways at roughly 200–400 MB is 2–4 GB on a 128 GB box — irrelevant.
+OpenClaw assumes one installation per machine (one memory store, one cron);
+`--profile` covers config, state and ports, and per-OS-user homes cover the
+rest. Containers are cleaner past ~10 tenants, and are not needed yet.
+
+---
+
 ## 2. Why two streaming mechanisms
 
 The one non-obvious decision in the design, so it goes first.
 
-**Flow A runs over VNC. Flow B runs over CDP screencast.** Not redundancy —
+**Flow A runs over interactive VNC. M3 Flow B runs over server-enforced view-only VNC, with the original CDP screencast retained as a fallback.** Not redundancy —
 opposite requirements.
 
 Google's sign-in detects CDP-driven Chrome server-side and refuses with *"This
@@ -113,8 +389,9 @@ typing on a keyboard, because one is. VNC also handles what CDP screencast
 handles badly: native file pickers, OS dialogs, Chrome's own password-manager
 prompts, and tabbing out to an authenticator app.
 
-Flow B is the reverse: we need programmatic control, the human must not
-interfere, and `src/hunt/apply/screencast.ts` already does exactly this job.
+Flow B requires programmatic control and a non-interactive watch view. M3
+starts x11vnc with `-viewonly -noclipboard` and severs old sockets on mode
+switches. `src/hunt/apply/screencast.ts` remains available as a fallback.
 
 **One profile directory, two launch modes, never both at once.**
 
@@ -238,14 +515,17 @@ Tenant index `i` (1–10):
 
 | Resource | Value | Exposure |
 |---|---|---|
-| X display | `:$((10+i))` → `:11`…`:20` | none |
+| X display | `:$((10+i))` → `:11`…`:19` for tenants 1–9; tenant 10 uses `:30` | none |
 | x11vnc | `$((5900+i))` → `5901`…`5910` | loopback only |
 | websockify/noVNC | `$((6100+i))` → `6101`…`6110` | loopback only |
 | Chrome CDP | `$((9200+i))` → `9201`…`9210` | loopback only, **Flow B only** |
 | VM agent | `18900` | loopback only |
 
-Nothing here is ever exposed publicly. Display numbers use `1i` to avoid
-colliding with `:0` if a desktop is ever attached.
+Nothing here is ever exposed publicly. The original `10+i` display scheme was
+incorrect for tenant 10 on this VM: Chrome Remote Desktop already owns `:20`
+under the human operator's account. Preserve that desktop. Tenant 10 uses `:30`
+in the Xvfb/x11vnc wrappers and VM-agent display function. Its VNC, noVNC and
+CDP ports remain 5910, 6110 and 9210. Tenants 1–9 are unchanged.
 
 ### 4.3 systemd units
 
@@ -336,7 +616,7 @@ DISPLAY=:13 google-chrome \
 # Flow B — apply. Same directory, debugging port added.
 DISPLAY=:13 google-chrome \
   --user-data-dir=/home/huntly-u3/profile \
-  --remote-debugging-port=923 \
+  --remote-debugging-port=9203 \
   --remote-debugging-address=127.0.0.1 \
   --no-first-run --no-default-browser-check \
   --disable-dev-shm-usage \
@@ -361,9 +641,20 @@ Flow A has no CDP, so verification cannot use it. Chrome's cookie store is
 SQLite, and `host_key` is plaintext even though values are encrypted:
 
 ```bash
-sqlite3 "/home/huntly-u3/profile/Default/Network/Cookies" \
-  "select distinct host_key from cookies;"
+# Probe both. Chrome moved the store under Default/Network/ around v96, but the
+# build installed here still writes Default/Cookies, and which one you get
+# varies by build and by how the profile was first created.
+for candidate in Default/Cookies Default/Network/Cookies; do
+  db="/home/huntly-u3/profile/$candidate"
+  [ -f "$db" ] && sqlite3 -readonly "$db" "select distinct host_key from cookies;" && break
+done
 ```
+
+**Hardcoding one path is a trap.** The first agent assumed
+`Default/Network/Cookies`, found nothing, and returned an empty list — which is
+indistinguishable from "this user never signed in". Verification failed silently
+for a fully signed-in profile, and the connect page just reopened at Google
+forever. Probe both, and **log loudly when neither exists**.
 
 Must be run with **Chrome stopped** — it holds a write lock. This is why
 `completeInteractiveLogin` stops the browser before verifying, which the
@@ -494,8 +785,8 @@ gcloud compute ssh openclaw-vm --zone=asia-south1-c -- -L 6113:127.0.0.1:613
 person with the account and the 2FA device.
 
 ```bash
-# 4. Stop Chrome, then verify
-sqlite3 /home/huntly-u3/profile/Default/Network/Cookies \
+# 4. Stop Chrome (SIGTERM — the graceful exit is what flushes cookies), verify
+sqlite3 -readonly /home/huntly-u3/profile/Default/Cookies \
   "select distinct host_key from cookies;" | grep google
 ```
 
@@ -780,7 +1071,8 @@ takeover controls.
 - [ ] **Profile cache eviction.** Profiles grow; disk does not. Weekly, for
       sessions over ~2 GB, delete `Default/Cache`, `Default/Code Cache`,
       `Default/Service Worker/CacheStorage`. Never touch
-      `Default/Network/Cookies`, `Default/Local Storage`, `Default/IndexedDB`.
+      `Default/Cookies` (or `Default/Network/Cookies`), `Default/Local Storage`,
+      `Default/IndexedDB`.
 
 ---
 

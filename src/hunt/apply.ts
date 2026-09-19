@@ -37,8 +37,12 @@ import { normaliseHttpUrl } from './apply/urls.js'
 import { loadPortalProfile } from './portal-profile.js'
 import { provisionPortalAccount } from './portal-accounts.js'
 import { createMinimalResumeVariant } from './tailoring.js'
-import { fillForm, hasSubmitControl, hasSubmissionConfirmation, submitForm } from './apply/fill.js'
-import { openEmbeddedApplication } from './apply/recipes.js'
+import { applyWithExtension, remeasureExtensionApplication } from './apply/extension-driver.js'
+import { repairPilotAfterSubmitError } from './apply/pilot-driver.js'
+import { checkRequiredConsentBoxes, fillForm, hasSubmissionConfirmation, pageLooksLikeNoForm, postingIsClosed, remeasureApplication, submitForm } from './apply/fill.js'
+import { pageHasVerificationGate } from './apply/pilot-outcome.js'
+import { completeGreenhouseEmailGate, pageHasWrongSecurityCode } from './apply/gmail-code.js'
+import { greenhouseEmbedApplicationUrl, greenhouseFromListingUrl, greenhouseJobBoardUrl, greenhouseJobPathUrl, openEmbeddedApplication, resolveApplyUrl } from './apply/recipes.js'
 import { countryCodeFor } from './apply/work-authorisation.js'
 import { applyWithOpenClaw, loadOpenClawDossier, OpenClawApplyError, verifyOpenClawFilledFields } from './apply/openclaw-apply.js'
 import { uploadTenantResume,installOpenClawPolicy,revokeOpenClawPolicy } from '../browser/vm-client.js'
@@ -78,7 +82,8 @@ export async function applyApprovedCandidate(
   return withSubmissionGuard(async () => {
   options?.signal?.throwIfAborted()
   const useOpenClaw = env.APPLY_DRIVER === 'openclaw'
-  const hasReasoningDriver = hasApplyAgent || useOpenClaw
+  const useExtension = env.APPLY_DRIVER === 'extension' || env.APPLY_DRIVER === 'jev'
+  const hasReasoningDriver = hasApplyAgent || useOpenClaw || useExtension
   if(!(options?.dryRun??env.APPLY_DRY_RUN)&&!hasReasoningDriver)throw badRequest('The autonomous browser model is not configured. No live application can be submitted until it is available.')
   const [candidateState] = await db
     .select({ resumeVariantId: huntCandidates.resumeVariantId, runId: huntCandidates.runId })
@@ -114,7 +119,21 @@ export async function applyApprovedCandidate(
     .from(jobSources)
     .where(and(eq(jobSources.jobId, row.job.id), eq(jobSources.portalId, row.candidate.sourcePortal)))
     .limit(1)
-  const applyUrl = normaliseHttpUrl(row.job.applyUrl ?? source?.applyUrl ?? row.job.canonicalUrl)
+  const greenhouseFallback = greenhouseEmbedApplicationUrl(source?.sourceId)
+    || greenhouseJobBoardUrl(source?.sourceId)
+    || greenhouseFromListingUrl(row.job.applyUrl, source?.sourceId)
+    || greenhouseFromListingUrl(source?.applyUrl, source?.sourceId)
+    || greenhouseFromListingUrl(row.job.canonicalUrl, source?.sourceId)
+  let applyUrl = greenhouseFallback
+    || normaliseHttpUrl(resolveApplyUrl({
+      jobApplyUrl: row.job.applyUrl,
+      sourceApplyUrl: source?.applyUrl,
+      canonicalUrl: row.job.canonicalUrl,
+      sourceId: source?.sourceId,
+    }))
+    || normaliseHttpUrl(row.job.applyUrl ?? source?.applyUrl ?? row.job.canonicalUrl)
+  if (!applyUrl) throw badRequest('This job has no usable application URL.')
+  if (greenhouseFallback && !greenhouseJobPathUrl(applyUrl)) applyUrl = greenhouseFallback
   const host = new URL(applyUrl).hostname.toLowerCase()
   if (host.includes('wellfound.com') || host.includes('instahyre.com')) {
     const portal = host.includes('wellfound.com') ? 'wellfound' : 'instahyre'
@@ -227,15 +246,22 @@ export async function applyApprovedCandidate(
     try {
       await page.goto(applyUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 })
     } catch (error) {
-      // A transient navigation issue should reach the model-assisted tier so
-      // it can inspect the page and choose a recovery path. Only repeated
-      // failures in that bounded tier become an error/review outcome.
       logger.warn({ err: error, applyUrl, attemptId: attempt.id }, 'initial application navigation failed')
+      if (greenhouseFallback && greenhouseFallback !== applyUrl) {
+        await page.goto(greenhouseFallback, { waitUntil: 'domcontentloaded', timeout: 45_000 }).catch((fallbackError) => {
+          logger.warn({ err: fallbackError, applyUrl: greenhouseFallback, attemptId: attempt.id }, 'greenhouse fallback navigation failed')
+        })
+      }
+    }
+    if (await pageLooksLikeNoForm(page) && greenhouseFallback && !/job-boards\.greenhouse\.io|boards\.greenhouse\.io/i.test(page.url())) {
+      await page.goto(greenhouseFallback, { waitUntil: 'domcontentloaded', timeout: 45_000 }).catch((error) => {
+        logger.warn({ err: error, applyUrl: greenhouseFallback, attemptId: attempt.id }, 'listing fallback navigation failed')
+      })
     }
     const formUrl = await openEmbeddedApplication(page).catch((error) => {
       logger.warn({ err: error, applyUrl, attemptId: attempt.id }, 'embedded application navigation failed')
       return null
-    }) ?? applyUrl
+    }) ?? page.url()
     if (formUrl !== applyUrl) {
       logger.info({ attemptId: attempt.id, sourceHost: new URL(applyUrl).hostname, formHost: new URL(formUrl).hostname }, 'opened embedded application as a top-level form')
     }
@@ -264,16 +290,27 @@ export async function applyApprovedCandidate(
     // Where the candidate is and where the job is. Work-authorisation questions
     // are derived from the pair rather than asked on every posting — see
     // `work-authorisation.ts`.
+    const candidateCountry = countryCodeFor(profile.address.country)
+    const authorisedAtHome = /^(?:yes|true|y)$/i.test((profile.workAuthorization ?? '').trim())
+      ? true
+      : /^(?:no|false|n)$/i.test((profile.workAuthorization ?? '').trim())
+        ? false
+        : undefined
     const authorisation = {
-      candidateCountry: countryCodeFor(profile.address.country),
+      candidateCountry,
       jobCountries: (row.job.locations as Array<{ countryCode?: string | null }>)
         .map((place) => place.countryCode)
         .filter((code): code is string => Boolean(code)),
       remote: row.job.remoteMode === 'remote',
+      ...(candidateCountry && authorisedAtHome !== undefined
+        ? { explicitAnswers: { [candidateCountry]: { authorised: authorisedAtHome } } }
+        : {}),
     }
 
     await transition({ attemptId: attempt.id, userId, state: 'filling' })
-    const result = await fillForm({
+    const closedBeforeFill = await postingIsClosed(page, [applyUrl, formUrl, greenhouseFallback])
+    const listingBeforeFill = !closedBeforeFill && await pageLooksLikeNoForm(page)
+    const fillParams = {
       page,
       url: formUrl,
       userId,
@@ -281,29 +318,93 @@ export async function applyApprovedCandidate(
       profile,
       resumePath,
       authorisation,
-    })
+      job: {
+        applicationId: application.id,
+        role: row.job.title,
+        title: row.job.title,
+        company: row.job.company,
+        location: [application.location, ...authorisation.jobCountries].filter(Boolean).join('; ') || null,
+        description: row.job.descriptionText ?? null,
+      },
+    }
+    const applyStartedAt = Date.now()
+    const result = closedBeforeFill
+      ? { fields: [] as Awaited<ReturnType<typeof fillForm>>['fields'], unresolved: [{ label: 'This posting is no longer accepting applications.', type: 'automation', why: 'posting_closed' as const }], recipe: 'generic' }
+      : useExtension
+        ? await applyWithExtension(fillParams)
+      : listingBeforeFill
+        ? { fields: [] as Awaited<ReturnType<typeof fillForm>>['fields'], unresolved: [{ label: 'This page is a job listing or error page, not an application form.', type: 'automation', why: 'no_form' as const }], recipe: 'generic' }
+        : await fillForm(fillParams)
 
     let audit = result.fields.map((field) => ({
       label: field.label,
-      kind: field.via,
-      value: field.filled ? '[provided]' : '[blank]',
+      source: field.source ?? field.via,
+      value: field.value || '',
+      filled: field.filled,
     }))
     let unresolved = result.unresolved
-    let agentSubmitted = false
+    let agentSubmitted = Boolean((result as { submitted?: boolean }).submitted)
     let agentElapsedMs=0
     let agentCanSubmit=!hasReasoningDriver
-    for(let round=0;round<(useOpenClaw?1:hasApplyAgent?3:1);round++){
+    const closedFromFill = result.unresolved.some((field) => field.why === 'posting_closed')
+    const closedPage = closedBeforeFill || closedFromFill || await postingIsClosed(page, [applyUrl, formUrl, greenhouseFallback])
+    const listingPage = !closedPage && (
+      listingBeforeFill
+      || result.unresolved.some((field) => field.why === 'no_form')
+      || await pageLooksLikeNoForm(page)
+    )
+    if (closedPage) {
+      unresolved = [{ label: 'This posting is no longer accepting applications.', type: 'automation', why: 'posting_closed' }]
+    } else if (listingPage) {
+      unresolved = [{ label: 'This page is a job listing or error page, not an application form.', type: 'automation', why: 'no_form' }]
+    }
+    if (useExtension && !closedPage && !listingPage && !agentSubmitted && unresolved.length > 0) {
+      unresolved = await waitForApplicationAnswers({
+        page,
+        userId,
+        applicationId: application.id,
+        attemptId: attempt.id,
+        unresolved,
+        signal: options?.signal,
+        waitForHuman: false,
+        resolveWithProfile: true,
+      })
+      if (unresolved.length === 0) {
+        const measured = await remeasureExtensionApplication(page, formUrl)
+        if (measured.canSubmit) {
+          agentCanSubmit = true
+        } else {
+          unresolved = measured.unresolved
+        }
+      }
+    }
+    const needsReasoning = !closedPage && !listingPage && unresolved.length > 0 && !useExtension
+    for(let round=0;round<(needsReasoning?useOpenClaw?1:hasApplyAgent?3:1:0);round++){
       options?.signal?.throwIfAborted()
       if(submissionWasAttempted()||agentElapsedMs>=600_000)break
       unresolved=await waitForApplicationAnswers({page,userId,applicationId:application.id,attemptId:attempt.id,unresolved,
         optionalLabels:result.fields.filter(field=>!field.filled&&field.via==='skipped').map(field=>field.label),signal:options?.signal,waitForHuman:false})
+      if (unresolved.length === 0) {
+        const measured = useExtension
+          ? await remeasureExtensionApplication(page, formUrl)
+          : await remeasureApplication(page, formUrl)
+        if (measured.canSubmit) {
+          agentCanSubmit = true
+          break
+        }
+        unresolved = measured.unresolved
+        if (!unresolved.length) {
+          agentCanSubmit = true
+          break
+        }
+      }
       const providedRows=await db.select().from(pendingApplicationQuestions).where(and(eq(pendingApplicationQuestions.userId,userId),eq(pendingApplicationQuestions.attemptId,attempt.id),eq(pendingApplicationQuestions.status,'applied')))
       const providedAnswers:ProvidedFormAnswer[]=providedRows.filter(q=>q.answer!==null&&!forbiddenQuestion({label:q.label,type:q.type,name:q.fieldName??undefined})).map(q=>({label:q.label,name:q.fieldName??undefined,type:q.type,host:q.host,value:q.answer!,source:q.answerMeta.source==='profile_ai'?'profile_ai':'user'}))
 
     // The reasoning driver reviews the remainder after cheap profile filling and semantic answer
     // resolution. Missing facts are questions, never a reason to skip reasoning.
     const agentRoundStarted=Date.now()
-    if (hasReasoningDriver) {
+    if (hasReasoningDriver && !useExtension) {
       await transition({
         attemptId: attempt.id,
         userId,
@@ -343,7 +444,7 @@ export async function applyApprovedCandidate(
           // not promote them to reusable user facts.
           const approvalCandidates=[...providedAnswers.map(field=>({label:field.label,type:field.type,value:field.value})),...dossier.answers.filter(answer=>answer.source==='explicit_user'&&['reusable','this_attempt'].includes(answer.scope)).map(answer=>({label:answer.label,type:answer.type,value:answer.value}))]
           const approvedFields=[...new Map(approvalCandidates.map(field=>[JSON.stringify([field.label.trim().replace(/\s+/g,' ').toLowerCase(),field.type]),field])).values()]
-          const policy=await installOpenClawPolicy(tenantIndex,{attemptId:attempt.id,targetId,deadlineEpoch:Date.now()+env.OPENCLAW_RUN_TIMEOUT_MS,allowedHosts:[...new Set([host,new URL(page.url()).hostname])],approvedFields:approvedFields.slice(0,200),resumePath:stagedResume.path})
+          const policy=await installOpenClawPolicy(tenantIndex,{attemptId:attempt.id,targetId,deadlineEpoch:Date.now()+env.OPENCLAW_RUN_TIMEOUT_MS,allowedHosts:[...new Set([host, new URL(page.url()).hostname, 'job-boards.greenhouse.io', 'boards.greenhouse.io'])],approvedFields:approvedFields.slice(0,200),resumePath:stagedResume.path})
           try {
             agent = await applyWithOpenClaw({
               tenantIndex: tenantIndex, targetId, attemptId: attempt.id, applyUrl:formUrl, currentUrl: page.url(), resumePath: policy.resumePath??stagedResume.path, profile, dossier,
@@ -391,8 +492,9 @@ export async function applyApprovedCandidate(
             ...audit,
             ...agent.filled.map((field) => ({
               label: field.label,
-              kind: 'agent' as const,
-              value: '[provided]',
+              source: 'agent' as const,
+              value: field.value || '',
+              filled: true,
             })),
           ]
 
@@ -415,15 +517,16 @@ export async function applyApprovedCandidate(
             ...stillBlocked,
             ...agent.blocked
               .filter((field) => !known.has(normaliseLabel(field.label))&&!providedAnswers.some(answer=>normaliseLabel(answer.label)===normaliseLabel(field.label)))
+              .filter((field) => !/reasoning budget|automation_limit/i.test(`${field.label} ${field.why}`))
               .map((field) => ({ label: field.label, type: 'text', why: field.why as never })),
           ]
           if (agentSubmitted) unresolved = []
         }
       } catch (error) {
-        // A failed agent must not lose the deterministic tier's work — the
-        // attempt falls through to review with whatever the ladder managed.
-        if (error instanceof ModelServiceUnavailableError || submissionWasAttempted() || error instanceof OpenClawApplyError && !error.safeToFallback) throw error
-        logger.warn({ err: error, attemptId: attempt.id }, 'agent tier failed; keeping ladder result')
+        if (error instanceof ModelServiceUnavailableError && !submissionWasAttempted()) {
+          logger.warn({ err: error, attemptId: attempt.id }, 'model provider unavailable; keeping ladder result')
+        } else if (error instanceof ModelServiceUnavailableError || submissionWasAttempted() || error instanceof OpenClawApplyError && !error.safeToFallback) throw error
+        else logger.warn({ err: error, attemptId: attempt.id }, 'agent tier failed; keeping ladder result')
       }
     }
 
@@ -446,8 +549,18 @@ export async function applyApprovedCandidate(
       if(needsPostAnswerReview&&hasReasoningDriver){agentCanSubmit=false;continue}
       if(!hasReasoningDriver||agentCanSubmit)break
     }
-    if(hasReasoningDriver&&!agentSubmitted&&!agentCanSubmit&&unresolved.length===0){
-      unresolved=[{label:'The browser agent could not complete this page within its bounded reasoning budget. No final submission was attempted.',type:'automation',why:'automation_limit'}]
+    if(!agentSubmitted){
+      const measured = useExtension
+        ? await remeasureExtensionApplication(page, formUrl)
+        : await remeasureApplication(page, formUrl)
+      if (measured.canSubmit) {
+        unresolved = []
+        if (!submissionWasAttempted()) agentCanSubmit = true
+      } else {
+        unresolved = measured.unresolved.length
+          ? measured.unresolved
+          : [{ label: 'This page is a job listing or error page, not an application form.', type: 'automation', why: 'no_form' as const }]
+      }
     }
 
     if (unresolved.length > 0) {
@@ -477,7 +590,9 @@ export async function applyApprovedCandidate(
         if (outcome === 'released') {
           // They said they are done. Re-read the form and carry on from
           // wherever they left it, rather than starting over.
-          const recheck = await fillForm({
+          const recheck = useExtension
+            ? await applyWithExtension(fillParams)
+            : await fillForm({
             authorisation,
             page,
             url: formUrl,
@@ -510,6 +625,13 @@ export async function applyApprovedCandidate(
         submittedFields: audit,
         unresolvedFields: unresolved,
         evidenceStoragePath,
+        error: unresolved[0]?.why === 'no_form'
+          ? 'Not submitted: no_form'
+          : unresolved[0]?.why === 'posting_closed'
+            ? 'Not submitted: posting_closed'
+          : unresolved[0]?.why === 'automation_limit'
+            ? 'Not submitted: automation_limit'
+            : null,
         updatedAt: new Date(),
       }).where(eq(applyAttempts.id, attempt.id))
       await db.update(huntCandidates).set({ status: 'needs_review', updatedAt: new Date() }).where(eq(huntCandidates.id, candidateId))
@@ -523,9 +645,72 @@ export async function applyApprovedCandidate(
     }
 
     await transition({ attemptId: attempt.id, userId, state: 'filling', detail: { dryRun, stage:'validating_submission' } })
-    const outcome = agentSubmitted
+    await checkRequiredConsentBoxes(page).catch(() => 0)
+    let outcome = agentSubmitted
       ? { submitted: true as const }
-      : await submitForm({ page, url: formUrl, dryRun })
+      : submissionWasAttempted()
+        ? { submitted: await hasSubmissionConfirmation(page, formUrl) }
+        : await submitForm({ page, url: formUrl, dryRun, skipWidgetReady: useExtension })
+    if (!outcome.submitted && !dryRun && useExtension && outcome.heldBack === 'invalid_fields') {
+      for (let round = 0; round < 3; round += 1) {
+        const repaired = await repairPilotAfterSubmitError({
+          page,
+          userId,
+          profile,
+          job: fillParams.job,
+        }).catch(() => 0)
+        if (!repaired) break
+        logger.info({ attemptId: attempt.id, round, repaired }, 'Submit showed a page error; filled the missing fields and submitting again')
+        const again = await submitForm({ page, url: formUrl, dryRun, skipWidgetReady: true })
+        if (again.submitted || await hasSubmissionConfirmation(page, formUrl)) {
+          outcome = again.submitted ? again : { submitted: true }
+          break
+        }
+        outcome = again
+      }
+    }
+    if (!outcome.submitted && !dryRun) {
+      const usedCodes = new Set<string>()
+      for (let round = 0; round < 4; round += 1) {
+        const bodyNow = await page.locator('body').innerText().catch(() => '')
+        if (await hasSubmissionConfirmation(page, formUrl)) {
+          outcome = { submitted: true }
+          break
+        }
+        const processingError = /error processing your application/i.test(bodyNow)
+        if (!pageHasVerificationGate(bodyNow) && !pageHasWrongSecurityCode(bodyNow) && !processingError) break
+        if (processingError && !pageHasVerificationGate(bodyNow) && !pageHasWrongSecurityCode(bodyNow)) {
+          logger.info({ attemptId: attempt.id, round }, 'Greenhouse processing error; re-checking consent and submitting again')
+          await checkRequiredConsentBoxes(page).catch(() => 0)
+          const again = await submitForm({ page, url: formUrl, dryRun, skipWidgetReady: true })
+          if (again.submitted || await hasSubmissionConfirmation(page, formUrl)) {
+            outcome = again.submitted ? again : { submitted: true }
+            break
+          }
+          continue
+        }
+        if (pageHasWrongSecurityCode(bodyNow)) {
+          logger.info({ attemptId: attempt.id, round }, 'Greenhouse rejected the security code; fetching the latest Gmail code')
+        } else {
+          logger.info({ attemptId: attempt.id, round }, 'Greenhouse emailed an 8-character code; reading it from the open Gmail tab')
+        }
+        const filled = await completeGreenhouseEmailGate(page, 4, applyStartedAt, usedCodes)
+        if (!filled) {
+          await new Promise((resolve) => setTimeout(resolve, 3_000))
+          continue
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1_200))
+        if (await hasSubmissionConfirmation(page, formUrl)) {
+          outcome = { submitted: true }
+          break
+        }
+        const again = await submitForm({ page, url: formUrl, dryRun, skipWidgetReady: true })
+        if (again.submitted || await hasSubmissionConfirmation(page, formUrl)) {
+          outcome = again.submitted ? again : { submitted: true }
+          break
+        }
+      }
+    }
     submissionConfirmed = outcome.submitted
     const evidenceStoragePath = await persistEvidence(userId, attempt.id, page)
 
@@ -535,11 +720,16 @@ export async function applyApprovedCandidate(
       // mode look broken and push people to turn it off.
       const heldBack = outcome.heldBack === 'dry_run' || outcome.heldBack === 'kill_switch'
       const providerBlocked=outcome.result==='provider_blocked'
+      const blockedReason = providerBlocked
+        ? 'provider_blocked' as const
+        : outcome.heldBack === 'no_form'
+          ? 'no_form' as const
+          : 'needs_input' as const
       await transition({
         attemptId: attempt.id,
         userId,
         state: heldBack ? 'skipped' : 'blocked',
-        ...(heldBack ? {} : { reason: providerBlocked ? 'provider_blocked' as const : 'needs_input' as const }),
+        ...(heldBack ? {} : { reason: blockedReason }),
         detail: { heldBack: outcome.heldBack ?? null, result: outcome.result ?? null, recipe: result.recipe },
       })
       // `pending` is the attempt's own starting state — reusing it here left a

@@ -97,6 +97,11 @@ export async function resolveApplicationAnswers(userId: string, questionIds: str
     const field={label:question.label,type:question.type,name:question.fieldName??undefined,options:question.options,required:question.required}
     return { id: question.id, applicationId: application.id, ...field, label: correctedFieldLabel(field), role: application.role, company: application.company, location }
   })
+  return resolveAnswerBatch({ userId, questions, sources: await loadAnswerSources(userId, questions) })
+}
+
+/** Own records only. Generated answers are deliberately excluded to prevent self-confirming inference. */
+export async function loadAnswerSources(userId: string, questions: ResolverQuestion[]): Promise<AnswerSource[]> {
   const [kit] = await db.select().from(kits).where(eq(kits.userId, userId)).limit(1)
   const [resume] = await db.select().from(resumes).where(and(eq(resumes.userId, userId), eq(resumes.isBase, true))).limit(1)
   const history = await db.select().from(employments).where(eq(employments.userId, userId)).orderBy(employments.sortOrder)
@@ -152,5 +157,5 @@ export async function resolveApplicationAnswers(userId: string, questionIds: str
     const country = countriesIn(question.label).length === 1 ? countriesIn(question.label)[0]! : countriesIn(location ?? '').length === 1 ? countriesIn(location ?? '')[0]! : null
     add(`question:${question.id}`, question.label, question.answer, 'explicit_answer', { applicationId: question.applicationId, country, topic: answerTopic({ label: question.label, type: question.type, options: question.options }) })
   }
-  return resolveAnswerBatch({ userId, questions, sources })
+  return sources
 }

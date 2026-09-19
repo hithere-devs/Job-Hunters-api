@@ -2,6 +2,7 @@ import mammoth from 'mammoth'
 import { extractText } from 'unpdf'
 import { z } from 'zod'
 import { logger } from '../lib/logger.js'
+import { isPlausibleWebsiteUrl } from '../lib/website-url.js'
 
 export interface ParsedEmployment {
   role: string
@@ -322,10 +323,11 @@ function extractContact(lines: string[], text: string): ParsedResume['contact'] 
       return text[start - 1] !== '@' && text[end] !== '@'
     })
     .map((match) => match[0])
+  const skillTokens = new Set(KNOWN_SKILLS.map((skill) => skill.toLowerCase()))
   const linkedinUrl = urls.find((url) => /linkedin\.com\/in\//i.test(url)) ?? null
   const githubUrl = urls.find((url) => /github\.com\//i.test(url)) ?? null
   const portfolioUrl =
-    urls.find((url) => !/linkedin\.com|github\.com/i.test(url)) ?? null
+    urls.find((url) => !/linkedin\.com|github\.com/i.test(url) && !skillTokens.has(url.toLowerCase()) && isPlausibleWebsiteUrl(url)) ?? null
   const fullName =
     lines.slice(0, 8).find(
       (line) =>

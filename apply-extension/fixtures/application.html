@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Huntly local apply fixture</title>
+</head>
+<body>
+  <h1>Staff Engineer</h1>
+  <form id="application">
+    <div class="ashby-application-form-field-entry">
+      <label for="name">Full Name*</label>
+      <input id="name" name="name" required>
+    </div>
+    <div class="ashby-application-form-field-entry">
+      <label for="email">Email*</label>
+      <input id="email" name="email" type="email" required>
+    </div>
+    <div class="ashby-application-form-field-entry">
+      <label>Cover Letter*</label>
+      <textarea name="cover" required></textarea>
+    </div>
+    <div class="ashby-application-form-field-entry">
+      <label for="loc">Location*</label>
+      <input id="loc" class="ashby-application-form-input-autocomplete" role="combobox" required placeholder="Start typing..." aria-invalid="true">
+    </div>
+    <div data-field-entry-id="088fd504-0416-4c16-bdd6-6afbab0d83d4_learn">
+      <fieldset class="_fieldEntry_1e3gg_28">
+        <label class="_required_f7cvd_91 ashby-application-form-question-title" for="learn">How did you learn about this opportunity with Atlan?</label>
+        <div>
+          <input class="ashby-application-form-input-autocomplete" placeholder="Start typing..." aria-autocomplete="list" role="combobox" value="">
+          <button type="button" class="_toggleButton_d7ago_32" id="learn-toggle"></button>
+        </div>
+      </fieldset>
+    </div>
+    <div class="ashby-application-form-field-entry">
+      <label>Are you legally authorized to work in the United States?*</label>
+      <div class="ashby-application-form-input-yesno">
+        <button type="button" aria-pressed="false">Yes</button>
+        <button type="button" aria-pressed="false">No</button>
+      </div>
+    </div>
+    <div class="ashby-application-form-field-entry">
+      <label>Privacy Notice</label>
+      <input type="checkbox" name="privacy" required>
+    </div>
+    <div id="popup"></div>
+    <button type="submit">Submit Application</button>
+  </form>
+  <script>
+    const loc = document.getElementById('loc')
+    const popup = document.getElementById('popup')
+    const cities = ['Bengaluru, Karnataka, India', 'Berlin, Germany']
+    loc.addEventListener('input', () => {
+      popup.innerHTML = ''
+      const query = loc.value.trim().toLowerCase()
+      loc.setAttribute('aria-invalid', 'true')
+      if (!query) return
+      for (const city of cities) {
+        if (!city.toLowerCase().includes(query)) continue
+        const option = document.createElement('div')
+        option.setAttribute('role', 'option')
+        option.className = 'ashby-application-form-input-autocomplete-popup-result'
+        option.textContent = city
+        option.addEventListener('mousedown', (event) => {
+          event.preventDefault()
+          loc.value = city
+          loc.setAttribute('aria-invalid', 'false')
+          popup.innerHTML = ''
+        })
+        popup.appendChild(option)
+      }
+    })
+    const hear = document.querySelector('[data-field-entry-id] input.ashby-application-form-input-autocomplete')
+    const sources = ['LinkedIn', 'Indeed', 'Other']
+    const renderHear = () => {
+      popup.innerHTML = ''
+      const query = hear.value.trim().toLowerCase()
+      if (!query) return
+      for (const source of sources) {
+        if (!source.toLowerCase().includes(query) && query !== 'job board') continue
+        const option = document.createElement('div')
+        option.setAttribute('role', 'option')
+        option.className = 'ashby-application-form-input-autocomplete-popup-result'
+        option.textContent = source
+        option.addEventListener('mousedown', (event) => {
+          event.preventDefault()
+          hear.value = source
+          popup.innerHTML = ''
+        })
+        popup.appendChild(option)
+      }
+    }
+    hear.addEventListener('input', renderHear)
+    document.getElementById('learn-toggle').addEventListener('click', () => {
+      hear.value = hear.value || 'L'
+      renderHear()
+    })
+    document.querySelectorAll('.ashby-application-form-input-yesno > button').forEach((button) => {
+      button.addEventListener('click', (event) => {
+        event.preventDefault()
+        document.querySelectorAll('.ashby-application-form-input-yesno > button').forEach((other) => {
+          other.setAttribute('aria-pressed', other === button ? 'true' : 'false')
+        })
+      })
+    })
+  </script>
+</body>
+</html>

@@ -42,12 +42,13 @@ export async function cancelApplication(userId: string, id: string) {
   })
 }
 
-export async function retryApplication(userId: string, id: string) {
+export async function retryApplication(userId: string, id: string, options?: {confirmedNotSubmitted?: boolean}) {
   return withApprovalLock(userId, async () => {
     const {app,candidate} = await ownedApplication(userId,id)
-    const attempts = await db.select().from(applyAttempts).where(and(eq(applyAttempts.candidateId,candidate.id),eq(applyAttempts.userId,userId)))
-    const events = attempts.length ? await db.select({state:attemptEvents.state,detail:attemptEvents.detail}).from(attemptEvents).where(inArray(attemptEvents.attemptId,attempts.map(a=>a.id))) : []
-    const reason = safeRetryReason(app.status,attempts,events)
+    const attempts = await db.select().from(applyAttempts).where(and(eq(applyAttempts.candidateId,candidate.id),eq(applyAttempts.userId,userId))).orderBy(desc(applyAttempts.createdAt))
+    const latest = attempts[0]
+    const events = latest ? await db.select({state:attemptEvents.state,detail:attemptEvents.detail,reason:attemptEvents.reason}).from(attemptEvents).where(eq(attemptEvents.attemptId,latest.id)) : []
+    const reason = safeRetryReason(app.status, latest ? [latest] : [], events, {confirmedNotSubmitted: options?.confirmedNotSubmitted})
     if (reason) throw conflict(reason)
     const runtime = await applicationJobInfo(userId,candidate.id,candidate.runId)
     if (['active','waiting','delayed','paused'].includes(runtime.queueState)) throw conflict('This application is already in the queue.')

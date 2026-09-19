@@ -1,0 +1,21 @@
+SHORT:
+Walks ATS pages in-place and fills fields Huntly already resolved.
+
+LONG:
+Huntly Apply fills job application forms on the page you already opened. It is the Chrome side of Huntly, a job-application runner: Huntly decides answers from your profile, then this extension writes those answers into Greenhouse, Lever, Ashby, SmartRecruiters, Workable, and other career-site forms.
+
+It inventories fields in the page (labels, types, options), fills them in place, and leaves submit under Huntly's control. It is not a password manager, not a generic autofill, and not a scraper.
+
+Use it with Huntly on your machine or VM. Unpacked developer loads and this store package are the same code.
+
+SINGLE_PURPOSE:
+Fill job application forms on employer ATS pages with answers Huntly already resolved.
+
+ACTIVE_TAB:
+Read the current tab so the popup can show which application fields are present.
+
+HOST_PERMISSIONS:
+Job applications live on many employer domains after a listing hops to Greenhouse, Lever, Ashby, SmartRecruiters, Workable, or a company career site. Broad host access is required so the content script can inventory and fill those forms. The extension does not scrape unrelated sites or send page data to a server.
+
+PRIVACY_URL:
+https://gist.github.com/hithere-devs/54bad7a593f031a6240b8dfbeb239005

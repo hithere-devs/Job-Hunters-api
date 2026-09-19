@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { normaliseHttpUrl } from './urls.js'
+import { isPlausibleWebsiteUrl, normaliseHttpUrl } from './urls.js'
 
 describe('application URL normalisation', () => {
   it('adds https to a domain-like value', () => {
@@ -20,5 +20,13 @@ describe('application URL normalisation', () => {
 
   it('does not turn blank values into a destination', () => {
     assert.equal(normaliseHttpUrl('  '), '')
+  })
+
+  it('does not treat skill tokens as websites', () => {
+    assert.equal(normaliseHttpUrl('Next.js'), '')
+    assert.equal(normaliseHttpUrl('https://next.js/'), '')
+    assert.equal(normaliseHttpUrl('Node.js'), '')
+    assert.equal(isPlausibleWebsiteUrl('Vue.js'), false)
+    assert.equal(normaliseHttpUrl('https://ayan.dev'), 'https://ayan.dev/')
   })
 })

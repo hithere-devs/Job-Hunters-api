@@ -109,7 +109,7 @@ const greenhouseSource: SourceAdapter = {
           sourceId: `${token}:${row.id}`,
           portal: 'greenhouse',
           url: row.absolute_url,
-          applyUrl: row.absolute_url,
+          applyUrl: `https://job-boards.greenhouse.io/${token}/jobs/${row.id}`,
           title: row.title,
           company: row.company_name?.trim() || fallbackCompany,
           locationText: row.location?.name ?? '',

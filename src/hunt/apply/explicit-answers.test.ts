@@ -25,12 +25,17 @@ describe('explicit answer provenance', () => {
       { userId: 'other', provenance: 'explicit_user', confirmed: true },
     ]) {
       const result = await runWithDatabase(cached([{ ...row, value: 'Female' }]), () => resolveField(field, context))
-      assert.equal(result.blocked, 'sensitive_field')
-      assert.equal(result.value, null)
+      assert.equal(result.value, 'Prefer not to say')
+      assert.equal(result.blocked, undefined)
     }
   })
   it('does not repurpose a saved answer when options changed', async () => {
     const result = await runWithDatabase(cached([{ userId: 'owner', confirmed: true, provenance: 'explicit_user', value: 'Different option' }]), () => resolveField(field, context))
+    assert.equal(result.value, 'Prefer not to say')
+  })
+  it('still blocks demographics that offer no decline option', async () => {
+    const result = await runWithDatabase(cached([]), () => resolveField({ label: 'Gender', type: 'select', required: true, options: ['Female', 'Male'] }, context))
+    assert.equal(result.blocked, 'sensitive_field')
     assert.equal(result.value, null)
   })
   it('requires per-application legal and contextual motivation answers', () => {
@@ -50,6 +55,15 @@ describe('explicit answer provenance', () => {
     assert.equal(result.blocked, 'unknown_field')
     assert.equal(valueFromProfile('currentCompany', profile), 'Previous Employer')
     assert.equal(valueFromProfile('totalExperience', profile), '5')
+  })
+  it('answers how-did-you-learn source dropdowns without waiting for a human', async () => {
+    const result = await runWithDatabase(cached([]), () => resolveField({
+      label: 'How did you learn about this opportunity with Atlan?',
+      type: 'combobox',
+      required: false,
+    }, context))
+    assert.equal(result.value, 'Job board')
+    assert.equal(result.via, 'heuristic')
   })
 })
 it('never reuses a work-authorisation answer whose truth depends on the job', () => {

@@ -149,7 +149,7 @@ export async function verifyOpenClawFilledFields(page: Page, fields: Array<{ lab
       if(!filled && new URL(page.url()).hostname==='jobs.ashbyhq.com') {
         filled=await page.evaluate(label=>{
           const normal=(s:string)=>s.trim().replace(/\s+/g,' ').replace(/\*$/,'').trim().toLowerCase();
-          const entries=Array.from(document.querySelectorAll('.ashby-application-form-field-entry')).filter(entry=>{
+          const entries=Array.from(document.querySelectorAll('.ashby-application-form-field-entry, [data-field-entry-id], fieldset[class*="fieldEntry"]')).filter(entry=>{
             const labels=entry.querySelectorAll('label');return labels.length===1&&normal(labels[0]!.textContent??'')===normal(label);
           });
           if(entries.length!==1)return false;

@@ -38,7 +38,7 @@ export const ASHBY_BOARDS = [
 
 export const SMARTRECRUITERS_BOARDS = ['Visa', 'Sodexo', 'Continental'] as const
 
-export const WORKABLE_BOARDS = ['huntress', 'tide'] as const
+export const WORKABLE_BOARDS = ['globaldevgroup', 'weekday-1'] as const
 
 /**
  * The board token is not the company's name. Greenhouse and Ashby return the

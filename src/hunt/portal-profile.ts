@@ -30,6 +30,14 @@ export interface PortalProfile {
   expectedCtc: string
   workAuthorization: string
   willingToRelocate: string
+  visaSponsorship?: string
+  workMode?: string
+  gender?: string
+  sexualOrientation?: string
+  ethnicity?: string
+  veteranStatus?: string
+  disabilityStatus?: string
+  boundByAgreements?: string
   skills: string[]
   experience: Array<{
     role: string
@@ -94,6 +102,14 @@ export async function loadPortalProfile(userId: string): Promise<PortalProfile> 
     expectedCtc: kit.expectedCtc ?? '',
     workAuthorization: kit.workAuthorization ?? '',
     willingToRelocate: kit.willingToRelocate ?? '',
+    visaSponsorship: kit.visaSponsorship ?? '',
+    workMode: kit.workMode ?? '',
+    gender: kit.gender ?? '',
+    sexualOrientation: kit.sexualOrientation ?? '',
+    ethnicity: kit.ethnicity ?? '',
+    veteranStatus: kit.veteranStatus ?? '',
+    disabilityStatus: kit.disabilityStatus ?? '',
+    boundByAgreements: kit.boundByAgreements ?? '',
     skills,
     experience: (history.length ? history : (parsed?.employments ?? []).map((employment) => ({ ...employment, blurb: employment.blurb ?? '', startedOn: employment.startedOn ?? null, endedOn: employment.endedOn ?? null, isCurrent: employment.isCurrent ?? false }))).map((employment) => ({
       role: employment.role,

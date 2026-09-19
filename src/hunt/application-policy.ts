@@ -8,11 +8,37 @@ export function effectiveConcurrency(configured: number, vmProfile: boolean) {
   return vmProfile ? 1 : Math.max(1, Math.min(4, configured))
 }
 /** Never retry evidence that may represent a completed external submission. */
-export function safeRetryReason(status: string, attempts: Array<{status: string; submitStartedAt?: Date | null; error?: string | null; submittedFields?: unknown}>, events: Array<{state: string; detail?: unknown}>) {
+export function safeRetryReason(
+  status: string,
+  attempts: Array<{status: string; submitStartedAt?: Date | null; error?: string | null; submittedFields?: unknown}>,
+  events: Array<{state: string; detail?: unknown; reason?: string | null}>,
+  options?: {confirmedNotSubmitted?: boolean},
+) {
   if (!['failed', 'needs_review', 'closed'].includes(status)) return 'Only failed, cancelled, or review applications can be retried.'
-  if (attempts.some(a => a.submitStartedAt)) return 'A submit was attempted. Check the provider; automatic retry is unsafe.'
-  if (attempts.some(a => ['submitted', 'submitted_unconfirmed', 'unknown', 'submitting', 'pending'].includes(a.status) && !(a.status === 'unknown' && ['Not submitted: dry_run','Not submitted: kill_switch'].includes(a.error ?? '') && !a.submitStartedAt))) return 'Submission is completed or uncertain. Check the provider; automatic retry is unsafe.'
-  if (events.some(e => (e.state === 'submitting' && (e.detail as {dryRun?:boolean}|null)?.dryRun !== true) || e.state === 'submitted')) return 'A submit was attempted. This application cannot be retried automatically.'
+  const latest = attempts[0]
+  const spam = Boolean(latest?.error && /(?:flagged|rejected this submission) as possible spam/i.test(latest.error)) || events.some((event) => event.reason === 'provider_blocked')
+  if (spam) return 'The provider rejected this submission as possible spam. Automatic retry is disabled.'
+  if (latest?.status === 'submitted' || events.some((event) => event.state === 'submitted')) {
+    return 'Submission is completed or uncertain. Check the provider; automatic retry is unsafe.'
+  }
+  if (['submitting', 'pending'].includes(latest?.status ?? '')) {
+    return 'A submit was attempted. Check the provider; automatic retry is unsafe.'
+  }
+  const submittingLive = events.some((event) => event.state === 'submitting' && (event.detail as {dryRun?: boolean} | null)?.dryRun !== true)
+  const dryRun = latest?.status === 'unknown'
+    && ['Not submitted: dry_run', 'Not submitted: kill_switch'].includes(latest.error ?? '')
+    && !latest.submitStartedAt
+  const interrupted = /worker stopped before this attempt completed/i.test(latest?.error ?? '')
+  const heldBack = /Not submitted: (?:invalid_fields|no_form|dry_run|kill_switch|no_submit_control|posting_closed)/.test(latest?.error ?? '')
+  if ((heldBack || dryRun || interrupted) && !latest?.submitStartedAt && !submittingLive) return null
+  if (!latest?.submitStartedAt && !submittingLive && ['needs_review', 'failed'].includes(latest?.status ?? '')) return null
+  if (!latest) return null
+  if (options?.confirmedNotSubmitted) return null
+  if (latest.submitStartedAt) return 'A submit was attempted. Check the provider; automatic retry is unsafe.'
+  if (['submitted', 'submitted_unconfirmed', 'unknown', 'submitting', 'pending'].includes(latest.status) && !dryRun) {
+    return 'Submission is completed or uncertain. Check the provider; automatic retry is unsafe.'
+  }
+  if (submittingLive) return 'A submit was attempted. This application cannot be retried automatically.'
   return null
 }
 

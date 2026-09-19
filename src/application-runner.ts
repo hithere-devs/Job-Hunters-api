@@ -8,7 +8,7 @@ import { logger } from './lib/logger.js'
 /** The VM's runner process. LinkedIn/outreach workers deliberately stay off it. */
 if (!hasRedis || !env.PORTAL_AUTOMATION_ENABLED) throw new Error('VM application runner requires Redis and PORTAL_AUTOMATION_ENABLED=true')
 const worker = startApplicationWorker()
-logger.info({dryRun:env.APPLY_DRY_RUN,browserProvider:env.BROWSER_PROVIDER},'VM application runner started')
+logger.info({dryRun:env.APPLY_DRY_RUN,browserProvider:env.BROWSER_PROVIDER,applyDriver:env.APPLY_DRIVER,queue:env.APPLICATION_QUEUE_NAME},'VM application runner started; this process fills ATS forms')
 let stopping=false
 async function shutdown(signal:string) {
   if(stopping)return;stopping=true

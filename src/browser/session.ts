@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import { withBrowserLifecycle, type BrowserTransaction } from './lifecycle.js'
 import { and, eq } from 'drizzle-orm'
 import { userBrowserSessions } from '../db/schema.js'
@@ -6,7 +7,7 @@ import { chromium, type Browser, type BrowserContext, type Page } from 'playwrig
 import { browserProvider, env } from '../config/env.js'
 import { serviceUnavailable } from '../lib/errors.js'
 import { logger } from '../lib/logger.js'
-import { launchAutomationBrowser } from '../hunt/browser.js'
+import { installHuntlyApplyExtension, launchAutomationBrowser, launchApplyExtensionContext } from '../hunt/browser.js'
 import { createBrowser, getBrowser, stopBrowser, type BrowserSessionInfo } from './client.js'
 import { applyTenant, getTenantStatus, stopTenant } from './vm-client.js'
 import { createSemaphore, type Slot } from './limit.js'
@@ -162,6 +163,27 @@ async function openHosted(options: SessionOptions, slot: Slot): Promise<AgentSes
 }
 
 async function openLocal(options: SessionOptions, slot: Slot): Promise<AgentSession> {
+  if (env.APPLY_DRIVER === 'extension') {
+    const launched = await launchApplyExtensionContext({
+      headed: env.AUTOMATION_HEADFUL,
+      viewport: options.viewport,
+    })
+    const page = launched.context.pages()[0] ?? (await launched.context.newPage())
+    let closed = false
+    return {
+      browser: launched.context.browser() as Browser,
+      context: launched.context,
+      page,
+      provider: 'local',
+      liveUrl: null,
+      sessionId: null,
+      async close() {
+        if (closed) return
+        closed = true
+        try { await launched.close() } finally { slot.release() }
+      },
+    }
+  }
   const browser = await launchAutomationBrowser()
   const context = await browser.newContext({
     viewport: options.viewport ?? { width: 1280, height: 900 },
@@ -209,6 +231,9 @@ async function openVmLocked(options: SessionOptions, slot: Slot, tx: BrowserTran
   }
   const context = browser.contexts()[0] ?? (await browser.newContext())
   const page = context.pages()[0] ?? (await context.newPage())
+  if (existsSync('/opt/huntly/apply-extension/manifest.json')) {
+    await installHuntlyApplyExtension(context, browser)
+  }
   let closed = false
   let heartbeatRunning = false
   const heartbeat = setInterval(() => {

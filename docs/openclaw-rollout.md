@@ -2,7 +2,7 @@
 
 ## Current result, 2026-09-16
 
-The tenant 2 OpenClaw extension is installed, enabled, paired and active for application reasoning. Both the API and all tenant gateways now select Gemini 2.5 Flash through GCP Vertex AI, with a 2048-token application output cap and low reasoning. No active application model route uses Anthropic or an API-key proxy.
+The tenant 2 OpenClaw extension is installed, enabled, paired and active for application reasoning. Huntly's API, fallback apply agent, classify/draft/answer-resolver routes, and every tenant OpenClaw gateway now use DeepSeek V4.1 Flash (`deepseek-flash`) with an 8192-token application output cap. Vertex Gemini is no longer on the live apply path.
 
 The full Gemini extension fixture passed text input, explicit saved boolean answers, location autocomplete, resume upload, exact Chrome target matching, cross-tenant authentication rejection, and final-submit denial. Flow A separately passed with gateway, relay and CDP closed during human sign-in.
 
@@ -18,8 +18,8 @@ M3.3's accepted-live-application gate remains blocked by the provider rejection.
 - `deploy/provision-openclaw.mjs` creates ten OS-user-scoped gateways. Run as root on the VM. It reads the existing root-owned runner environment and never prints secrets.
 - Gateway base 19789, stride 1000. The operator's personal gateway remains on 18789. All gateway, browser-control, CDP, VNC and VM-agent listeners are loopback-only.
 - Each gateway attaches to `http://127.0.0.1:9200+tenant`, which is Chrome's existing Flow B profile. Flow A still has no CDP.
-- `APPLY_DRIVER=openclaw` selects the new reasoning tier after the deterministic ladder. Gemini 2.5 Flash on Vertex AI now drives both OpenClaw and the retained fallback. The VM uses its service-account identity; no Google model API key is stored.
-- Vertex setup requires `aiplatform.googleapis.com`, `roles/aiplatform.user` on the VM service account, the VM `cloud-platform` OAuth scope, and `MODEL_PROVIDER=vertex`, `GOOGLE_CLOUD_PROJECT`, and `GOOGLE_CLOUD_LOCATION` in the root-owned runner environment. Re-run `deploy/provision-openclaw.mjs` after changing these values.
+- `APPLY_DRIVER=openclaw` selects the new reasoning tier after the deterministic ladder. DeepSeek V4.1 Flash drives Huntly's HTTP gateway and every tenant OpenClaw gateway (`huntly-deepseek/deepseek-flash`, 8192-token cap). The first-party key stays in `/etc/huntly/runner.env` as `DEEPSEEK_API_KEY`. Tenant env files get `HUNTLY_MODEL_API_KEY` instead, so OpenClaw does not try to npm-install `@openclaw/deepseek-provider` into a read-only home. Re-run `deploy/provision-openclaw.mjs` after changing `MODEL_PROVIDER` or `APPLY_AGENT_MODEL`.
+- Vertex remains a supported `MODEL_PROVIDER` for rollback. It needs `aiplatform.googleapis.com`, `roles/aiplatform.user` on the VM service account, the VM `cloud-platform` OAuth scope, plus `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION`. It is not the live apply route.
 - Root-owned per-attempt policies authorize one target, host list, deadline, explicit sensitive answers, and one resume. The plugin rejects shell tools, login/OTP/CAPTCHA, arbitrary navigation, unapproved choices and final submission.
 - Resume staging uses the documented tenant `media/inbound` directory. Policy revocation removes the staged copy. The durable original resume remains in application storage.
 - Final submit stays in Huntly's guarded code. A database submission fence prevents automatic duplicate submission after uncertain confirmation.

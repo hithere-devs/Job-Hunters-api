@@ -2,10 +2,12 @@ import os from 'node:os'
 import path from 'node:path'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { eq, sql } from 'drizzle-orm'
+import { env } from '../config/env.js'
 import { closeDatabase, db } from '../db/client.js'
 import { jobs, users } from '../db/schema.js'
 import { openSession } from '../browser/session.js'
 import { loadPortalProfile } from '../hunt/portal-profile.js'
+import { applyWithExtension } from '../hunt/apply/extension-driver.js'
 import { fillForm, submitForm } from '../hunt/apply/fill.js'
 import { downloadObject } from '../lib/storage.js'
 
@@ -81,7 +83,8 @@ try {
       const started = Date.now()
       try {
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45_000 })
-        const result = await fillForm({
+        const fill = env.APPLY_DRIVER === 'extension' ? applyWithExtension : fillForm
+        const result = await fill({
           page,
           url,
           userId: user.id,

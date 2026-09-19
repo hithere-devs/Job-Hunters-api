@@ -1,6 +1,6 @@
 import { hasRedis, env } from './config/env.js'
 import { closeDatabase } from './db/client.js'
-import { closeApplicationQueue, reconcileInterruptedApplications, startApplicationWorker } from './hunt/application-queue.js'
+import { closeApplicationQueue, startApplicationWorker } from './hunt/application-queue.js'
 import { logger } from './lib/logger.js'
 import { closeRedis } from './lib/redis.js'
 import { closeQueues, startWorker } from './queues/index.js'
@@ -43,11 +43,16 @@ if (!env.PORTAL_AUTOMATION_ENABLED) {
 
 registerQueueImplementations()
 
-// The apply queue predates the shared registry and owns its own worker
-// configuration — concurrency, portal locks and pacing that are tuned and
-// tested. It keeps them.
-startApplicationWorker()
-logger.info({ queue: QUEUE.apply, concurrency: env.RUNNER_APPLY_CONCURRENCY }, 'worker started')
+// Live ATS fill belongs on the VM huntly-runner (application-runner.ts):
+// DOM extract, dropdowns, OpenClaw leftovers, submit. This process still does
+// LinkedIn and playground. Two consumers on hunt-apply race and one of them
+// is usually stale.
+if (env.APPLY_QUEUE_CONSUMER) {
+  startApplicationWorker()
+  logger.info({ queue: QUEUE.apply, concurrency: env.RUNNER_APPLY_CONCURRENCY }, 'apply worker started')
+} else {
+  logger.info({ queue: QUEUE.apply }, 'apply worker skipped; hunt-apply is consumed on the VM runner')
+}
 
 // A browser left behind by a killed runner is not stopped by anything else,
 // and bills until its own timeout.

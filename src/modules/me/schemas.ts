@@ -48,6 +48,14 @@ export const updateKitSchema = z.object({
   expectedCtc: optionalText(80),
   workAuthorization: optionalText(200),
   willingToRelocate: optionalText(200),
+  visaSponsorship: optionalText(200),
+  workMode: optionalText(40),
+  gender: optionalText(80),
+  sexualOrientation: optionalText(80),
+  ethnicity: optionalText(120),
+  veteranStatus: optionalText(200),
+  disabilityStatus: optionalText(200),
+  boundByAgreements: optionalText(40),
 
   skills: z.array(z.string().trim().min(1).max(60)).max(200).optional(),
 })

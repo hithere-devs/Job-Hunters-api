@@ -25,3 +25,9 @@ for (const entry of entries) {
 }
 
 console.log(`copied ${copied} skill playbook${copied === 1 ? '' : 's'} to dist/skills`)
+
+const extensionFrom = path.resolve('apply-extension')
+const extensionTo = path.resolve('dist/apply-extension')
+await mkdir(extensionTo, { recursive: true })
+await cp(extensionFrom, extensionTo, { recursive: true })
+console.log('copied apply-extension to dist/apply-extension')

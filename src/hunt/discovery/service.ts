@@ -38,6 +38,7 @@ const DEFAULT_PORTALS = [
   'remotive',
   'jobicy',
   'arbeitnow',
+  'instahyre',
 ]
 
 export interface CandidateDto {

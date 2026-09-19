@@ -27,6 +27,8 @@ export type Purpose =
   | 'draft-outreach'
   | 'parse-persona'
   | 'apply-agent'
+  | 'apply-jev'
+  | 'apply-draft'
 
 export class ModelBudgetExceededError extends Error {
   constructor(spent: number, budget: number) {
@@ -36,6 +38,8 @@ export class ModelBudgetExceededError extends Error {
 }
 
 /** What this user has spent on models since the start of the current month. */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 export async function monthlySpendUsd(userId: string): Promise<number> {
   const startOfMonth = new Date()
   startOfMonth.setUTCDate(1)
@@ -49,7 +53,7 @@ export async function monthlySpendUsd(userId: string): Promise<number> {
 }
 
 export async function assertWithinBudget(userId: string | null): Promise<void> {
-  if (!userId || env.MODEL_MONTHLY_BUDGET_USD <= 0) return
+  if (!userId || !UUID.test(userId) || env.MODEL_MONTHLY_BUDGET_USD <= 0) return
   const spent = await monthlySpendUsd(userId)
   if (spent >= env.MODEL_MONTHLY_BUDGET_USD) {
     throw new ModelBudgetExceededError(spent, env.MODEL_MONTHLY_BUDGET_USD)
@@ -73,6 +77,9 @@ export async function recordUsage(params: {
   ok: boolean
   error?: string
 }): Promise<void> {
+  if (params.userId && !UUID.test(params.userId)) {
+    params = { ...params, userId: null }
+  }
   const inputTokens = params.usage?.input_tokens ?? 0
   const outputTokens = params.usage?.output_tokens ?? 0
   const cachedInputTokens = params.usage?.cache_read_input_tokens ?? 0

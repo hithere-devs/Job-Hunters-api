@@ -17,3 +17,7 @@ it('asks for missing facts rather than inventing experience', () => {
   assert.equal(result.draft, null)
   assert.ok(result.needsInfo.length > 0)
 })
+it('drafts a cover letter from saved experience instead of leaving the field blank', () => {
+  const result = draftApplicationAnswer({ label: 'Cover Letter', type: 'textarea', required: true }, facts)
+  assert.ok(result.draft?.includes('PriorCo'))
+})

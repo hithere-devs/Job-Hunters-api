@@ -79,6 +79,15 @@ const schema = z.object({
   /** Stops every application immediately, without a redeploy. */
   APPLY_KILL_SWITCH: booleanish.default('false'),
   /**
+   * Whether this process dequeues `hunt-apply` and fills forms.
+   *
+   * Live fill (DOM extract, dropdowns, OpenClaw leftovers, submit) belongs on
+   * the VM `huntly-runner`. A laptop `runner.ts` that also consumes the same
+   * Redis queue races that worker and can run stale fill code against the VM
+   * browser. Set false on the laptop. `application-runner.ts` always consumes.
+   */
+  APPLY_QUEUE_CONSUMER: booleanish.default('true'),
+  /**
    * Whether an application pauses for the user when a question is unresolved.
    *
    * Off. Pausing made every application wait ten minutes — often on questions
@@ -165,8 +174,8 @@ const schema = z.object({
   FIRECRAWL_API_KEY: optionalString,
   FIRECRAWL_API_BASE: z.string().url().default('https://api.firecrawl.dev/v2'),
 
-  /** Explicit model route. Gemini through OpenRouter is the default; no automatic Anthropic fallback. */
-  MODEL_PROVIDER: z.enum(['openrouter', 'anthropic', 'vertex']).default('openrouter'),
+  /** Explicit model route. DeepSeek V4.1 Flash is the application default. */
+  MODEL_PROVIDER: z.enum(['openrouter', 'anthropic', 'vertex', 'deepseek']).default('openrouter'),
   // Retained only so historical, unrouted Muse modules compile.
   MUSE_MODEL: z.string().default('retired'),
 
@@ -178,6 +187,11 @@ const schema = z.object({
   ANTHROPIC_API_KEY: optionalString,
   OPENROUTER_API_KEY: optionalString,
   OPENROUTER_API_BASE: z.string().url().default('https://openrouter.ai/api/v1'),
+  DEEPSEEK_API_KEY: optionalString,
+  DEEPSEEK_API_BASE: z.string().url().default('https://api.deepseek.com'),
+  TYPESAFE_API_KEY: optionalString,
+  TYPESAFE_API_BASE: z.string().url().default('https://api.typesafe.ai'),
+  JEV_MODEL: z.string().default('jev-latest'),
   GOOGLE_CLOUD_PROJECT: optionalString,
   GOOGLE_CLOUD_LOCATION: z.string().default('global'),
   /**
@@ -198,14 +212,14 @@ const schema = z.object({
   META_API_KEY: optionalString,
   META_API_BASE: z.string().url().default('https://api.meta.ai/v1'),
   APPLY_AGENT_MODEL: z.string().default('google/gemini-3.1-flash-lite'),
-  APPLY_DRIVER: z.enum(['custom', 'openclaw']).default('custom'),
+  APPLY_DRIVER: z.enum(['custom', 'openclaw', 'extension', 'jev']).default('extension'),
   OPENCLAW_RUN_TIMEOUT_MS: z.coerce.number().int().min(10_000).max(600_000).default(300_000),
   OPENCLAW_GATEWAY_TOKENS: optionalString,
   OPENCLAW_BROWSER_PROFILES: optionalString,
   OPENCLAW_BASE_PORT: z.coerce.number().int().min(1024).max(54000).default(19789),
   OPENCLAW_PORT_STRIDE: z.coerce.number().int().min(120).max(1000).default(1000),
   /** Token ceiling per fallback agent step. */
-  APPLY_AGENT_MAX_TOKENS: z.coerce.number().int().positive().default(2048),
+  APPLY_AGENT_MAX_TOKENS: z.coerce.number().int().positive().default(8192),
   /**
    * Hard stop on a runaway agent loop, for the batch tier.
    *
@@ -348,7 +362,8 @@ export const hasPortalCredentialVault = Boolean(env.PORTAL_CREDENTIALS_KEY)
 export const hasModelAccess =
   env.MODEL_PROVIDER === 'openrouter' ? Boolean(env.OPENROUTER_API_KEY)
     : env.MODEL_PROVIDER === 'vertex' ? Boolean(env.GOOGLE_CLOUD_PROJECT)
-      : Boolean(env.ANTHROPIC_API_KEY)
+      : env.MODEL_PROVIDER === 'deepseek' ? Boolean(env.DEEPSEEK_API_KEY)
+        : Boolean(env.ANTHROPIC_API_KEY)
 
 /** Discovery keeps its API connectors without this; only HTML sources need it. */
 export const hasFirecrawl = Boolean(env.FIRECRAWL_API_KEY)
@@ -386,5 +401,6 @@ export const hasDodoPayments = Boolean(
  * the same posture every other model-backed feature takes.
  */
 export const hasApplyAgent = hasModelAccess
+export const hasJev = Boolean(env.TYPESAFE_API_KEY)
 
 export type Env = typeof env

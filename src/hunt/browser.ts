@@ -1,7 +1,11 @@
+import { mkdtemp, rm } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import { chromium, type Browser, type BrowserContext } from 'playwright-core'
 import { env } from '../config/env.js'
 import { serviceUnavailable } from '../lib/errors.js'
 import { logger } from '../lib/logger.js'
+import { applyExtensionChromeArgs, applyExtensionDir } from './apply/extension-path.js'
 
 /**
  * Browser launch.
@@ -133,4 +137,83 @@ export async function launchInteractiveAutomationContext(
     viewport: { width: 1280, height: 900 },
     args: ['--disable-blink-features=AutomationControlled', ...launchArgs()],
   })
+}
+
+/**
+ * Chrome 152 branded builds ignore `--load-extension`. CDP `Extensions.loadUnpacked`
+ * is the remaining path on branded Chrome. Needs `--enable-unsafe-extension-debugging`.
+ * Local tests use Playwright Chromium (Chrome for Testing), where `--load-extension` still works.
+ */
+export async function installHuntlyApplyExtension(context: BrowserContext, browser?: Browser | null): Promise<string | null> {
+  const dir = applyExtensionDir()
+  const tryLoad = async (cdp: Awaited<ReturnType<BrowserContext['newCDPSession']>>) => {
+    const existing = await cdp.send('Extensions.getExtensions').catch(() => ({ extensions: [] as Array<{ id: string; name?: string }> }))
+    const already = existing.extensions?.find((item) => /apply pilot|huntly apply/i.test(item.name ?? ''))
+    if (already?.id) return already.id
+    const result = await cdp.send('Extensions.loadUnpacked', { path: dir })
+    return result.id ?? null
+  }
+  if (browser) {
+    const cdp = await browser.newBrowserCDPSession()
+    try {
+      const id = await tryLoad(cdp)
+      if (id) {
+        logger.info({ extensionId: id }, 'loaded Huntly apply extension')
+        return id
+      }
+    } catch (error) {
+      logger.debug({ err: error }, 'browser CDP extension install unavailable')
+    } finally {
+      await cdp.detach().catch(() => undefined)
+    }
+  }
+  const page = context.pages()[0] ?? await context.newPage()
+  const cdp = await context.newCDPSession(page)
+  try {
+    const id = await tryLoad(cdp)
+    if (id) {
+      logger.info({ extensionId: id }, 'loaded Huntly apply extension')
+      return id
+    }
+    return null
+  } catch (error) {
+    logger.debug({ err: error }, 'CDP extension install unavailable; relying on --load-extension')
+    return null
+  } finally {
+    await cdp.detach().catch(() => undefined)
+  }
+}
+
+/**
+ * Local Chromium with the unpacked Huntly apply extension.
+ *
+ * Uses Playwright's Chrome for Testing, not branded Google Chrome. Chrome 152
+ * dropped `--load-extension` in the branded build.
+ */
+export async function launchApplyExtensionContext(options?: {
+  headed?: boolean
+  viewport?: { width: number; height: number }
+}): Promise<{ context: BrowserContext; close: () => Promise<void> }> {
+  const userDataDir = await mkdtemp(path.join(os.tmpdir(), 'huntly-apply-ext-'))
+  const headed = options?.headed ?? env.AUTOMATION_HEADFUL
+  const context = await chromium.launchPersistentContext(userDataDir, {
+    executablePath: chromium.executablePath(),
+    headless: false,
+    viewport: options?.viewport ?? { width: 1280, height: 900 },
+    ignoreDefaultArgs: ['--disable-extensions'],
+    args: [
+      ...launchArgs(),
+      '--enable-unsafe-extension-debugging',
+      ...applyExtensionChromeArgs(),
+      ...(headed ? [] : ['--headless=new']),
+    ],
+  })
+  await installHuntlyApplyExtension(context)
+  return {
+    context,
+    async close() {
+      await context.close().catch(() => undefined)
+      await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined)
+    },
+  }
 }

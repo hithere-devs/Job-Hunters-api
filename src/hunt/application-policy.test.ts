@@ -35,3 +35,18 @@ it('known dry-run preparation can later be retried while an unknown outcome cann
  assert.equal(safeRetryReason('needs_review',[{status:'unknown',error:'Not submitted: dry_run',submitStartedAt:null}],[{state:'submitting',detail:{dryRun:true}},{state:'skipped'}]),null)
  assert.ok(safeRetryReason('needs_review',[{status:'unknown',error:null}],[]))
 })
+it('invalid_fields and no_form without a fence are retryable',()=>{
+ assert.equal(safeRetryReason('needs_review',[{status:'needs_review',error:'Not submitted: invalid_fields',submitStartedAt:null}],[]),null)
+ assert.equal(safeRetryReason('needs_review',[{status:'needs_review',error:'Not submitted: no_form'}],[]),null)
+})
+it('confirmedNotSubmitted allows a fenced unconfirmed miss and still refuses spam',()=>{
+ const fenced={status:'unknown',submitStartedAt:new Date(),error:'Submit was clicked, but confirmation was not observed. Check the provider; do not retry automatically.'}
+ assert.ok(safeRetryReason('needs_review',[fenced],[]))
+ assert.equal(safeRetryReason('needs_review',[fenced],[],{confirmedNotSubmitted:true}),null)
+ assert.ok(safeRetryReason('needs_review',[{status:'needs_review',error:'The provider rejected this submission as possible spam. This is not a missing-answer issue. Automatic retry is disabled; contact the provider to resolve the block.'}],[{state:'blocked',reason:'provider_blocked'}],{confirmedNotSubmitted:true}))
+ assert.ok(safeRetryReason('needs_review',[{status:'needs_review',error:'The provider rejected this submission as possible spam. This is not a missing-answer issue. Automatic retry is disabled; contact the provider to resolve the block.'}],[],{confirmedNotSubmitted:true}))
+ assert.ok(safeRetryReason('needs_review',[{status:'submitting'}],[],{confirmedNotSubmitted:true}))
+})
+it('an interrupted worker with no submit fence is retryable',()=>{
+ assert.equal(safeRetryReason('needs_review',[{status:'unknown',error:'Application worker stopped before this attempt completed.',submitStartedAt:null}],[]),null)
+})

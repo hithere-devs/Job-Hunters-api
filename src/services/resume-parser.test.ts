@@ -76,4 +76,13 @@ describe('resume parser', () => {
   it('rejects malformed stored profiles', () => {
     assert.equal(readParsedResume({ skills: [] }), null)
   })
+
+  it('does not treat Next.js as a portfolio URL', () => {
+    const parsed = parseResumeText(`Ayan Mansoori
+ayan@example.com
+SKILLS
+TypeScript, React, Next.js, Node.js, Vue.js
+`)
+    assert.equal(parsed.contact.portfolioUrl, null)
+  })
 })

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { canReuseExplicitAnswer, fieldSignature, heuristicMatch, sensitiveReason, valueFromProfile, normaliseLabel } from './fields.js'
+import { canReuseExplicitAnswer, declineToIdentifyOption, derivedLocalAnswer, fieldSignature, heuristicMatch, impliedConsentValue, isReferralQuestion, prioritizeFillOrder, referralAnswer, sensitiveReason, valueFromProfile, normaliseLabel } from './fields.js'
 import type { PortalProfile } from '../portal-profile.js'
 
 const profile = {
@@ -237,5 +237,65 @@ describe('reusing answers the user gave explicitly', () => {
   it('never reuses a credential or a motivation answer', () => {
     assert.equal(canReuseExplicitAnswer(field('One time code')), false)
     assert.equal(canReuseExplicitAnswer(field('Why do you want to join us?')), false)
+  })
+})
+
+describe('ATS consent and decline-to-identify', () => {
+  it('picks prefer-not-to-say instead of inventing a demographic', () => {
+    assert.equal(declineToIdentifyOption(['Male', 'Female', 'Decline to self identify']), 'Decline to self identify')
+    assert.equal(declineToIdentifyOption(['Male', 'Female', "I don't wish to answer"]), "I don't wish to answer")
+    assert.equal(declineToIdentifyOption(['Yes', 'No']), null)
+  })
+  it('fills country before phone', () => {
+    const ordered = prioritizeFillOrder([
+      { label: 'Phone*', type: 'tel', required: true },
+      { label: 'Email*', type: 'email', required: true },
+      { label: 'Country*', type: 'combobox', required: true },
+    ])
+    assert.deepEqual(ordered.map((field) => field.label), ['Country*', 'Email*', 'Phone*'])
+  })
+  it('accepts apply privacy consent and refuses marketing SMS/WhatsApp', () => {
+    assert.equal(impliedConsentValue({ label: 'SMS consent', type: 'checkbox', required: false, options: ['Yes', 'No'] }), 'No')
+    assert.equal(impliedConsentValue({ label: 'WhatsApp consent', type: 'radio', required: false, options: ['Yes', 'No'] }), 'No')
+    assert.equal(impliedConsentValue({ label: 'I consent to the privacy policy', type: 'checkbox', required: true }), 'true')
+    assert.equal(impliedConsentValue({ label: 'Privacy Notice', type: 'checkbox', required: true }), 'true')
+    assert.equal(impliedConsentValue({
+      label: 'SMS text message consent',
+      type: 'radio',
+      required: false,
+      options: [
+        'Yes - I consent to receiving SMS text messages',
+        'No - I do not consent to receiving SMS text messages',
+      ],
+    }), 'No - I do not consent to receiving SMS text messages')
+    assert.equal(impliedConsentValue({
+      label: 'WhatsApp message consent',
+      type: 'radio',
+      required: false,
+      options: [
+        'Yes - I consent to receiving WhatsApp messages',
+        'No - I do not consent to receiving WhatsApp messages',
+      ],
+    }), 'No - I do not consent to receiving WhatsApp messages')
+    assert.equal(impliedConsentValue({ label: 'Acknowledge/Confirm', type: 'checkbox', required: true }), 'true')
+  })
+  it('answers city and people-management yes/no from the kit', () => {
+    const based = derivedLocalAnswer({ label: 'Are you based out of Bangalore ?✱', type: 'radio', required: true, options: ['Yes', 'No'] }, profile)
+    assert.equal(based, 'Yes')
+    const manage = derivedLocalAnswer({ label: 'Do you have experience Managing Team?✱', type: 'radio', required: true, options: ['Yes', 'No'] }, profile)
+    assert.equal(manage, 'No')
+    const asManager = derivedLocalAnswer(
+      { label: 'Do you have experience Managing Team?✱', type: 'radio', required: true, options: ['Yes', 'No'] },
+      { ...profile, headline: 'Engineering Manager' },
+    )
+    assert.equal(asManager, 'Yes')
+    assert.equal(derivedLocalAnswer({ label: 'Are you willing to relocate?*', type: 'radio', required: true }, profile), 'Yes')
+    assert.equal(derivedLocalAnswer({ label: '*How many days is your notice period?', type: 'text', required: true }, profile), '30')
+    assert.equal(derivedLocalAnswer({ label: "*What’s your current salary? (in lakhs per annum)", type: 'text', required: true }, profile), '0')
+  })
+  it('treats a source dropdown as a referral even without a how-did-you-hear label', () => {
+    const options = ['Select...', 'Linkedin', 'Meesho Job Site', 'Naukri', 'Others']
+    assert.equal(isReferralQuestion('cards[0df5c2d9-314f-429b-9e06-d9758e4b9b4b][field8]', options), true)
+    assert.equal(referralAnswer(options), 'Others')
   })
 })

@@ -1,7 +1,7 @@
 import http from 'node:http';
 import {createConnection} from 'node:net';
 import {validAttemptId,validateOpenClawPolicy} from './openclaw-policy.ts';
-import { spawn, execFile } from 'node:child_process';
+import { spawn, execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { existsSync, mkdirSync, writeFileSync, chownSync, chmodSync, renameSync, readFileSync, unlinkSync } from 'node:fs';
 
@@ -25,7 +25,7 @@ function alive(pid: number): boolean { try { process.kill(-pid, 0); return true;
 
 
 type Mode = 'connect' | 'apply' | 'idle';
-type TenantState = { mode: Mode; child: ReturnType<typeof spawn> | null; pid: number | null; startedAt: number | null; lastActivity: number; expiresAt: string | null; idleTimer?: NodeJS.Timeout };
+type TenantState = { mode: Mode; child: ReturnType<typeof spawn> | null; pid: number | null; startedAt: number | null; lastActivity: number; expiresAt: string | null; idleTimer?: NodeJS.Timeout; extensionPipes?: { incoming: unknown; outgoing: unknown } };
 
 function state(index: number): TenantState {
   let s = states.get(index);
@@ -43,6 +43,56 @@ async function removeOpenClawPolicy(i:number){
   try{const policy=JSON.parse(readFileSync(file,'utf8'));unlinkSync(file);if(validAttemptId(policy.attemptId)){await execFileAsync('sudo',['-u',`huntly-u${i}`,'/usr/bin/node','-e',`try{require('fs').unlinkSync(process.argv[1])}catch(e){if(e.code!=='ENOENT')throw e}`,openClawResumePath(i,policy.attemptId)]);}}catch{}
 }
 function resumePath(i: number) { return `/home/huntly-u${i}/run/huntly-resume.pdf`; }
+function posixIds(i: number) {
+  const uid = Number(execFileSync('id', ['-u', `huntly-u${i}`], { encoding: 'utf8' }).trim());
+  const gid = Number(execFileSync('id', ['-g', `huntly-u${i}`], { encoding: 'utf8' }).trim());
+  if (!Number.isInteger(uid) || !Number.isInteger(gid)) throw new Error(`could not resolve ids for huntly-u${i}`);
+  return { uid, gid };
+}
+async function loadHuntlyApplyUnpacked(port: number, dir: string): Promise<string> {
+  const version = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(5_000) }).then((response) => {
+    if (!response.ok) throw new Error(`cdp version HTTP ${response.status}`);
+    return response.json() as Promise<{ webSocketDebuggerUrl?: string }>;
+  });
+  const url = version.webSocketDebuggerUrl;
+  if (!url) throw new Error('Chrome CDP has no browser websocket');
+  const ws = new WebSocket(url);
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('cdp websocket timeout')), 8_000);
+    ws.addEventListener('open', () => { clearTimeout(timer); resolve(); });
+    ws.addEventListener('error', () => { clearTimeout(timer); reject(new Error('cdp websocket error')); });
+  });
+  const send = (id: number, method: string, params?: Record<string, unknown>) => new Promise<Record<string, unknown>>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${method} timeout`)), 10_000);
+    const onMessage = (event: MessageEvent) => {
+      try {
+        const message = JSON.parse(String(event.data)) as { id?: number; error?: { message?: string }; result?: Record<string, unknown> };
+        if (message.id !== id) return;
+        clearTimeout(timer);
+        ws.removeEventListener('message', onMessage);
+        if (message.error) reject(new Error(message.error.message || JSON.stringify(message.error)));
+        else resolve(message.result ?? {});
+      } catch (error) {
+        clearTimeout(timer);
+        ws.removeEventListener('message', onMessage);
+        reject(error);
+      }
+    };
+    ws.addEventListener('message', onMessage);
+    ws.send(JSON.stringify({ id, method, params }));
+  });
+  try {
+    const existing = await send(1, 'Extensions.getExtensions').catch(() => ({ extensions: [] as Array<{ id?: string; name?: string }> }));
+    const already = (existing.extensions as Array<{ id?: string; name?: string }> | undefined)?.find((item) => /huntly apply/i.test(item.name ?? ''));
+    if (already?.id) return already.id;
+    const loaded = await send(2, 'Extensions.loadUnpacked', { path: dir });
+    const id = typeof loaded.id === 'string' ? loaded.id : '';
+    if (!id) throw new Error('Extensions.loadUnpacked returned no id');
+    return id;
+  } finally {
+    ws.close();
+  }
+}
 /**
  * Where Chrome keeps its cookie store.
  *
@@ -140,7 +190,7 @@ async function stopProcess(i: number): Promise<boolean> {
     console.error(`[tenant ${i}] Chrome did not exit after SIGTERM and 10-second wait; escalating process group to SIGKILL`);
     try { process.kill(-pid, 'SIGKILL'); } catch {}
   }
-  s.mode='idle';s.child=null;s.pid=null;s.startedAt=null;s.expiresAt=null;
+  s.mode='idle';s.child=null;s.pid=null;s.startedAt=null;s.expiresAt=null;s.extensionPipes=undefined;
   await removeOpenClawPolicy(i);
   return forced;
 }
@@ -185,12 +235,35 @@ async function launch(i: number, mode: Exclude<Mode,'idle'>) {
   // is that this browser is genuinely unautomated, and every such flag is
   // detection surface arguing the opposite.
   const args = ['--user-data-dir='+profile(i), '--no-first-run', '--no-default-browser-check', '--disable-dev-shm-usage', '--disable-features=TranslateUI', '--hide-crash-restore-bubble', '--window-size=1440,900', '--window-position=0,0', '--start-maximized'];
-  if (mode === 'apply') args.push('--remote-debugging-port='+cdpPort(i), '--remote-debugging-address=127.0.0.1');
+  if (mode === 'apply') args.push('--remote-debugging-port='+cdpPort(i), '--remote-debugging-address=127.0.0.1', '--remote-allow-origins=*', '--remote-debugging-pipe', '--enable-unsafe-extension-debugging');
+  const applyExtension = process.env.HUNTLY_APPLY_EXTENSION_DIR || '/opt/huntly/apply-extension';
+  if (mode === 'apply' && existsSync(applyExtension + '/manifest.json')) {
+    args.push('--load-extension=' + applyExtension);
+  }
   args.push('about:blank');
-  const child = spawn('sudo', ['-u', `huntly-u${i}`, 'env', `DISPLAY=${display(i)}`, 'google-chrome', ...args], {stdio:'ignore',detached:true});
+  const ids = posixIds(i);
+  const home = `/home/huntly-u${i}`;
+  const child = spawn('/usr/bin/google-chrome', args, {
+    uid: ids.uid,
+    gid: ids.gid,
+    env: {
+      DISPLAY: display(i),
+      HOME: home,
+      USER: `huntly-u${i}`,
+      LOGNAME: `huntly-u${i}`,
+      PATH: process.env.PATH ?? '/usr/bin:/bin',
+      LANG: process.env.LANG ?? 'C.UTF-8',
+      XDG_RUNTIME_DIR: `/run/user/${ids.uid}`,
+      ...(existsSync(`${home}/.Xauthority`) ? { XAUTHORITY: `${home}/.Xauthority` } : {}),
+    },
+    stdio: mode === 'apply' ? ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'] as const : 'ignore',
+    detached: true,
+  });
   s.mode=mode; s.child=child; s.pid=child.pid ?? null; s.startedAt=Date.now(); s.lastActivity=Date.now(); s.expiresAt=new Date(Date.now()+IDLE_MS).toISOString();
-  child.once('error', error => { console.error(`[tenant ${i}] Chrome launch failed: ${error.message}`); if (s.child === child) {s.mode='idle';s.child=null;s.pid=null;} });
-  child.once('exit', () => { if (s.child === child) { s.mode='idle'; s.child=null; s.pid=null; s.startedAt=null; s.expiresAt=null; } });
+  if (mode === 'apply') s.extensionPipes = { incoming: child.stdio[3], outgoing: child.stdio[4] };
+  child.unref();
+  child.once('error', error => { console.error(`[tenant ${i}] Chrome launch failed: ${error.message}`); if (s.child === child) {s.mode='idle';s.child=null;s.pid=null;s.extensionPipes=undefined;} });
+  child.once('exit', () => { if (s.child === child) { s.mode='idle'; s.child=null; s.pid=null; s.startedAt=null; s.expiresAt=null; s.extensionPipes=undefined; } });
   if (mode === 'apply') {
     const deadline=Date.now()+30000; let ready=false;
     while(Date.now()<deadline && s.child===child){
@@ -198,6 +271,14 @@ async function launch(i: number, mode: Exclude<Mode,'idle'>) {
       await new Promise(resolve=>setTimeout(resolve,200));
     }
     if(!ready){await stopProcess(i);throw new Error('Chrome debugging endpoint did not become ready');}
+    if (!existsSync(applyExtension + '/manifest.json')) { await stopProcess(i); throw new Error('Huntly Apply extension missing at ' + applyExtension); }
+    try {
+      const extensionId = await loadHuntlyApplyUnpacked(cdpPort(i), applyExtension);
+      console.log(`[tenant ${i}] Huntly Apply unpacked ${extensionId}`);
+    } catch (error) {
+      await stopProcess(i);
+      throw new Error(`Huntly Apply unpacked failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
     try{await gatewayLifecycle(i,mode,'after_chrome_ready');}catch(error){await stopProcess(i);throw error;}
   } else {
     await new Promise(resolve=>setTimeout(resolve,300));
