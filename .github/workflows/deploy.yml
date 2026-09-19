@@ -27,7 +27,7 @@ jobs:
             --instance-ids i-003077694d4d2d453 \
             --document-name AWS-RunShellScript \
             --comment "CI deploy Job Hunters API" \
-            --parameters 'commands=["/usr/local/bin/deploy-job-hunters"]' \
+            --parameters 'commands=["git config --system --add safe.directory /opt/job-hunters","/usr/local/bin/deploy-job-hunters"]' \
             --query 'Command.CommandId' \
             --output text)
           echo "command=$COMMAND_ID"
