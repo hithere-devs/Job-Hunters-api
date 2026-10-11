@@ -390,6 +390,9 @@ export async function reconcileInterruptedApplications(): Promise<number> {
       eq(huntRuns.status, 'applying'),
       inArray(huntCandidates.status, ['queued', 'applying']),
       lt(huntCandidates.updatedAt, cutoff),
+      // Waiting for its user's dispatch window or a retry's not_before is not
+      // interrupted: nothing was ever handed to a worker.
+      sql`not exists (select 1 from ${applicationDispatches} d where d.candidate_id=${huntCandidates.id} and d.cancelled_at is null and d.delivered_at is null)`,
       QUEUE_NAME === 'hunt-apply'
         ? sql`(not exists (select 1 from ${applicationDispatches} d where d.candidate_id=${huntCandidates.id}) or exists (select 1 from ${applicationDispatches} d where d.candidate_id=${huntCandidates.id} and d.queue_name=${QUEUE_NAME}))`
         : sql`exists (select 1 from ${applicationDispatches} d where d.candidate_id=${huntCandidates.id} and d.queue_name=${QUEUE_NAME})`,
