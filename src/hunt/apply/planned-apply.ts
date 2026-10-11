@@ -71,6 +71,8 @@ async function persistEvidence(userId: string, attemptId: string, page: Page | n
   }
 }
 
+const PAGE_GONE = /\bpage (?:you requested )?(?:was )?not found\b|\b404\b.{0,40}not found|\bjob (?:posting )?not found\b|\bno longer (?:available|accepting applications|open)\b|\bposition (?:has been|is) (?:filled|closed)\b|\bposting (?:has )?(?:closed|expired)\b|\bthis job (?:is )?(?:closed|no longer)/i
+
 function classifyBlockers(execution: PlannedExecution): FailureClass {
   const reasons = new Set(execution.blockers.map((blocker) => blocker.reason))
   if ([...reasons].every((reason) => reason === 'needs_answer')) return 'needs_answer'
@@ -226,6 +228,23 @@ export async function applyPlannedCandidate(userId: string, candidateId: string,
       schemaSource = execution.schema.source
       audit = execution.fields
       if (!execution.canSubmit) {
+        // Landed on a dead page rather than a form: a published schema means the ATS
+        // still lists the job but the employer has disabled its hosted page (Cursor
+        // on Ashby); no schema means the posting is gone.
+        const filled = execution.results.filter((row) => row.status === 'filled').length
+        const pageText = filled === 0 ? await page.locator('body').innerText({ timeout: 5_000 }).catch(() => '') : ''
+        if (filled === 0 && PAGE_GONE.test(pageText)) {
+          const hostedDisabled = Boolean(prepared.schema) && !prepared.schema?.closed
+          await transition({ attemptId: attempt.id, userId, state: 'blocked', reason: hostedDisabled ? 'no_form' : 'posting_closed' })
+          await finishAttempt(context, {
+            outcome: hostedDisabled ? 'needs_review' : 'closed',
+            failureClass: hostedDisabled ? 'unsupported' : 'posting_closed',
+            error: hostedDisabled ? 'The employer has turned off its hosted application page; apply on their own careers site.' : 'Not submitted: posting_closed',
+            evidenceStoragePath: await persistEvidence(userId, attempt.id, page),
+            schemaSource,
+          })
+          return
+        }
         await recordPlanQuestions({ userId, applicationId: application.id, attemptId: attempt.id, host: new URL(formUrl).hostname, fields: execution.schema.fields, answers: execution.plan.answers }).catch(() => 0)
         const failureClass = classifyBlockers(execution)
         await transition({ attemptId: attempt.id, userId, state: 'blocked', reason: execution.unresolved[0]?.why ?? 'needs_input', detail: { blockers: execution.blockers.slice(0, 20) } })

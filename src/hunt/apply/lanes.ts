@@ -18,7 +18,8 @@ import { logger } from '../../lib/logger.js'
 let connection: Redis | undefined
 function redis(): Redis {
   if (!hasRedis || !env.REDIS_URL) throw new Error('REDIS_URL is required for application lanes.')
-  connection ??= new Redis(env.REDIS_URL, { maxRetriesPerRequest: 3, enableOfflineQueue: false })
+  // The offline queue must stay on: the first lease is requested before the socket is ready.
+  connection ??= new Redis(env.REDIS_URL, { maxRetriesPerRequest: 3 })
   return connection
 }
 
