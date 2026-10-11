@@ -15,7 +15,8 @@ set_key() {
 
 set_key APPLY_DRIVER planned
 set_key APPLY_ANON_BROWSER ephemeral
-set_key EPHEMERAL_BROWSER_HEADLESS true
+# Windowed Chrome on the runner's private Xvfb display; headless draws CAPTCHAs.
+set_key EPHEMERAL_BROWSER_HEADLESS false
 set_key APPLY_PLAN_PROVIDER anthropic
 set_key APPLY_PLAN_MODEL claude-opus-5-5
 set_key APPLY_PLAN_EFFORT medium

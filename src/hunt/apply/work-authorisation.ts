@@ -14,7 +14,8 @@ export interface AuthorisationContext {
 
 /** Countries named in question text, mapped to the codes the job data uses. */
 const COUNTRY_ALIASES: Array<[RegExp, string]> = [
-  [/\b(?:united\s+states(?:\s+of\s+america)?|u\.?s\.?a\.?|u\.?s\.?)\b/i, 'US'],
+  // Abbreviations are case-sensitive: lowercase "us" is a pronoun ("tell us about…").
+  [/\b[Uu]nited\s+[Ss]tates(?:\s+of\s+[Aa]merica)?\b|\bUSA\b|\bU\.S\.(?:A\.)?|\bUS\b/, 'US'],
   [/\b(?:united\s+kingdom|u\.?k\.?|great\s+britain|england)\b/i, 'GB'],
   [/\bindia\b/i, 'IN'],
   [/\bcanada\b/i, 'CA'],
@@ -28,6 +29,25 @@ const COUNTRY_ALIASES: Array<[RegExp, string]> = [
   [/\bswitzerland\b/i, 'CH'],
   [/\bjapan\b/i, 'JP'],
   [/\bnew\s+zealand\b/i, 'NZ'],
+  [/\bpoland\b/i, 'PL'], [/\bspain\b/i, 'ES'], [/\bportugal\b/i, 'PT'], [/\bitaly\b/i, 'IT'],
+  [/\bsweden\b/i, 'SE'], [/\bdenmark\b/i, 'DK'], [/\bnorway\b/i, 'NO'], [/\bfinland\b/i, 'FI'],
+  [/\bbelgium\b/i, 'BE'], [/\baustria\b/i, 'AT'], [/\b(?:czech\s+republic|czechia)\b/i, 'CZ'], [/\bromania\b/i, 'RO'],
+  [/\bestonia\b/i, 'EE'], [/\blithuania\b/i, 'LT'], [/\blatvia\b/i, 'LV'], [/\bgreece\b/i, 'GR'], [/\bhungary\b/i, 'HU'],
+  [/\bluxembourg\b/i, 'LU'], [/\bukraine\b/i, 'UA'], [/\bturkey|t[uü]rkiye\b/i, 'TR'], [/\bisrael\b/i, 'IL'],
+  [/\bbrazil\b/i, 'BR'], [/\bmexico\b/i, 'MX'], [/\bargentina\b/i, 'AR'], [/\bcolombia\b/i, 'CO'], [/\bchile\b/i, 'CL'],
+  [/\bphilippines\b/i, 'PH'], [/\bindonesia\b/i, 'ID'], [/\bmalaysia\b/i, 'MY'], [/\bvietnam\b/i, 'VN'], [/\bthailand\b/i, 'TH'],
+  [/\b(?:south\s+korea|korea)\b/i, 'KR'], [/\bhong\s+kong\b/i, 'HK'], [/\btaiwan\b/i, 'TW'], [/\bchina\b/i, 'CN'],
+  [/\bsaudi\s+arabia|\bksa\b/i, 'SA'], [/\bqatar\b/i, 'QA'], [/\begypt\b/i, 'EG'], [/\bsouth\s+africa\b/i, 'ZA'],
+  [/\bnigeria\b/i, 'NG'], [/\bkenya\b/i, 'KE'], [/\bpakistan\b/i, 'PK'], [/\bbangladesh\b/i, 'BD'], [/\bsri\s+lanka\b/i, 'LK'],
+  // Places that imply a country: tech-hub cities, US states, Canadian provinces.
+  [/\b(?:london|manchester|edinburgh|cambridge,\s*uk)\b/i, 'GB'], [/\b(?:berlin|munich|m[uü]nchen|hamburg|frankfurt|cologne)\b/i, 'DE'],
+  [/\bparis\b/i, 'FR'], [/\bamsterdam|rotterdam\b/i, 'NL'], [/\bdublin\b/i, 'IE'], [/\b(?:warsaw|krak[oó]w|wroc[lł]aw)\b/i, 'PL'],
+  [/\b(?:madrid|barcelona)\b/i, 'ES'], [/\blisbon\b/i, 'PT'], [/\bstockholm\b/i, 'SE'], [/\b(?:zurich|z[uü]rich|geneva)\b/i, 'CH'],
+  [/\b(?:sydney|melbourne)\b/i, 'AU'], [/\btel\s+aviv\b/i, 'IL'], [/\b(?:dubai|abu\s+dhabi)\b/i, 'AE'], [/\btokyo\b/i, 'JP'],
+  [/\b(?:bengaluru|bangalore|mumbai|delhi|new\s+delhi|gurgaon|gurugram|noida|hyderabad|chennai|pune|kolkata|ahmedabad)\b/i, 'IN'],
+  [/\b(?:california|new\s+york|washington|texas|massachusetts|illinois|colorado|georgia|florida|oregon|virginia|north\s+carolina|pennsylvania|new\s+jersey|arizona|utah|michigan|minnesota|ohio|tennessee|maryland|wisconsin|missouri|indiana|connecticut|nevada|san\s+francisco|bay\s+area|seattle|nyc|boston|austin|chicago|los\s+angeles|mountain\s+view|palo\s+alto|menlo\s+park|sunnyvale|san\s+jose|denver|atlanta)\b/i, 'US'],
+  [/,\s*(?:AL|AK|AZ|AR|CA|CO|CT|FL|GA|HI|ID|IL|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC)\b/, 'US'],
+  [/\b(?:ontario|british\s+columbia|quebec|alberta|toronto|vancouver|montreal)\b/i, 'CA'],
 ]
 
 export function countryNamedIn(text: string): string | null {

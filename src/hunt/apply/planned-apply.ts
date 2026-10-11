@@ -298,6 +298,11 @@ export async function applyPlannedCandidate(userId: string, candidateId: string,
         await finishAttempt(context, { outcome: 'unknown', failureClass: 'uncertain_submit', submitOutcome: 'uncertain', error: `Submit was clicked but not confirmed (${outcome.reason ?? 'no signal'}). Waiting for the confirmation email; do not resubmit.`, submittedFields: execution.fields, evidenceStoragePath: evidence, answerPlan: storablePlan(execution.plan), schemaSource })
         return
       }
+      if (outcome.outcome === 'captcha_required') {
+        await transition({ persistStatus: false, attemptId: attempt.id, userId, state: 'blocked', reason: 'captcha' })
+        await finishAttempt(context, { outcome: 'needs_review', failureClass: 'unsupported', submitOutcome: 'captcha_required', error: 'The form was complete, but the employer showed a CAPTCHA instead of accepting it. Nothing was sent; finish it yourself or retry later.', submittedFields: execution.fields, evidenceStoragePath: evidence, answerPlan: storablePlan(execution.plan), schemaSource })
+        return
+      }
       const verification = outcome.outcome === 'verification_required'
       const failureClass: FailureClass = verification ? 'unsupported' : outcome.heldBack === 'posting_closed' ? 'posting_closed' : outcome.heldBack === 'no_form' || outcome.heldBack === 'no_submit_control' ? 'unsupported' : 'automation'
       await transition({ persistStatus: false, attemptId: attempt.id, userId, state: 'blocked', reason: verification ? 'verification_code' : outcome.heldBack === 'posting_closed' ? 'posting_closed' : 'field_rejected', detail: { errors: outcome.errors ?? [] } })

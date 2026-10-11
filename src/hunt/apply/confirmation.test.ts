@@ -48,6 +48,9 @@ describe('submit outcome classification', () => {
     const after = form({ text: "We couldn't submit your application. Your application submission was flagged as possible spam." })
     assert.equal(classifySubmitOutcome({ before: form(), after, network: [post(200)], ats: 'ashby' }).outcome, 'provider_blocked')
   })
+  it('a CAPTCHA challenge instead of a submission is captcha_required, not a validation error', () => {
+    assert.equal(classifySubmitOutcome({ before: form(), after: form({ captchaChallenge: true }), network: [], ats: 'ashby' }).outcome, 'captcha_required')
+  })
   it('pending writes leave the outcome uncertain', () => {
     assert.equal(classifySubmitOutcome({ before: form(), after: form(), network: [post(0)], ats: 'greenhouse' }).outcome, 'uncertain')
   })

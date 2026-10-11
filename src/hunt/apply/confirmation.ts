@@ -24,6 +24,8 @@ export type SubmitOutcome =
   | 'verification_required'
   /** The provider refused it (spam flag). */
   | 'provider_blocked'
+  /** A CAPTCHA challenge appeared instead of a submission: nothing was sent. */
+  | 'captcha_required'
   /** Something was sent and the result is not observable. Never retry blindly. */
   | 'uncertain'
 
@@ -35,6 +37,8 @@ export interface PageState {
   invalidCount: number
   errorTexts: string[]
   codeInputs: number
+  /** A visible interactive CAPTCHA challenge (reCAPTCHA image grid, hCaptcha, Turnstile). */
+  captchaChallenge?: boolean
 }
 
 export interface NetworkEvent {
@@ -131,6 +135,9 @@ export function classifySubmitOutcome(evidence: ClickEvidence): { outcome: Submi
   if (urlChanged && confirmationUrl(after.url, ats)) return { outcome: 'confirmed', reason: `confirmation URL ${new URL(after.url).pathname}` }
 
   const textConfirm = CONFIRMATION_TEXT.test(fresh)
+  if (after.captchaChallenge && !textConfirm && !urlChanged) {
+    return { outcome: 'captcha_required', reason: 'a CAPTCHA challenge appeared instead of a submission' }
+  }
   const formGone = !after.formPresent || !after.submitVisible
   const mutations = network.filter((event) => event.sameSite && event.method !== 'GET')
   const accepted = mutations.some((event) => event.applicationLike && event.status >= 200 && event.status < 300)
@@ -191,6 +198,21 @@ export async function capturePageState(page: Page, submitSelector: string): Prom
     const invalidCount = Array.from(document.querySelectorAll('[aria-invalid="true"]')).filter((node) => shown.has(node) || node instanceof HTMLInputElement).length
     const codeInputs = Array.from(document.querySelectorAll('input[maxlength="1"], input[autocomplete="one-time-code"], input[aria-label*="security code" i], input[name*="security_code" i]'))
       .filter((node) => shown.has(node)).length
+    // An interactive challenge frame that is actually on screen. The invisible
+    // reCAPTCHA badge and a hidden challenge frame do not count.
+    let captchaChallenge = false
+    for (const frame of Array.from(document.querySelectorAll('iframe'))) {
+      const src = frame.getAttribute('src') || ''
+      if (!/recaptcha\/(?:api2|enterprise)\/bframe|hcaptcha\.com\/.*(?:challenge|hcaptcha\.html#frame=challenge)|challenges\.cloudflare\.com/.test(src)) continue
+      const rect = frame.getBoundingClientRect()
+      if (rect.width < 100 || rect.height < 100) continue
+      let hidden = false
+      for (let node: Element | null = frame; node; node = node.parentElement) {
+        const style = getComputedStyle(node)
+        if (style.visibility === 'hidden' || style.display === 'none' || Number(style.opacity) === 0) { hidden = true; break }
+      }
+      if (!hidden) { captchaChallenge = true; break }
+    }
     return {
       url: location.href,
       text: (document.body?.innerText || '').slice(0, 30_000),
@@ -198,8 +220,9 @@ export async function capturePageState(page: Page, submitSelector: string): Prom
       invalidCount,
       errorTexts,
       codeInputs,
+      captchaChallenge,
     }
-  }).catch(() => ({ url: page.url(), text: '', formPresent: false, invalidCount: 0, errorTexts: [] as string[], codeInputs: 0 }))
+  }).catch(() => ({ url: page.url(), text: '', formPresent: false, invalidCount: 0, errorTexts: [] as string[], codeInputs: 0, captchaChallenge: false }))
   return { ...state, submitVisible }
 }
 
@@ -259,6 +282,7 @@ export async function settleAfterSubmit(page: Page, submitSelector: string, befo
     || state.invalidCount > before.invalidCount
     || state.errorTexts.length > before.errorTexts.length
     || providerSubmissionBlocked(state.text)
+    || Boolean(state.captchaChallenge)
   let state = before
   const visibleDeadline = Date.now() + t.visibleMs
   while (Date.now() < visibleDeadline) {

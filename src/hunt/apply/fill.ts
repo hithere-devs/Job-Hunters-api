@@ -778,7 +778,7 @@ export interface SubmitResult {
   /** Distinguishes a click whose server-side result could not be observed. */
   result?: 'submitted' | 'submitted_unconfirmed' | 'not_submitted' | 'provider_blocked' | 'verification_required'
   /** Set when we deliberately did not submit, or the provider provably refused the click. */
-  heldBack?: 'dry_run' | 'kill_switch' | 'no_submit_control' | 'posting_closed' | 'invalid_fields' | 'no_form' | 'verification'
+  heldBack?: 'dry_run' | 'kill_switch' | 'no_submit_control' | 'posting_closed' | 'invalid_fields' | 'no_form' | 'verification' | 'captcha'
   /** What the click produced, when a click happened. */
   outcome?: SubmitOutcome
   reason?: string
@@ -878,6 +878,9 @@ export async function submitForm(params: {
     case 'verification_required':
       releaseSubmissionAfterRejection()
       return { submitted: false, result: 'verification_required', heldBack: 'verification', outcome, reason }
+    case 'captcha_required':
+      releaseSubmissionAfterRejection()
+      return { submitted: false, result: 'not_submitted', heldBack: 'captcha', outcome, reason }
     case 'rejected_validation':
       releaseSubmissionAfterRejection()
       return { submitted: false, result: 'not_submitted', heldBack: 'invalid_fields', outcome, reason, errors: after.errorTexts.slice(0, 10) }

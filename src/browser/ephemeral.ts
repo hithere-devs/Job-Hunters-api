@@ -1,4 +1,6 @@
 import crypto from 'node:crypto'
+import { spawn, type ChildProcess } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { chromium, type Browser } from 'playwright-core'
 import { env } from '../config/env.js'
 import { logger } from '../lib/logger.js'
@@ -20,6 +22,28 @@ import type { AgentSession } from './session.js'
  */
 
 let shared: Promise<Browser> | null = null
+let xvfb: ChildProcess | null = null
+let display: string | null = null
+
+/**
+ * A private X display for a windowed Chrome on a server. Headless Chrome
+ * announces itself and draws CAPTCHA challenges that a normal window does not;
+ * the tenant browsers have always run windowed on Xvfb. The display lives and
+ * dies with this process (the runner's PrivateTmp keeps its socket private).
+ */
+async function virtualDisplay(): Promise<string | undefined> {
+  if (env.EPHEMERAL_BROWSER_HEADLESS) return undefined
+  if (process.env.DISPLAY) return process.env.DISPLAY
+  if (process.platform === 'darwin') return undefined
+  if (display && xvfb && xvfb.exitCode === null) return display
+  const number = 90 + (process.pid % 9)
+  xvfb = spawn('Xvfb', [`:${number}`, '-screen', '0', '1440x900x24', '-nolisten', 'tcp'], { stdio: 'ignore' })
+  xvfb.once('exit', (code) => { logger.warn({ code }, 'virtual display exited'); display = null })
+  const deadline = Date.now() + 5_000
+  while (!existsSync(`/tmp/.X11-unix/X${number}`) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 100))
+  display = `:${number}`
+  return display
+}
 
 const ARGS = [
   '--disable-dev-shm-usage',
@@ -36,7 +60,13 @@ async function sharedBrowser(): Promise<Browser> {
     shared = null
   }
   const executablePath = automationExecutablePath()
-  shared = chromium.launch({ ...(executablePath ? { executablePath } : {}), headless: env.EPHEMERAL_BROWSER_HEADLESS, args: ARGS })
+  const screen = await virtualDisplay()
+  shared = chromium.launch({
+    ...(executablePath ? { executablePath } : {}),
+    headless: env.EPHEMERAL_BROWSER_HEADLESS,
+    args: [...ARGS, ...(env.EPHEMERAL_BROWSER_HEADLESS ? [] : ['--window-size=1440,900', '--window-position=0,0'])],
+    ...(screen ? { env: { ...process.env, DISPLAY: screen } } : {}),
+  })
   const browser = await shared.catch((error: unknown) => {
     shared = null
     throw error
@@ -84,4 +114,6 @@ export async function closeEphemeralBrowser(): Promise<void> {
   if (!current) return
   const browser = await current.catch(() => null)
   await browser?.close().catch(() => undefined)
+  xvfb?.kill('SIGTERM')
+  xvfb = null
 }

@@ -125,7 +125,7 @@ export type Semantic =
   | 'eeo_gender' | 'eeo_orientation' | 'eeo_race' | 'eeo_hispanic' | 'eeo_veteran' | 'eeo_disability' | 'eeo_transgender'
   | 'consent_ack' | 'marketing_consent'
   | 'work_auth' | 'sponsorship' | 'noncompete'
-  | 'referral_source' | 'previous_employee'
+  | 'referral_source' | 'previous_employee' | 'work_auth_countries'
 
 const BY_ATS_NAME: Record<string, Semantic> = {
   first_name: 'first_name', last_name: 'last_name', preferred_name: 'preferred_name', email: 'email', phone: 'phone',
@@ -153,6 +153,7 @@ export function semanticOf(field: SchemaField): Semantic | null {
   if (field.section === 'consent' || /^(?:by (?:checking|selecting|clicking|submitting)|i (?:agree|acknowledge|confirm|certify|consent|have read|understand))|arbitration|privacy (?:policy|notice)|ai policy|applicant (?:privacy|data)|terms (?:and|&) conditions|certify that|please (?:double-?)?check (?:all )?(?:the )?information|information (?:provided|i have provided) (?:is|above is) (?:true|accurate|complete)/.test(label)) return 'consent_ack'
   if (/\b(?:how|where) did you (?:first )?(?:hear|learn|find out) about|how did you (?:first )?(?:come across|find) (?:this|us|the)|referral source|source of (?:application|referral)/.test(label)) return 'referral_source'
   if (/\b(?:have you|did you) (?:ever |previously )?(?:been )?(?:employed|worked|interned|contracted|interviewed)\b.{0,40}\b(?:at|for|with|before)\b|\bpreviously (?:been )?(?:employed|worked) (?:at|for|by)\b|\b(?:are you a |a )?(?:former|current|previous) (?:employee|intern|contractor)\b/.test(label)) return 'previous_employee'
+  if (/\b(?:in )?(?:what|which) countr(?:y|ies)\b.{0,60}\b(?:right to work|authori[sz]ed to work|work authori[sz]ation|permitted to work|legally (?:work|able))/.test(label)) return 'work_auth_countries'
   const auth = classifyAuthorisationQuestion(field.label)
   if (auth === 'sponsorship') return 'sponsorship'
   if (auth === 'authorised') return 'work_auth'
@@ -277,12 +278,19 @@ export function deriveWorkRights(field: SchemaField, dossier: CandidateDossier, 
         : null)
   if (!jurisdiction) return null
   const sponsorshipText = dossier.visaSponsorship.trim()
+  const authorised = authorisedCountries(dossier.workAuthorization, home)
   const authorisedAtHome = !/^\s*(?:no|false|not authori[sz]ed)\b/i.test(dossier.workAuthorization)
   if (jurisdiction === home) {
     if (!authorisedAtHome) return null
     return kind === 'sponsorship'
       ? { kind, yes: false, reason: `The role is in your country (${home}); no sponsorship needed.` }
       : { kind, yes: true, reason: `The role is in your country (${home}).` }
+  }
+  // My Kit names the countries where the user may work now ("India, USA").
+  // Authorisation follows from that list; sponsorship still follows from the
+  // stated sponsorship need ("now or in the future").
+  if (kind === 'work_auth' && authorised.includes(jurisdiction)) {
+    return { kind, yes: true, reason: `My Kit lists ${jurisdiction} among the countries you are authorised to work in.` }
   }
   if (!sponsorshipText) return null
   if (NOT_REQUIRED.test(sponsorshipText)) {
@@ -297,6 +305,15 @@ export function deriveWorkRights(field: SchemaField, dossier: CandidateDossier, 
       : { kind, yes: false, reason: `My Kit: "${sponsorshipText}"; the role is in ${jurisdiction}.` }
   }
   return null
+}
+
+/** Countries named in My Kit's work-authorisation field; a bare yes means home. */
+export function authorisedCountries(text: string, home: string | null): string[] {
+  const value = text.trim()
+  if (!value) return []
+  if (/^\s*(?:yes|true|authori[sz]ed)\s*$/i.test(value)) return home ? [home] : []
+  const codes = value.split(/[,;/&]|\band\b/i).map((part) => countryCodeFor(part.trim())).filter((code): code is string => Boolean(code))
+  return [...new Set(codes)]
 }
 
 export function deterministicAnswer(field: SchemaField, dossier: CandidateDossier, job: JobContext): PlannedAnswer | null {
@@ -376,6 +393,17 @@ export function deterministicAnswer(field: SchemaField, dossier: CandidateDossie
       if (!stated) return null
       const yes = /^\s*(?:yes|true)\b/i.test(stated)
       return chooseYesNo(field, yes, 'kit', `My Kit: bound by agreements = "${stated}".`) ?? fillWith(field, stated, 'kit', 'From My Kit.')
+    }
+    case 'work_auth_countries': {
+      const codes = authorisedCountries(dossier.workAuthorization, dossier.location.countryCode)
+      if (!codes.length) return null
+      if (field.kind === 'text' || field.kind === 'textarea') return answer(field, 'fill', [dossier.workAuthorization.trim()], 'kit', 'The countries My Kit lists for your work authorisation.')
+      if (field.kind === 'multiselect' || field.kind === 'select') {
+        const picked = codes.map((code) => matchOption(field.options, [code, code === 'US' ? 'United States' : code === 'IN' ? 'India' : code === 'GB' ? 'United Kingdom' : code])).filter((option): option is FieldOption => option !== null)
+        if (!picked.length) return null
+        return answer(field, 'fill', field.kind === 'select' ? [picked[0]!.label] : [...new Set(picked.map((option) => option.label))], 'kit', 'The countries My Kit lists for your work authorisation.')
+      }
+      return null
     }
     case 'referral_source': {
       if (field.kind === 'text' || field.kind === 'textarea') return answer(field, 'fill', ['LinkedIn'], 'policy', 'Found through a job search.')

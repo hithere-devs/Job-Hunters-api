@@ -101,6 +101,32 @@ describe('common screening questions without a model', () => {
   })
 })
 
+describe('work rights from the Kit lists', () => {
+  const kit = dossier({ visaSponsorship: 'Required outside India', workAuthorization: 'India, USA' })
+  const yesNo = [{ label: 'Yes' }, { label: 'No' }]
+  it('is authorised where My Kit lists the country, and still needs future sponsorship there', () => {
+    const job = { ...usJob, countries: [] as string[], location: 'Mountain View, CA' }
+    assert.deepEqual(deterministicAnswer(field({ label: 'Are you authorized to work in the country in which you are applying?', kind: 'select', options: yesNo }), kit, job)!.values, ['Yes'])
+    assert.deepEqual(deterministicAnswer(field({ label: 'Do you now, or will you in the future, require sponsorship for employment in the country which you are applying?', kind: 'select', options: yesNo }), kit, job)!.values, ['Yes'])
+  })
+  it('is not authorised in a country the Kit does not list', () => {
+    const job = { ...usJob, countries: [] as string[], location: 'Poland' }
+    assert.deepEqual(deterministicAnswer(field({ label: 'Are you legally authorized to work in the country where this role is located?', kind: 'select', options: yesNo }), kit, job)!.values, ['No'])
+    assert.deepEqual(deterministicAnswer(field({ label: "Will you require Elastic's sponsorship to continue or extend your work authorization status?", kind: 'select', options: yesNo }), kit, job)!.values, ['Yes'])
+  })
+  it('does not read the pronoun "us" or Indian and German codes as the United States', async () => {
+    const { countryNamedIn } = await import('../work-authorisation.js')
+    assert.equal(countryNamedIn('Tell us about a time you required sponsorship'), null)
+    assert.equal(countryNamedIn('Bangalore, IN'), 'IN')
+    assert.equal(countryNamedIn('Berlin, DE'), 'DE')
+    assert.equal(countryNamedIn('Mountain View, CA'), 'US')
+    assert.equal(countryNamedIn('Are you authorized to work in the US?'), 'US')
+  })
+  it('answers which-countries questions from the Kit', () => {
+    assert.deepEqual(deterministicAnswer(field({ label: 'In what countries do you have the unrestricted right to work?', kind: 'text' }), kit, usJob)!.values, ['India, USA'])
+  })
+})
+
 describe('sponsorship with several yes options', () => {
   it('chooses the generic yes when the Kit says sponsorship is needed', () => {
     const sponsor = field({ label: 'Will you now or in the future require sponsorship for a visa?', kind: 'select', options: [{ label: 'No' }, { label: 'Yes, EU Blue Card' }, { label: 'Yes, but not one of the visas listed here' }] })

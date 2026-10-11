@@ -48,7 +48,7 @@ export function safeRetryReason(
   }
   const liveSubmitEvent = events.some((event) => event.state === 'submitting' && (event.detail as {dryRun?: boolean} | null)?.dryRun !== true)
   const fenced = Boolean(latest.submitStartedAt) || liveSubmitEvent
-  const provablyRejected = ['rejected_validation', 'verification_required'].includes(latest.submitOutcome ?? '')
+  const provablyRejected = ['rejected_validation', 'verification_required', 'captcha_required'].includes(latest.submitOutcome ?? '')
   if (fenced && !provablyRejected) return options?.providerChecked ? null : FENCED_RETRY
   if (latest.status === 'unknown' && !latest.failureClass) {
     // Rows written before the fence moved ahead of the click: an `unknown`

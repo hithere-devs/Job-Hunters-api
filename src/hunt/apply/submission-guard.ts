@@ -46,7 +46,7 @@ export async function recordSubmissionOutcome(outcome: SubmitOutcome, reason: st
 export function releaseSubmissionAfterRejection() {
   const scope = submissionScope.getStore()
   if (!scope) return
-  if (scope.lastOutcome !== 'rejected_validation' && scope.lastOutcome !== 'verification_required') {
+  if (scope.lastOutcome !== 'rejected_validation' && scope.lastOutcome !== 'verification_required' && scope.lastOutcome !== 'captcha_required') {
     throw new Error('Only a provably rejected click may be retried.')
   }
   scope.attempted = false
@@ -59,7 +59,7 @@ export function lastSubmissionOutcome() { return submissionScope.getStore()?.las
 export function submissionMayHaveReachedProvider() {
   const scope = submissionScope.getStore()
   if (!scope) return false
-  return scope.attempted || (scope.lastOutcome !== null && scope.lastOutcome !== 'rejected_validation')
+  return scope.attempted || (scope.lastOutcome !== null && scope.lastOutcome !== 'rejected_validation' && scope.lastOutcome !== 'captcha_required')
 }
 
 /** Unexpected provider confirmation after a step/choice is irreversible evidence too. */
