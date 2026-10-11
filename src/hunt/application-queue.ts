@@ -402,7 +402,10 @@ export async function reconcileInterruptedApplications(): Promise<number> {
 
     // Interrupted before any submit click (runner killed, VM restarted): requeue
     // with backoff instead of parking it for a human, within the retry budget.
-    if (env.APPLY_AUTO_RETRY && !row.submitStartedAt && await previousTransientRetries(row.candidateId) < MAX_TRANSIENT_RETRIES) {
+    // Only an attempt that was still pending when its worker vanished. A
+    // candidate whose attempt finished is never requeued from here: that
+    // turned a missed final write into a replanning loop.
+    if (env.APPLY_AUTO_RETRY && row.attemptId && !row.submitStartedAt && await previousTransientRetries(row.candidateId) < MAX_TRANSIENT_RETRIES) {
       const retries = await previousTransientRetries(row.candidateId)
       const requeued = await db.transaction(async (tx) => {
         const [candidate] = await tx.update(huntCandidates).set({ status: 'queued', updatedAt: new Date() })

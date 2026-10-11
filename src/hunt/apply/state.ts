@@ -55,6 +55,12 @@ export interface TransitionInput {
   state: AttemptState
   reason?: BlockedReason
   detail?: Record<string, unknown>
+  /**
+   * Default true: terminal states also write the attempt's status and
+   * completion (the legacy drivers rely on it). The planned driver passes false
+   * and finalises through attempt-store's single transaction instead.
+   */
+  persistStatus?: boolean
 }
 
 /** Which `apply_attempts.status` each state corresponds to. */
@@ -100,7 +106,7 @@ export async function transition(input: TransitionInput): Promise<void> {
     })
   } catch (error) { logger.warn({err:error,attemptId}, 'could not record application phase') }
 
-  const status = STATUS_FOR[state]
+  const status = input.persistStatus === false ? undefined : STATUS_FOR[state]
   if (status) {
     await db
       .update(applyAttempts)

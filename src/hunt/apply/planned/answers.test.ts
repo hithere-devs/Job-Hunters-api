@@ -97,6 +97,21 @@ describe('common screening questions without a model', () => {
   })
 })
 
+describe('sponsorship with several yes options', () => {
+  it('chooses the generic yes when the Kit says sponsorship is needed', () => {
+    const sponsor = field({ label: 'Will you now or in the future require sponsorship for a visa?', kind: 'select', options: [{ label: 'No' }, { label: 'Yes, EU Blue Card' }, { label: 'Yes, but not one of the visas listed here' }] })
+    assert.deepEqual(deterministicAnswer(sponsor, dossier(), usJob)!.values, ['Yes, but not one of the visas listed here'])
+  })
+})
+
+describe('dropdowns whose options load on open', () => {
+  it('types the value for a no-option select and lets the executor verify it', () => {
+    const country = field({ label: 'Country', kind: 'select', options: [] })
+    assert.deepEqual(deterministicAnswer(country, dossier(), usJob)!.values, ['India'])
+    assert.deepEqual(validateModelAnswer(field({ label: 'Pick a city', kind: 'select', options: [] }), { action: 'fill', values: ['Bengaluru'], basis: 'model', confidence: 0.9 }).values, ['Bengaluru'])
+  })
+})
+
 describe('model answer validation', () => {
   it('rejects a choice that is not an option', () => {
     const select = field({ kind: 'select', options: [{ label: 'Yes' }, { label: 'No' }] })
@@ -106,7 +121,10 @@ describe('model answer validation', () => {
   it('refuses sensitive model guesses and turns a required skip into a question', () => {
     const criminal = field({ label: 'Have you ever been convicted of a felony?', kind: 'boolean', options: [{ label: 'Yes' }, { label: 'No' }] })
     assert.equal(validateModelAnswer(criminal, { action: 'fill', values: ['No'], basis: 'model', confidence: 0.95 }).action, 'ask')
-    assert.equal(validateModelAnswer(criminal, { action: 'fill', values: ['No'], basis: 'saved_answer', confidence: 0.95 }).action, 'fill')
+    // Claiming a saved answer is not enough; one must exist and agree.
+    assert.equal(validateModelAnswer(criminal, { action: 'fill', values: ['No'], basis: 'saved_answer', confidence: 0.95 }).action, 'ask')
+    assert.equal(validateModelAnswer(criminal, { action: 'fill', values: ['No'], basis: 'saved_answer', confidence: 0.95 }, [{ question: 'Have you ever been convicted of a felony or crime?', answer: 'No', options: ['Yes', 'No'] }]).action, 'fill')
+    assert.equal(validateModelAnswer(criminal, { action: 'fill', values: ['No'], basis: 'derived', confidence: 0.99 }).action, 'ask')
     assert.equal(validateModelAnswer(field({}), { action: 'skip', values: [], basis: 'model', confidence: 1 }).action, 'ask')
   })
   it('keeps low-confidence facts away from the form', () => {

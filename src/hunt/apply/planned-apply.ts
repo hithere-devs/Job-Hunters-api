@@ -153,20 +153,20 @@ export async function applyPlannedCandidate(userId: string, candidateId: string,
         if (named) job.countries.push(named)
       }
 
-      await transition({ attemptId: attempt.id, userId, state: 'resolving_answers', detail: { applyUrl: target.applyUrl, dryRun, driver: 'planned' } })
+      await transition({ persistStatus: false, attemptId: attempt.id, userId, state: 'resolving_answers', detail: { applyUrl: target.applyUrl, dryRun, driver: 'planned' } })
       const prepared = await preparePlannedApplication({ userId, applicationId: application.id, urls: target.urls, profile, job, reuse: await earlierPlan(candidateId), signal })
       plan = prepared.plan
       schemaSource = prepared.schema?.source ?? null
       if (plan) planCache.set(candidateId, { plan, at: Date.now() })
       if (prepared.closed) {
-        await transition({ attemptId: attempt.id, userId, state: 'blocked', reason: 'posting_closed' })
+        await transition({ persistStatus: false, attemptId: attempt.id, userId, state: 'blocked', reason: 'posting_closed' })
         await finishAttempt(context, { outcome: 'closed', failureClass: 'posting_closed', error: 'Not submitted: posting_closed', schemaSource })
         return
       }
       if (prepared.missing.length && prepared.schema && prepared.plan) {
         // Ask before opening a browser: a form we cannot complete is not started.
         const recorded = await recordPlanQuestions({ userId, applicationId: application.id, attemptId: attempt.id, host: target.host, fields: prepared.schema.fields, answers: prepared.plan.answers })
-        await transition({ attemptId: attempt.id, userId, state: 'blocked', reason: 'needs_input', detail: { questions: recorded, fields: prepared.missing.map((row) => row.label).slice(0, 20) } })
+        await transition({ persistStatus: false, attemptId: attempt.id, userId, state: 'blocked', reason: 'needs_input', detail: { questions: recorded, fields: prepared.missing.map((row) => row.label).slice(0, 20) } })
         await finishAttempt(context, {
           outcome: 'needs_review', failureClass: 'needs_answer',
           unresolvedFields: prepared.missing.map((row) => ({ label: row.label, type: row.kind, why: 'needs_input', reason: row.reason })),
@@ -208,7 +208,7 @@ export async function applyPlannedCandidate(userId: string, candidateId: string,
       signal.throwIfAborted()
       const browserSession = session
       await db.update(applyAttempts).set({ browserSessionId: browserSession.sessionId, liveUrl: browserSession.liveUrl, updatedAt: new Date() }).where(eq(applyAttempts.id, attempt.id))
-      await transition({ attemptId: attempt.id, userId, state: 'opening', detail: { applyUrl: target.applyUrl, browser: browserSession.provider } })
+      await transition({ persistStatus: false, attemptId: attempt.id, userId, state: 'opening', detail: { applyUrl: target.applyUrl, browser: browserSession.provider } })
 
       const resumePath = path.join(scratch, path.basename(row.variant.fileName))
       await writeFile(resumePath, await downloadObject(row.variant.storagePath))
@@ -217,12 +217,12 @@ export async function applyPlannedCandidate(userId: string, candidateId: string,
       screencast = await startScreencast({ page, userId, attemptId: attempt.id }).catch(() => null)
 
       if (await page.locator('input[type="password"]:visible, input[autocomplete="one-time-code"]:visible').count().catch(() => 0) > 0) {
-        await transition({ attemptId: attempt.id, userId, state: 'blocked', reason: 'login_required' })
+        await transition({ persistStatus: false, attemptId: attempt.id, userId, state: 'blocked', reason: 'login_required' })
         await finishAttempt(context, { outcome: 'needs_review', failureClass: 'unsupported', error: 'This employer requires signing in to apply.', evidenceStoragePath: await persistEvidence(userId, attempt.id, page), schemaSource })
         return
       }
 
-      await transition({ attemptId: attempt.id, userId, state: 'filling', detail: { driver: 'planned', schema: schemaSource ?? 'dom' } })
+      await transition({ persistStatus: false, attemptId: attempt.id, userId, state: 'filling', detail: { driver: 'planned', schema: schemaSource ?? 'dom' } })
       let execution = await executePlannedApplication({ page, prepared, userId, applicationId: application.id, attemptId: attempt.id, resumePath, signal })
       plan = execution.plan
       schemaSource = execution.schema.source
@@ -235,7 +235,7 @@ export async function applyPlannedCandidate(userId: string, candidateId: string,
         const pageText = filled === 0 ? await page.locator('body').innerText({ timeout: 5_000 }).catch(() => '') : ''
         if (filled === 0 && PAGE_GONE.test(pageText)) {
           const hostedDisabled = Boolean(prepared.schema) && !prepared.schema?.closed
-          await transition({ attemptId: attempt.id, userId, state: 'blocked', reason: hostedDisabled ? 'no_form' : 'posting_closed' })
+          await transition({ persistStatus: false, attemptId: attempt.id, userId, state: 'blocked', reason: hostedDisabled ? 'no_form' : 'posting_closed' })
           await finishAttempt(context, {
             outcome: hostedDisabled ? 'needs_review' : 'closed',
             failureClass: hostedDisabled ? 'unsupported' : 'posting_closed',
@@ -247,12 +247,12 @@ export async function applyPlannedCandidate(userId: string, candidateId: string,
         }
         await recordPlanQuestions({ userId, applicationId: application.id, attemptId: attempt.id, host: new URL(formUrl).hostname, fields: execution.schema.fields, answers: execution.plan.answers }).catch(() => 0)
         const failureClass = classifyBlockers(execution)
-        await transition({ attemptId: attempt.id, userId, state: 'blocked', reason: execution.unresolved[0]?.why ?? 'needs_input', detail: { blockers: execution.blockers.slice(0, 20) } })
+        await transition({ persistStatus: false, attemptId: attempt.id, userId, state: 'blocked', reason: execution.unresolved[0]?.why ?? 'needs_input', detail: { blockers: execution.blockers.slice(0, 20) } })
         await finishAttempt(context, { outcome: 'needs_review', failureClass, submittedFields: execution.fields, unresolvedFields: execution.unresolved, evidenceStoragePath: await persistEvidence(userId, attempt.id, page), answerPlan: storablePlan(execution.plan), schemaSource })
         return
       }
 
-      await transition({ attemptId: attempt.id, userId, state: 'filling', detail: { stage: 'validating_submission', dryRun } })
+      await transition({ persistStatus: false, attemptId: attempt.id, userId, state: 'filling', detail: { stage: 'validating_submission', dryRun } })
       const clickAt = Date.now()
       let outcome: SubmitResult = await submitForm({ page, url: formUrl, dryRun, skipWidgetReady: true })
       // Provably rejected: repair what the page complains about and click again.
@@ -265,7 +265,7 @@ export async function applyPlannedCandidate(userId: string, candidateId: string,
       }
       const usedCodes = new Set<string>()
       for (let round = 0; round < 2 && outcome.outcome === 'verification_required'; round += 1) {
-        await transition({ attemptId: attempt.id, userId, state: 'filling', detail: { stage: 'verification_code' } })
+        await transition({ persistStatus: false, attemptId: attempt.id, userId, state: 'filling', detail: { stage: 'verification_code' } })
         const code = await readVerificationCode({
           userId, page, sinceMs: clickAt - 5_000, skip: usedCodes, signal,
           pageHasMailbox: browserSession.provider === 'vm',
@@ -279,28 +279,28 @@ export async function applyPlannedCandidate(userId: string, candidateId: string,
 
       const evidence = await persistEvidence(userId, attempt.id, page)
       if (outcome.submitted) {
-        await transition({ attemptId: attempt.id, userId, state: 'submitted', detail: { reason: outcome.reason } })
+        await transition({ persistStatus: false, attemptId: attempt.id, userId, state: 'submitted', detail: { reason: outcome.reason } })
         await finishAttempt(context, { outcome: 'submitted', submitOutcome: 'confirmed', submittedFields: execution.fields, unresolvedFields: [], evidenceStoragePath: evidence, answerPlan: storablePlan(execution.plan), schemaSource })
         return
       }
       if (outcome.heldBack === 'dry_run' || outcome.heldBack === 'kill_switch') {
-        await transition({ attemptId: attempt.id, userId, state: 'skipped', detail: { heldBack: outcome.heldBack } })
+        await transition({ persistStatus: false, attemptId: attempt.id, userId, state: 'skipped', detail: { heldBack: outcome.heldBack } })
         await finishAttempt(context, { outcome: 'unknown', error: `Not submitted: ${outcome.heldBack}`, note: outcome.heldBack === 'dry_run' ? 'Dry run: the form was completed and verified, then left unsubmitted.' : 'Submissions are paused by the kill switch.', submittedFields: execution.fields, unresolvedFields: [], evidenceStoragePath: evidence, answerPlan: storablePlan(execution.plan), schemaSource })
         return
       }
       if (outcome.result === 'provider_blocked') {
-        await transition({ attemptId: attempt.id, userId, state: 'blocked', reason: 'provider_blocked' })
+        await transition({ persistStatus: false, attemptId: attempt.id, userId, state: 'blocked', reason: 'provider_blocked' })
         await finishAttempt(context, { outcome: 'needs_review', failureClass: 'provider_rejected', submitOutcome: 'provider_blocked', error: PROVIDER_SPAM_MESSAGE, submittedFields: execution.fields, evidenceStoragePath: evidence, answerPlan: storablePlan(execution.plan), schemaSource })
         return
       }
       if (outcome.outcome === 'uncertain') {
-        await transition({ attemptId: attempt.id, userId, state: 'blocked', reason: 'needs_input', detail: { uncertain: outcome.reason } })
+        await transition({ persistStatus: false, attemptId: attempt.id, userId, state: 'blocked', reason: 'needs_input', detail: { uncertain: outcome.reason } })
         await finishAttempt(context, { outcome: 'unknown', failureClass: 'uncertain_submit', submitOutcome: 'uncertain', error: `Submit was clicked but not confirmed (${outcome.reason ?? 'no signal'}). Waiting for the confirmation email; do not resubmit.`, submittedFields: execution.fields, evidenceStoragePath: evidence, answerPlan: storablePlan(execution.plan), schemaSource })
         return
       }
       const verification = outcome.outcome === 'verification_required'
       const failureClass: FailureClass = verification ? 'unsupported' : outcome.heldBack === 'posting_closed' ? 'posting_closed' : outcome.heldBack === 'no_form' || outcome.heldBack === 'no_submit_control' ? 'unsupported' : 'automation'
-      await transition({ attemptId: attempt.id, userId, state: 'blocked', reason: verification ? 'verification_code' : outcome.heldBack === 'posting_closed' ? 'posting_closed' : 'field_rejected', detail: { errors: outcome.errors ?? [] } })
+      await transition({ persistStatus: false, attemptId: attempt.id, userId, state: 'blocked', reason: verification ? 'verification_code' : outcome.heldBack === 'posting_closed' ? 'posting_closed' : 'field_rejected', detail: { errors: outcome.errors ?? [] } })
       await finishAttempt(context, {
         outcome: failureClass === 'posting_closed' ? 'closed' : 'needs_review',
         failureClass,
@@ -319,7 +319,7 @@ export async function applyPlannedCandidate(userId: string, candidateId: string,
       const page = (session as AgentSession | null)?.page
       const evidence = await persistEvidence(userId, attempt.id, page)
       const message = error instanceof Error ? error.message : String(error)
-      await transition({ attemptId: attempt.id, userId, state: 'failed', detail: { message: message.slice(0, 500), failureClass } }).catch(() => undefined)
+      await transition({ persistStatus: false, attemptId: attempt.id, userId, state: 'failed', detail: { message: message.slice(0, 500), failureClass } }).catch(() => undefined)
       const retry = env.APPLY_AUTO_RETRY && shouldAutoRetry(failureClass, reached, retryIndex)
       const finished = await finishAttempt(context, {
         outcome: failureClass === 'uncertain_submit' ? 'unknown' : retry ? 'retry' : 'needs_review',

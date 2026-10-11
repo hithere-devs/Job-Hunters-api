@@ -239,7 +239,7 @@ export async function planAnswers(params: {
     for (const field of pending) {
       const row = proposed.get(field.key)
       answers.set(field.key, row
-        ? validateModelAnswer(field, { action: row.action, values: row.values, basis: row.basis as AnswerBasis, confidence: row.confidence, reason: row.reason })
+        ? validateModelAnswer(field, { action: row.action, values: row.values, basis: row.basis as AnswerBasis, confidence: row.confidence, reason: row.reason }, params.dossier.savedAnswers)
         : validateModelAnswer(field, { action: 'ask', values: [], basis: 'model', confidence: 0, reason: transport ? 'The planner did not answer this field.' : 'No answer planner is configured.' }))
     }
   }

@@ -215,6 +215,9 @@ function missing(field: SchemaField, what: string): PlannedAnswer {
 /** Text or a matching option, depending on the control. */
 function fillWith(field: SchemaField, value: string, basis: AnswerBasis, reason: string, aliases: string[] = []): PlannedAnswer | null {
   if (!value.trim()) return null
+  // A dropdown whose options load only when opened: type the value; the
+  // executor picks the live option and verifies it committed.
+  if ((field.kind === 'select' || field.kind === 'multiselect') && !field.options.length) return answer(field, 'fill', [value.trim()], basis, reason, 0.9)
   if (field.kind === 'select' || field.kind === 'multiselect' || field.kind === 'boolean') {
     const option = matchOption(field.options, [value, ...aliases])
     return option ? answer(field, 'fill', [option.label], basis, reason) : null
@@ -228,8 +231,11 @@ function chooseYesNo(field: SchemaField, yes: boolean, basis: AnswerBasis, reaso
   // "Yes, EU Blue Card" and "Yes, but not one of the visas listed here" both
   // say yes and mean different things: leave the choice to the planner.
   const candidates = field.options.filter((option) => (yes ? YES : NO).test(option.label))
-  if (candidates.length !== 1) return null
-  return answer(field, 'fill', [candidates[0]!.label], basis, reason)
+  if (candidates.length === 1) return answer(field, 'fill', [candidates[0]!.label], basis, reason)
+  // Several ways of saying yes: only a generic one is truthful without
+  // claiming a specific visa or status the facts do not establish.
+  const generic = candidates.filter((option) => /^\s*(?:yes|no)\s*\.?\s*$/i.test(option.label) || /\b(?:not (?:one of )?(?:the )?(?:visas? |options? )?listed|none of (?:the )?(?:above|listed)|other(?:wise)?|another (?:visa|type))\b/i.test(option.label))
+  return generic.length === 1 ? answer(field, 'fill', [generic[0]!.label], basis, reason) : null
 }
 
 /** EEO: the user's explicit Kit value, else an explicit decline, else skip/ask. Never invented. */
@@ -382,13 +388,24 @@ export function deterministicAnswer(field: SchemaField, dossier: CandidateDossie
 
 /* ---------------------------------------------------------------- validation */
 
-const FACT_BASES = new Set<AnswerBasis>(['kit', 'saved_answer', 'derived'])
-
 /**
  * Accept a model-proposed answer only if it fits the control exactly and the
  * policy for its kind of question. Returns the corrected answer, or an `ask`.
  */
-export function validateModelAnswer(field: SchemaField, proposed: { action: AnswerAction; values: string[]; basis: AnswerBasis; confidence: number; reason?: string }): PlannedAnswer {
+/** Does one of the user's own saved answers back this value for this question? */
+function savedAnswerSupports(field: SchemaField, values: string[], saved: CandidateDossier['savedAnswers']): boolean {
+  const want = new Set(foldLabel(field.label).replace(/[^a-z0-9]+/g, ' ').split(' ').filter((token) => token.length > 3))
+  if (!want.size) return false
+  return saved.some((row) => {
+    const have = foldLabel(row.question).replace(/[^a-z0-9]+/g, ' ').split(' ').filter((token) => token.length > 3)
+    const shared = have.filter((token) => want.has(token)).length
+    if (shared / want.size < 0.5) return false
+    const answer = fold(row.answer)
+    return values.every((value) => answer.includes(fold(value)) || fold(value).includes(answer))
+  })
+}
+
+export function validateModelAnswer(field: SchemaField, proposed: { action: AnswerAction; values: string[]; basis: AnswerBasis; confidence: number; reason?: string }, saved: CandidateDossier['savedAnswers'] = []): PlannedAnswer {
   const sensitive = Boolean(sensitiveReason(field.label, field.options.map((option) => option.label))) || field.section === 'eeo'
   const ask = (why: string): PlannedAnswer => field.required
     ? answer(field, 'ask', [], 'policy', why, 0)
@@ -397,7 +414,11 @@ export function validateModelAnswer(field: SchemaField, proposed: { action: Answ
   if (proposed.action === 'skip') return field.required ? ask('Required, but the model chose to leave it blank.') : answer(field, 'skip', [], 'model', proposed.reason || 'Optional; left blank.')
   if (field.kind === 'file') return ask('File fields other than the résumé need a file from you.')
   const confidence = Math.max(0, Math.min(1, Number(proposed.confidence) || 0))
-  if (sensitive && !(FACT_BASES.has(proposed.basis) && confidence >= 0.8)) {
+  // A model's own claim of basis is not evidence. Sensitive answers come from
+  // deterministic rules (My Kit, derived work rights) or the user's saved
+  // answers; from the model only when a saved answer actually supports them.
+  const supported = proposed.basis === 'saved_answer' && confidence >= 0.8 && savedAnswerSupports(field, proposed.values, saved)
+  if (sensitive && !supported) {
     const decline = field.section === 'eeo' ? declineOption(field.options) : null
     if (decline) return answer(field, 'fill', [decline.label], 'policy', 'Sensitive question without an explicit answer; declining.')
     return ask('A sensitive question needs your explicit answer.')
@@ -409,12 +430,14 @@ export function validateModelAnswer(field: SchemaField, proposed: { action: Answ
   switch (field.kind) {
     case 'select':
     case 'boolean': {
+      if (!field.options.length) return answer(field, 'fill', [values[0]!.slice(0, 200)], proposed.basis, proposed.reason ?? '', Math.min(confidence, 0.85))
       const option = matchOption(field.options, [values[0]!])
       if (!option) return ask(`"${values[0]}" is not one of this question's options.`)
       const exact = fold(option.label) === fold(values[0]!)
       return answer(field, 'fill', [option.label], proposed.basis, proposed.reason ?? '', exact ? confidence : Math.min(confidence, 0.75))
     }
     case 'multiselect': {
+      if (!field.options.length) return answer(field, 'fill', values.map((value) => value.slice(0, 200)), proposed.basis, proposed.reason ?? '', Math.min(confidence, 0.85))
       const picked = values.map((value) => matchOption(field.options, [value])).filter((option): option is FieldOption => option !== null)
       if (!picked.length) return ask('None of the chosen values are options here.')
       return answer(field, 'fill', [...new Set(picked.map((option) => option.label))], proposed.basis, proposed.reason ?? '', confidence)
