@@ -312,7 +312,7 @@ function adoptRunningChrome(): void {
   for (let i = 1; i <= 10; i += 1) {
     let pids: number[] = [];
     try {
-      pids = execFileSync('pgrep', ['-f', `--user-data-dir=${profile(i)}`], { encoding: 'utf8' }).split('\n').map(Number).filter((pid) => Number.isInteger(pid) && pid > 0);
+      pids = execFileSync('pgrep', ['-f', '--', `--user-data-dir=${profile(i)}`], { encoding: 'utf8' }).split('\n').map(Number).filter((pid) => Number.isInteger(pid) && pid > 0);
     } catch { continue; }
     for (const pid of pids) {
       let cmdline = '';
