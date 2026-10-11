@@ -44,7 +44,9 @@ export function gmailRowTimeMs(title: string, nowMs = Date.now()): number | null
 export function emailIsFromThisApply(titles: string[], sinceMs: number, nowMs = Date.now()): boolean {
   const when = titles.map((title) => gmailRowTimeMs(title, nowMs)).find((stamp) => stamp != null)
   if (when == null) return false
-  return when + 2_000 >= sinceMs
+  // Gmail shows times to the minute ("22:12"); a code sent at 22:12:55 for a
+  // click at 22:12:50 reads as 22:12:00. Compare at minute precision.
+  return when + 60_000 >= sinceMs
 }
 
 export function pageHasWrongSecurityCode(text: string): boolean {

@@ -166,3 +166,9 @@ describe('Greenhouse security-code inputs', { skip: !browser }, () => {
     }
   })
 })
+it('accepts a code email shown in the same minute as the submit click', () => {
+  // Gmail shows "22:12"; the click was at 22:12:50 and the email at 22:12:55.
+  const click = new Date(2026, 9, 11, 22, 12, 50).getTime()
+  assert.equal(emailIsFromThisApply(['Has attachment', 'Sun, 11 Oct 2026, 22:12'], click - 5_000, click + 30_000), true)
+  assert.equal(emailIsFromThisApply(['Sun, 11 Oct 2026, 22:10'], click - 5_000, click + 30_000), false)
+})
