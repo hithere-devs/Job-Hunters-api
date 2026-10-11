@@ -265,10 +265,17 @@ export function deriveWorkRights(field: SchemaField, dossier: CandidateDossier, 
   const kind = classifyAuthorisationQuestion(field.label) === 'sponsorship' ? 'sponsorship' : 'work_auth'
   const home = dossier.location.countryCode
   const named = countryNamedIn(`${field.label} ${field.description ?? ''}`)
-  const distinct = [...new Set(job.countries)]
   const aboutResidence = /\bcountry (?:where|in which) you (?:currently )?(?:live|reside)\b|\bcountry of (?:your )?residence\b|\bwhere you (?:currently )?(?:live|reside)\b/i.test(field.label)
-  const jurisdiction = named ?? (aboutResidence ? home : distinct.length === 1 ? distinct[0]! : null)
-  if (!home || !jurisdiction) return null
+  const fromLocation = countryNamedIn(job.location)
+  const listed = [...new Set(job.countries.length ? job.countries : fromLocation ? [fromLocation] : [])]
+  if (!home) return null
+  // One jurisdiction when the question names it, asks about residence, or every
+  // location the job lists falls on the same side of "home vs abroad".
+  const jurisdiction = named ?? (aboutResidence ? home
+    : listed.length && listed.every((code) => code === home) ? home
+      : listed.length && listed.every((code) => code !== home) ? listed[0]!
+        : null)
+  if (!jurisdiction) return null
   const sponsorshipText = dossier.visaSponsorship.trim()
   const authorisedAtHome = !/^\s*(?:no|false|not authori[sz]ed)\b/i.test(dossier.workAuthorization)
   if (jurisdiction === home) {

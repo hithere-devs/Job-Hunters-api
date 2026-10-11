@@ -56,7 +56,11 @@ describe('deterministic answers', () => {
     assert.deepEqual(deterministicAnswer(sponsor, dossier(), indiaJob)!.values, ['No'])
     assert.deepEqual(deterministicAnswer(auth, dossier(), indiaJob)!.values, ['Yes'])
     assert.equal(deriveWorkRights(sponsor, dossier({ visaSponsorship: '' }), usJob), null)
-    assert.equal(deriveWorkRights(sponsor, dossier(), { ...usJob, countries: ['US', 'GB'] }), null)
+    // Every listed location is abroad: "required outside India" settles it.
+    assert.equal(deriveWorkRights(sponsor, dossier(), { ...usJob, countries: ['US', 'GB'] })?.yes, true)
+    // Mixed home/abroad, or nothing known: ask.
+    assert.equal(deriveWorkRights(sponsor, dossier(), { ...usJob, countries: ['US', 'IN'] }), null)
+    assert.equal(deriveWorkRights(sponsor, dossier(), { ...usJob, countries: [], location: 'Remote' }), null)
   })
   it('agrees to required acknowledgements and declines marketing', () => {
     const ack = field({ label: 'Applicant Arbitration Agreement Acknowledgement', kind: 'multiselect', options: [{ label: 'I acknowledge that I have read the Arbitration Agreement.' }] })
