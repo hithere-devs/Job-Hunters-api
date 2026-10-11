@@ -79,7 +79,7 @@ export async function verificationInputsFilled(page: Page): Promise<boolean> {
  * The VM Chrome profile already has Gmail open.
  * Reuse that tab when it exists. Do not close it.
  */
-export async function readGmailVerificationCode(page: Page, sinceMs = Date.now(), skipCodes?: Set<string>): Promise<string | null> {
+export async function readGmailVerificationCode(page: Page, sinceMs = Date.now(), skipCodes?: Set<string>, options?: { company?: string; requireCompany?: boolean }): Promise<string | null> {
   const existing = typeof page.context === 'function' ? gmailTabAmong(page.context().pages()) : undefined
   const opened = !existing
   const mail = existing ?? await page.context().newPage()
@@ -102,6 +102,10 @@ export async function readGmailVerificationCode(page: Page, sinceMs = Date.now()
     }
     const rows = mail.locator('tr.zA, div[role="listitem"]')
     const n = Math.min(await rows.count().catch(() => 0), 8)
+    // Several applications can be waiting for codes at once: prefer the email
+    // that names this employer, and never hand back a code already used.
+    const company = (options?.company ?? '').replace(/,?\s+(?:inc|llc|ltd|gmbh|corp)\.?$/i, '').trim().toLowerCase()
+    const candidates: Array<{ index: number; preview: string; named: boolean }> = []
     for (let index = 0; index < n; index += 1) {
       const row = rows.nth(index)
       const titles = await row.locator('[title]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('title') || '')).catch(() => [] as string[])
@@ -111,18 +115,22 @@ export async function readGmailVerificationCode(page: Page, sinceMs = Date.now()
       }
       const preview = ((await row.innerText().catch(() => '')) || '').slice(0, 500)
       if (!OTP_MAIL.test(preview) && !extractGreenhouseEmailCode(preview)) continue
+      candidates.push({ index, preview, named: Boolean(company) && preview.toLowerCase().includes(company) })
+    }
+    const ordered = [...candidates.filter((row) => row.named), ...candidates.filter((row) => !row.named)]
+    for (const candidate of ordered) {
+      const row = rows.nth(candidate.index)
       await row.click({ timeout: 5_000 }).catch(() => undefined)
       await new Promise((resolve) => setTimeout(resolve, 1_400))
       const body = await mail.locator('div.a3s, div[data-message-id], body').innerText().catch(() => '')
       const headerTitles = await mail.locator('span.g3[title], span[title*="202"]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('title') || '')).catch(() => [] as string[])
+      await mail.goBack({ timeout: 5_000 }).catch(() => undefined)
       if (headerTitles.length && !emailIsFromThisApply(headerTitles, sinceMs)) continue
-      const code = extractGreenhouseEmailCode(body) ?? extractGreenhouseEmailCode(preview)
-      if (!code) continue
-      if (skipCodes?.has(code)) {
-        logger.info({ digits: code.length }, 'newest Greenhouse code already tried; wait for a newer email')
-        return null
-      }
-      logger.info({ digits: code.length, reusedTab: !opened }, 'read Gmail verification code')
+      const named = candidate.named || (Boolean(company) && body.toLowerCase().includes(company))
+      if (options?.requireCompany && company && !named) continue
+      const code = extractGreenhouseEmailCode(body) ?? extractGreenhouseEmailCode(candidate.preview)
+      if (!code || skipCodes?.has(code)) continue
+      logger.info({ digits: code.length, reusedTab: !opened, matchedEmployer: named }, 'read Gmail verification code')
       return code
     }
     return null

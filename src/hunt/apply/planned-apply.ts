@@ -18,7 +18,7 @@ import { ApplicationDeferredError } from '../application-policy.js'
 import { createAttempt, finishAttempt, previousTransientRetries, recordSubmitOutcome, type AttemptContext } from './attempt-store.js'
 import { classifyError, shouldAutoRetry, type FailureClass } from './failure.js'
 import { submitForm, type SubmitResult } from './fill.js'
-import { fillVerificationCode } from './gmail-code.js'
+import { fillVerificationCode, pageHasWrongSecurityCode } from './gmail-code.js'
 import { withProfileLane } from './lanes.js'
 import { executePlannedApplication, preparePlannedApplication, type PlannedExecution } from './planned/driver.js'
 import { jobContext } from './planned/dossier.js'
@@ -264,10 +264,12 @@ export async function applyPlannedCandidate(userId: string, candidateId: string,
         outcome = await submitForm({ page, url: formUrl, dryRun, skipWidgetReady: true })
       }
       const usedCodes = new Set<string>()
-      for (let round = 0; round < 2 && outcome.outcome === 'verification_required'; round += 1) {
-        await transition({ persistStatus: false, attemptId: attempt.id, userId, state: 'filling', detail: { stage: 'verification_code' } })
+      // A wrong code (another application's email) is just another round.
+      const wrongCode = async () => outcome.outcome === 'rejected_validation' && pageHasWrongSecurityCode(await page.locator('body').innerText({ timeout: 5_000 }).catch(() => ''))
+      for (let round = 0; round < 3 && (outcome.outcome === 'verification_required' || (usedCodes.size > 0 && await wrongCode())); round += 1) {
+        await transition({ persistStatus: false, attemptId: attempt.id, userId, state: 'filling', detail: { stage: 'verification_code', round } })
         const code = await readVerificationCode({
-          userId, page, sinceMs: clickAt - 5_000, skip: usedCodes, signal,
+          userId, page, sinceMs: clickAt - 5_000, skip: usedCodes, signal, company: row.job.company,
           pageHasMailbox: browserSession.provider === 'vm',
           borrowProfile: browserSession.provider === 'vm' ? null : (work) => withProfileLane(userId, work, 45_000),
         })

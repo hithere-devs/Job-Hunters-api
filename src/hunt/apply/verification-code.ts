@@ -20,6 +20,18 @@ import { extractGreenhouseEmailCode, readGmailVerificationCode } from './gmail-c
  * messages newer than the submit click are considered.
  */
 
+/**
+ * Codes handed out recently, across every application in this runner. Two
+ * Greenhouse applications a minute apart get two code emails; a code used by
+ * one must never be typed into the other.
+ */
+const recentlyUsed = new Map<string, number>()
+function rememberCode(code: string) {
+  const now = Date.now()
+  for (const [value, at] of recentlyUsed) if (now - at > 15 * 60_000) recentlyUsed.delete(value)
+  recentlyUsed.set(code, now)
+}
+
 const SENDERS = 'from:(greenhouse-mail.io OR greenhouse.io OR ashbyhq.com OR lever.co OR smartrecruiters.com OR workablemail.com)'
 const SUBJECT_HINT = '("security code" OR "verification code" OR "8-character" OR "confirm you\'re a human" OR "one-time")'
 
@@ -42,7 +54,7 @@ async function codeFromGmailApi(userId: string, sinceMs: number, skip: Set<strin
   return null
 }
 
-async function codeFromTenantProfile(userId: string, sinceMs: number, skip: Set<string>): Promise<string | null> {
+async function codeFromTenantProfile(userId: string, sinceMs: number, skip: Set<string>, mail: { company?: string; requireCompany: boolean }): Promise<string | null> {
   const [session] = await db.select({ vmId: userBrowserSessions.vmId, tenantIndex: userBrowserSessions.tenantIndex }).from(userBrowserSessions)
     .where(and(eq(userBrowserSessions.userId, userId), eq(userBrowserSessions.vmId, env.VM_ID))).limit(1)
   if (!session || !env.VM_AGENT_URL) return null
@@ -54,8 +66,7 @@ async function codeFromTenantProfile(userId: string, sinceMs: number, skip: Set<
     try {
       const context = browser.contexts()[0] ?? await browser.newContext()
       const page = context.pages()[0] ?? await context.newPage()
-      const code = await readGmailVerificationCode(page, sinceMs, skip)
-      return code
+      return await readGmailVerificationCode(page, sinceMs, skip, mail)
     } finally {
       await browser.close().catch(() => undefined)
     }
@@ -80,24 +91,36 @@ export async function readVerificationCode(params: {
   skip?: Set<string>
   timeoutMs?: number
   signal?: AbortSignal
+  /** The employer, to tell this application's code email from another's. */
+  company?: string
 }): Promise<string | null> {
-  const skip = params.skip ?? new Set<string>()
+  const local = params.skip ?? new Set<string>()
+  const skip = new Set<string>([...local, ...recentlyUsed.keys()])
+  const startedAt = Date.now()
+  const found = (code: string | null) => {
+    if (code) { rememberCode(code); local.add(code) }
+    return code
+  }
   const deadline = Date.now() + (params.timeoutMs ?? 120_000)
   let tenantTried = 0
   while (Date.now() < deadline) {
     params.signal?.throwIfAborted()
+    for (const code of recentlyUsed.keys()) skip.add(code)
+    // For the first 45 s insist on the email that names this employer; after
+    // that prefer it, but accept the newest unused code (some templates omit it).
+    const mail = { ...(params.company ? { company: params.company } : {}), requireCompany: Date.now() - startedAt < 45_000 }
     const fromApi = await codeFromGmailApi(params.userId, params.sinceMs, skip).catch((error: unknown) => {
       logger.debug({ err: error }, 'Gmail API code lookup failed')
       return null
     })
-    if (fromApi) return fromApi
+    if (fromApi) return found(fromApi)
     if (params.pageHasMailbox) {
-      const fromTab = await readGmailVerificationCode(params.page, params.sinceMs, skip)
-      if (fromTab) return fromTab
-    } else if (params.borrowProfile && tenantTried < 4) {
+      const fromTab = await readGmailVerificationCode(params.page, params.sinceMs, skip, mail)
+      if (fromTab) return found(fromTab)
+    } else if (params.borrowProfile && tenantTried < 6) {
       tenantTried += 1
-      const borrowed = await params.borrowProfile(() => codeFromTenantProfile(params.userId, params.sinceMs, skip)).catch(() => null)
-      if (borrowed) return borrowed
+      const borrowed = await params.borrowProfile(() => codeFromTenantProfile(params.userId, params.sinceMs, skip, mail)).catch(() => null)
+      if (borrowed) return found(borrowed)
     }
     await new Promise((resolve) => setTimeout(resolve, 6_000))
   }
