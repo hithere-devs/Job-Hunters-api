@@ -66,7 +66,7 @@ function headerValue(headers: GmailHeader[] | undefined, name: string): string {
 }
 
 /** Walks the MIME tree for the first text part — Gmail nests these arbitrarily. */
-function textFrom(payload: GmailMessage['payload']): string {
+export function textFrom(payload: GmailMessage['payload']): string {
   if (!payload) return ''
   if (payload.mimeType?.startsWith('text/') && payload.body?.data) return decodeBody(payload.body.data)
   const parts = (payload.parts ?? []) as GmailMessage['payload'][]
@@ -85,7 +85,7 @@ function parseAddress(raw: string): { address: string; name: string | null } {
   return { address: raw.trim().toLowerCase(), name: null }
 }
 
-async function accessTokenFor(userId: string): Promise<string> {
+export async function accessTokenFor(userId: string): Promise<string> {
   const [account] = await db
     .select()
     .from(emailAccounts)

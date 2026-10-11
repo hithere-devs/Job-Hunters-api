@@ -1,7 +1,8 @@
-import {providerSubmissionBlocked, providerValidationFailed} from './provider-block.js'
+import { providerValidationFailed } from './provider-block.js'
+import { addedText, atsFamily, capturePageState, classifySubmitOutcome, pageShowsConfirmation, settleAfterSubmit, watchSubmitNetwork, type NetworkEvent, type SettleTiming, type SubmitOutcome } from './confirmation.js'
 import { pageHasVerificationGate } from './pilot-outcome.js'
 import { verificationInputsFilled } from './gmail-code.js'
-import { beforeSubmission } from './submission-guard.js'
+import { beforeSubmission, recordSubmissionOutcome, releaseSubmissionAfterRejection } from './submission-guard.js'
 import { browserFilePayload } from '../../lib/file-payload.js'
 import type { Page } from 'playwright-core'
 import { env } from '../../config/env.js'
@@ -598,7 +599,8 @@ export async function pageLooksLikeNoForm(page: Page): Promise<boolean> {
 async function waitUntilResumeParsed(page: Page): Promise<void> {
   const deadline = Date.now() + 25_000
   while (Date.now() < deadline) {
-    const text = await page.locator('body').innerText().catch(() => '')
+    let text = ''
+    try { text = await page.locator('body').innerText() } catch { return }
     if (!/parsing your resume|submitting too early/i.test(text)) return
     await new Promise((resolve) => setTimeout(resolve, 400))
   }
@@ -760,17 +762,28 @@ export async function checkRequiredConsentBoxes(page: Page): Promise<number> {
   return checked
 }
 
+/**
+ * Is the page showing a confirmation right now?
+ *
+ * Never true while an application form and its submit control are still on
+ * screen: a description that says "thank you" is not a confirmation.
+ */
 export async function hasSubmissionConfirmation(page: Page, url: string) {
-  const plan = recipeFor(url) ?? GENERIC
-  return plan.success.test(await page.locator('body').innerText().catch(() => ''))
+  const plan = recipeFor(url) ?? recipeFor(page.url()) ?? GENERIC
+  return pageShowsConfirmation(await capturePageState(page, plan.submit))
 }
 
 export interface SubmitResult {
   submitted: boolean
   /** Distinguishes a click whose server-side result could not be observed. */
-  result?: 'submitted' | 'submitted_unconfirmed' | 'not_submitted' | 'provider_blocked'
-  /** Set when we deliberately did not submit. */
-  heldBack?: 'dry_run' | 'kill_switch' | 'no_submit_control' | 'posting_closed' | 'invalid_fields' | 'no_form'
+  result?: 'submitted' | 'submitted_unconfirmed' | 'not_submitted' | 'provider_blocked' | 'verification_required'
+  /** Set when we deliberately did not submit, or the provider provably refused the click. */
+  heldBack?: 'dry_run' | 'kill_switch' | 'no_submit_control' | 'posting_closed' | 'invalid_fields' | 'no_form' | 'verification'
+  /** What the click produced, when a click happened. */
+  outcome?: SubmitOutcome
+  reason?: string
+  /** Validation messages visible after a rejected click. */
+  errors?: string[]
   confirmation?: string
 }
 
@@ -795,6 +808,8 @@ export async function submitForm(params: {
   dryRun: boolean
   /** Extension leftover already measured empty. Skip Playwright widget emptiness. */
   skipWidgetReady?: boolean
+  /** Test seam: shorter post-click settle windows. */
+  settle?: Partial<SettleTiming>
 }): Promise<SubmitResult> {
   const { page, url, dryRun, skipWidgetReady } = params
   const recipe = recipeFor(url)
@@ -828,48 +843,45 @@ export async function submitForm(params: {
     return { submitted: false, result: 'not_submitted', heldBack: 'invalid_fields' }
   }
 
-  const beforeUrl = page.url()
-  // Register before clicking so an immediate XHR response is not lost. A load
-  // state that already happened must not win the race on a single-page form.
-  const confirmation = page.waitForFunction(({source, flags}) => new RegExp(source, flags).test(document.body.innerText), {source:plan.success.source,flags:plan.success.flags}, {timeout:15_000})
-  let durable = false
-  const markDurable = async <T>(work: Promise<T>) => { const value = await work; durable = true; return value }
-  const host = (() => { try { return new URL(beforeUrl).hostname } catch { return '' } })()
-  const signals = Promise.any([
-    markDurable(page.waitForURL((next) => next.toString() !== beforeUrl, {timeout:15_000})),
-    markDurable(page.waitForSelector(plan.submit, {state:'detached',timeout:15_000})),
-    markDurable(page.waitForResponse(response => {
-      if (response.request().method() !== 'POST' || response.status() < 200 || response.status() >= 300) return false
-      try {
-        const responseHost = new URL(response.url()).hostname
-        if (responseHost !== host) return false
-        if (host.endsWith('ashbyhq.com')) return true
-        return /apply|application|submit/i.test(new URL(response.url()).pathname)
-      } catch { return false }
-    }, {timeout:15_000})),
-    markDurable(confirmation),
-  ]).catch(() => undefined)
-  await submit.click()
-  await signals
-  await confirmation.catch(() => undefined)
-  const deadline = Date.now() + 4_000
-  let body = await page.locator('body').innerText().catch(() => '')
-  while (true) {
-    if (providerSubmissionBlocked(body)) {
-      await beforeSubmission()
-      return { submitted: false, result: 'provider_blocked' }
-    }
-    if (plan.success.test(body)) {
-      await beforeSubmission()
-      return { submitted: true, result: 'submitted', confirmation: body.slice(0, 200) }
-    }
-    if (providerValidationFailed(body) && await hasSubmitControl({ page, url })) {
-      return { submitted: false, result: 'not_submitted', heldBack: 'invalid_fields' }
-    }
-    if (Date.now() >= deadline) break
-    await new Promise((resolve) => setTimeout(resolve, 400))
-    body = await page.locator('body').innerText().catch(() => '')
-  }
+  // Evidence is captured before the click, the network is watched from before
+  // the click, and the durable fence is written before the click. A process
+  // that dies mid-click therefore always leaves an uncertain, non-retryable
+  // record — never a clean-looking one.
+  const formUrl = page.url()
+  const before = await capturePageState(page, plan.submit)
+  const watch = watchSubmitNetwork(page, formUrl)
+  let network: NetworkEvent[] = []
   await beforeSubmission()
-  return { submitted: false, result: 'submitted_unconfirmed', confirmation: body.slice(0, 200) }
+  try {
+    await submit.click({ timeout: 10_000 })
+  } catch (error) {
+    network = watch.stop()
+    if (!network.length) {
+      // The click itself failed and nothing was sent: provably not submitted.
+      await recordSubmissionOutcome('rejected_validation', `submit click failed: ${error instanceof Error ? error.message : String(error)}`)
+      releaseSubmissionAfterRejection()
+      return { submitted: false, result: 'not_submitted', heldBack: 'invalid_fields', outcome: 'rejected_validation', reason: 'submit click failed' }
+    }
+    throw error
+  }
+  const after = await settleAfterSubmit(page, plan.submit, before, () => watch.pending(), params.settle)
+    .catch(() => capturePageState(page, plan.submit))
+  network = watch.stop()
+  const { outcome, reason } = classifySubmitOutcome({ before, after, network, ats: atsFamily(formUrl) })
+  await recordSubmissionOutcome(outcome, reason)
+  logger.info({ outcome, reason, writes: network.filter((event) => event.sameSite).map((event) => `${event.method} ${event.status}`) }, 'submit click classified')
+  switch (outcome) {
+    case 'confirmed':
+      return { submitted: true, result: 'submitted', outcome, reason, confirmation: addedText(before.text, after.text).slice(0, 200) }
+    case 'provider_blocked':
+      return { submitted: false, result: 'provider_blocked', outcome, reason }
+    case 'verification_required':
+      releaseSubmissionAfterRejection()
+      return { submitted: false, result: 'verification_required', heldBack: 'verification', outcome, reason }
+    case 'rejected_validation':
+      releaseSubmissionAfterRejection()
+      return { submitted: false, result: 'not_submitted', heldBack: 'invalid_fields', outcome, reason, errors: after.errorTexts.slice(0, 10) }
+    default:
+      return { submitted: false, result: 'submitted_unconfirmed', outcome, reason, confirmation: addedText(before.text, after.text).slice(0, 200) }
+  }
 }

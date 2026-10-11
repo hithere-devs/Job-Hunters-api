@@ -1,5 +1,7 @@
 # Applying
 
+> Superseded for the live path by [apply-planned.md](apply-planned.md): schema-first planning, verified filling, a submit gate and multi-signal confirmation. This document describes the legacy ladder and agent tier, kept for rollback.
+
 **Dry run is the default.** Filling a form is reversible; submitting it is not.
 `APPLY_DRY_RUN=true` fills every field, screenshots the result, and stops
 before the submit click. Turning it off is what makes the product send real

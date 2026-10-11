@@ -286,6 +286,47 @@ async function launch(i: number, mode: Exclude<Mode,'idle'>) {
   }
   return s;
 }
+/**
+ * Profile size, cached. Walking a Chrome profile is thousands of files, and
+ * the runner's heartbeat used to trigger a full `du` every 30 s per tenant.
+ */
+const sizeCache = new Map<number, { bytes: number; at: number }>();
+async function profileBytes(i: number): Promise<number> {
+  const cached = sizeCache.get(i);
+  if (cached && Date.now() - cached.at < 10 * 60_000) return cached.bytes;
+  let bytes = cached?.bytes ?? 0;
+  try { const { stdout } = await execFileAsync('du', ['-sb', profile(i)], { timeout: 20_000 }); bytes = Number(stdout.split(/\s+/)[0]) || 0; } catch {}
+  sizeCache.set(i, { bytes, at: Date.now() });
+  return bytes;
+}
+
+/**
+ * Re-attach to Chrome processes this agent started before it restarted.
+ *
+ * Tenant state lived only in memory, so an agent restart (Restart=always)
+ * forgot a running Chrome that still held the profile lock: the next launch
+ * failed or attached to the orphan. The main Chrome process for a tenant is the
+ * one whose command line names that profile and is not a `--type=` child.
+ */
+function adoptRunningChrome(): void {
+  for (let i = 1; i <= 10; i += 1) {
+    let pids: number[] = [];
+    try {
+      pids = execFileSync('pgrep', ['-f', `--user-data-dir=${profile(i)}`], { encoding: 'utf8' }).split('\n').map(Number).filter((pid) => Number.isInteger(pid) && pid > 0);
+    } catch { continue; }
+    for (const pid of pids) {
+      let cmdline = '';
+      try { cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf8').replace(/\0/g, ' '); } catch { continue; }
+      if (!/chrome/i.test(cmdline) || /--type=/.test(cmdline)) continue;
+      const mode: Mode = /--remote-debugging-port=/.test(cmdline) ? 'apply' : 'connect';
+      const s = state(i);
+      s.mode = mode; s.pid = pid; s.child = null; s.startedAt = Date.now(); s.lastActivity = Date.now(); s.expiresAt = new Date(Date.now() + IDLE_MS).toISOString();
+      console.log(`[tenant ${i}] adopted running Chrome pid ${pid} in ${mode} mode`);
+      break;
+    }
+  }
+}
+
 async function handleTenant(req: http.IncomingMessage, res: http.ServerResponse) {
   if (req.headers.authorization !== `Bearer ${TOKEN}`) return json(res, 401, {error:'unauthorized'});
   const method=req.method ?? 'GET', url=new URL(req.url ?? '/', `http://${HOST}:${PORT}`), path=url.pathname;
@@ -345,7 +386,7 @@ async function handleTenant(req: http.IncomingMessage, res: http.ServerResponse)
     if (!png) return json(res,503,{error:'screenshot_failed'});
     res.writeHead(200,{'content-type':'image/png','content-length':png.length}); return res.end(png);
   }
-  if (method==='GET' && path.endsWith('/status')) { let bytes=0; try { const {stdout}=await execFileAsync('du',['-sb',profile(i)]); bytes=Number(stdout.split(/\s+/)[0])||0; } catch {} return json(res,200,{mode:s.mode,vncReadOnly:s.mode==='apply'&&existsSync(`/run/huntly-vnc-viewonly/${i}`),pid:s.pid,uptimeMs:s.startedAt?Date.now()-s.startedAt:0,profileBytes:bytes}); }
+  if (method==='GET' && path.endsWith('/status')) { return json(res,200,{mode:s.mode,vncReadOnly:s.mode==='apply'&&existsSync(`/run/huntly-vnc-viewonly/${i}`),pid:s.pid,uptimeMs:s.startedAt?Date.now()-s.startedAt:0,profileBytes:await profileBytes(i)}); }
   if (method==='GET' && path.endsWith('/cookies')) { if (s.mode!=='idle') return json(res,409,{error:'browser_running'}); return json(res,200,{domains:await cookies(i),cookies:await cookieRows(i)}); }
   return json(res,404,{error:'not_found'});
 }
@@ -359,9 +400,14 @@ const server=http.createServer((req,res)=>{
   void task.catch(error=>{ console.error('VM agent request failed:',error instanceof Error ? error.message : 'unknown');if(!res.headersSent) json(res,500,{error:'internal'}); });
 });
 const idleSweep=setInterval(()=>{
-  for(const [index,s] of states) if(s.mode!=='idle' && Date.now()-s.lastActivity>=IDLE_MS) void exclusive(index,async()=>{if(Date.now()-state(index).lastActivity>=IDLE_MS) await stopProcess(index);});
+  for(const [index,s] of states) {
+    // An adopted Chrome has no exit listener: notice its death here.
+    if(s.mode!=='idle' && s.pid && !alive(s.pid)){ s.mode='idle'; s.child=null; s.pid=null; s.startedAt=null; s.expiresAt=null; s.extensionPipes=undefined; continue; }
+    if(s.mode!=='idle' && Date.now()-s.lastActivity>=IDLE_MS) void exclusive(index,async()=>{if(Date.now()-state(index).lastActivity>=IDLE_MS) await stopProcess(index);});
+  }
 },15000);
 idleSweep.unref();
+adoptRunningChrome();
 server.listen(PORT,HOST,()=>console.log(`vm-agent listening on ${HOST}:${PORT}`));
 async function shutdown(){
   if(shuttingDown)return;shuttingDown=true;clearInterval(idleSweep);server.close();

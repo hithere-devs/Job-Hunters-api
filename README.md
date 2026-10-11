@@ -37,10 +37,11 @@ over everything, and a model reading the shortlist.
 Seeds a persona from the résumé, then asks only questions whose answers
 change which jobs the user sees. Median five questions, hard cap seven.
 
-**Applying** — [docs/apply.md](docs/apply.md)
-A state machine per attempt, watchable live over a WebSocket, with takeover
-when it gets stuck. Portal recipes first, heuristics second, a model last —
-and every answer it learns is cached so the next person never waits for it.
+**Applying** — [docs/apply-planned.md](docs/apply-planned.md)
+Reads the ATS's own form definition, decides every answer before a browser
+opens (asking the user first when it cannot), fills and verifies each field in
+a throwaway browser, and clicks submit only when the form is verifiably
+complete. Outcomes are classified; transient failures retry themselves.
 
 **The playground** — [docs/playground.md](docs/playground.md)
 One job, watched end to end: the hosted browser embedded live, the conversation

@@ -44,6 +44,10 @@ export type BlockedReason =
   | 'sensitive_field'
   /** Greenhouse/ATS says this job is gone. */
   | 'posting_closed'
+  /** A planned answer would not stay in its field after three strategies. */
+  | 'field_rejected'
+  /** The provider wants an emailed code and none could be read. */
+  | 'verification_code'
 
 export interface TransitionInput {
   attemptId: string

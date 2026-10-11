@@ -42,13 +42,13 @@ export async function cancelApplication(userId: string, id: string) {
   })
 }
 
-export async function retryApplication(userId: string, id: string, options?: {confirmedNotSubmitted?: boolean}) {
+export async function retryApplication(userId: string, id: string, options?: {confirmedNotSubmitted?: boolean; providerChecked?: boolean}) {
   return withApprovalLock(userId, async () => {
     const {app,candidate} = await ownedApplication(userId,id)
     const attempts = await db.select().from(applyAttempts).where(and(eq(applyAttempts.candidateId,candidate.id),eq(applyAttempts.userId,userId))).orderBy(desc(applyAttempts.createdAt))
     const latest = attempts[0]
     const events = latest ? await db.select({state:attemptEvents.state,detail:attemptEvents.detail,reason:attemptEvents.reason}).from(attemptEvents).where(eq(attemptEvents.attemptId,latest.id)) : []
-    const reason = safeRetryReason(app.status, latest ? [latest] : [], events, {confirmedNotSubmitted: options?.confirmedNotSubmitted})
+    const reason = safeRetryReason(app.status, latest ? [latest] : [], events, {confirmedNotSubmitted: options?.confirmedNotSubmitted, providerChecked: options?.providerChecked})
     if (reason) throw conflict(reason)
     const runtime = await applicationJobInfo(userId,candidate.id,candidate.runId)
     if (['active','waiting','delayed','paused'].includes(runtime.queueState)) throw conflict('This application is already in the queue.')
@@ -65,7 +65,7 @@ export async function retryApplication(userId: string, id: string, options?: {co
       await tx.update(huntRunJobs).set({status:'queued',updatedAt:new Date()}).where(and(eq(huntRunJobs.userId,userId),eq(huntRunJobs.runId,candidate.runId),eq(huntRunJobs.jobId,candidate.jobId)))
       await tx.update(huntRuns).set({status:'applying',finishedAt:null,updatedAt:new Date()}).where(and(eq(huntRuns.id,candidate.runId),eq(huntRuns.userId,userId)))
       await tx.update(applications).set({status:'queued',queuedAt:new Date(),updatedAt:new Date()}).where(eq(applications.id,id))
-      await tx.insert(applicationEvents).values({applicationId:id,fromStatus:app.status,toStatus:'queued',note:'Explicit safe retry requested; no earlier submit evidence exists.'})
+      await tx.insert(applicationEvents).values({applicationId:id,fromStatus:app.status,toStatus:'queued',note:options?.providerChecked?'Retry requested after the user confirmed with the employer that no application was received.':'Explicit safe retry requested; no earlier submit evidence exists.'})
       await assertApprovalLease()
     }))
     await withDeadline(dispatchPendingApplications(),5_000).catch(error=>logger.error({err:error},'retry dispatch saved for recovery'))
@@ -87,4 +87,24 @@ export async function flagApplication(userId: string, id: string, note?: string)
     }))
   })
   return {flagged:true,queuePaused:true,attemptId:attempt.id}
+}
+
+/**
+ * The owner may resolve their own flag. Previously only an administrator
+ * allowlist could, and with it empty a single flag paused every future
+ * application indefinitely.
+ */
+export async function resolveOwnFlag(userId: string, flagId: string, note?: string) {
+  const [row] = await db.select({flag:attemptFlags,attempt:applyAttempts}).from(attemptFlags).innerJoin(applyAttempts,eq(applyAttempts.id,attemptFlags.attemptId))
+    .where(and(eq(attemptFlags.id,flagId),eq(attemptFlags.userId,userId))).limit(1)
+  if (!row) throw notFound('Flag not found')
+  if (['pending','submitting'].includes(row.attempt.status) && !row.attempt.completedAt) throw conflict('Wait for the current attempt to stop before resuming future applications.')
+  await db.update(attemptFlags).set({status:'resolved',resolvedAt:new Date(),note:`${row.flag.note ?? ''}\nResolved by owner${note ? `: ${note}` : ''}`}).where(and(eq(attemptFlags.id,flagId),eq(attemptFlags.status,'open')))
+  const [remaining] = await db.select({id:attemptFlags.id}).from(attemptFlags).where(and(eq(attemptFlags.userId,userId),eq(attemptFlags.status,'open'))).limit(1)
+  return {resolved:true,queuePaused:Boolean(remaining)}
+}
+
+export async function listOwnFlags(userId: string) {
+  return db.select({id:attemptFlags.id,attemptId:attemptFlags.attemptId,note:attemptFlags.note,createdAt:attemptFlags.createdAt}).from(attemptFlags)
+    .where(and(eq(attemptFlags.userId,userId),eq(attemptFlags.status,'open'))).orderBy(desc(attemptFlags.createdAt)).limit(50)
 }

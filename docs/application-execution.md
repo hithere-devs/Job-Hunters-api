@@ -1,5 +1,7 @@
 # Application queue execution
 
+> The current driver, failure classes and retry behaviour are described in [apply-planned.md](apply-planned.md). Where this document disagrees, that one is current.
+
 ## Durable state and starts
 
 Manual selections publish immediately. There is no eleven-hour batch spacing. The worker delays a job only when its user's lane, provider lane, VM profile, or review pause prevents a safe start. A single VM profile has effective concurrency 1 even when the user's configured concurrency is higher.
@@ -17,7 +19,9 @@ The application worker owns one serialized startup/15-second recovery sweep. It 
 - `POST /applications/:id/flag`: persists an attempt flag and pauses future jobs. The durable submit checkpoint checks open flags before clicking. A click already in flight cannot be recalled.
 - `GET /admin/flags` and `POST /admin/flags/:id/resolve`: administrator UUID allowlist only. `ADMIN_USER_IDS` is empty by default. Resolution requires a note and refuses an in-flight attempt.
 
-The `submit_started_at` fence is saved before deterministic or agent submit actions. Missing telemetry cannot make a possibly submitted application retryable. A second submit in one application operation is refused. Agent-reported success is checked against provider confirmation text. Failure after a click preserves a confirmed or uncertain outcome rather than overwriting it with a retryable failure.
+The `submit_started_at` fence is saved before the click, in `submitForm` itself (until October 2026 it was written after the click). Each click's result is recorded as `submit_outcome`: `confirmed`, `rejected_validation`, `verification_required`, `provider_blocked` or `uncertain`, judged from the URL, the page's own requests, whether the form is still present, and text that appeared because of the click (see `src/hunt/apply/confirmation.ts`). A second click in one operation is allowed only after a provably rejected one. Failure after a click preserves a confirmed or uncertain outcome rather than overwriting it with a retryable failure.
+
+Retry: a fenced attempt without a provable rejection is retried only with `providerChecked: true`, after the user confirms with the employer. `confirmedNotSubmitted` alone (which the UI always sends) no longer unlocks it.
 
 ## Readiness and watch contracts
 

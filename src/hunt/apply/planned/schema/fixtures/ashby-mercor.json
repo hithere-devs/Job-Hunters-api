@@ -1,0 +1,236 @@
+{
+ "data": {
+  "jobPosting": {
+   "id": "374cd009-516f-4a1f-abbf-bcca5287daae",
+   "title": "Software Engineer, Systems & Platform Applied AI",
+   "isListed": true,
+   "surveyForms": [],
+   "applicationForm": {
+    "id": "5a6afe19-488a-46d8-b14f-c3eb3e6a5d52",
+    "errorMessages": [],
+    "sourceFormDefinitionId": "4377296e-6007-4b6b-a2ce-846d083a1e81",
+    "formControls": [
+     {
+      "identifier": "dbbd2c4a-8170-4082-98f2-6b52ac35ca1b",
+      "title": "Submit"
+     }
+    ],
+    "sections": [
+     {
+      "title": null,
+      "descriptionHtml": null,
+      "isHidden": null,
+      "fieldEntries": [
+       {
+        "id": "5a6afe19-488a-46d8-b14f-c3eb3e6a5d52__systemfield_name",
+        "field": {
+         "id": "d3995449-8dde-4e9f-807a-5bec447e163f",
+         "path": "_systemfield_name",
+         "humanReadablePath": "Name",
+         "title": "Name",
+         "isNullable": false,
+         "isPrivate": false,
+         "isDeactivated": false,
+         "isMany": false,
+         "metadata": {},
+         "type": "String",
+         "__autoSerializationID": "StringField"
+        },
+        "isRequired": true,
+        "descriptionHtml": null,
+        "isHidden": null
+       },
+       {
+        "id": "5a6afe19-488a-46d8-b14f-c3eb3e6a5d52__systemfield_email",
+        "field": {
+         "id": "c74a1371-c2c2-47e8-aa16-abfefdd0a942",
+         "path": "_systemfield_email",
+         "humanReadablePath": "Email",
+         "title": "Email",
+         "isNullable": false,
+         "isPrivate": false,
+         "isDeactivated": false,
+         "isMany": false,
+         "metadata": {},
+         "type": "Email",
+         "__autoSerializationID": "EmailField"
+        },
+        "isRequired": true,
+        "descriptionHtml": null,
+        "isHidden": null
+       },
+       {
+        "id": "5a6afe19-488a-46d8-b14f-c3eb3e6a5d52__systemfield_resume",
+        "field": {
+         "id": "069e5941-e7b8-458f-bd2e-2f47f7fe79e7",
+         "path": "_systemfield_resume",
+         "humanReadablePath": "Resume",
+         "title": "Resume",
+         "isNullable": false,
+         "isPrivate": false,
+         "isDeactivated": false,
+         "isMany": false,
+         "metadata": {},
+         "type": "File",
+         "__autoSerializationID": "FileField"
+        },
+        "isRequired": true,
+        "descriptionHtml": null,
+        "isHidden": null
+       },
+       {
+        "id": "5a6afe19-488a-46d8-b14f-c3eb3e6a5d52__systemfield_location",
+        "field": {
+         "id": "60985264-5956-4e07-b56b-9d2cfaaa9b1e",
+         "path": "_systemfield_location",
+         "humanReadablePath": "Location",
+         "title": "Where are you currently located?",
+         "isNullable": false,
+         "isPrivate": false,
+         "isDeactivated": false,
+         "isMany": false,
+         "metadata": {},
+         "type": "Location",
+         "locationTypes": [
+          "Country",
+          "Region",
+          "City"
+         ],
+         "__autoSerializationID": "LocationField"
+        },
+        "isRequired": true,
+        "descriptionHtml": null,
+        "isHidden": null
+       },
+       {
+        "id": "5a6afe19-488a-46d8-b14f-c3eb3e6a5d52_dabf600b-4b2c-46ce-8b54-ba1b4619be7d",
+        "field": {
+         "id": "2d21ef19-954a-4590-a3ca-57c1667a577f",
+         "path": "dabf600b-4b2c-46ce-8b54-ba1b4619be7d",
+         "humanReadablePath": "",
+         "title": "LinkedIn URL",
+         "isNullable": false,
+         "isPrivate": false,
+         "isDeactivated": false,
+         "isMany": false,
+         "metadata": {},
+         "type": "String",
+         "__autoSerializationID": "StringField"
+        },
+        "isRequired": true,
+        "descriptionHtml": "<p>Please provide your LinkedIn URL</p>",
+        "isHidden": null
+       },
+       {
+        "id": "5a6afe19-488a-46d8-b14f-c3eb3e6a5d52_7663b541-a868-442c-a938-b9c697d03220",
+        "field": {
+         "id": "fe7f58c7-60b8-4394-80f7-b7c67843301f",
+         "path": "7663b541-a868-442c-a938-b9c697d03220",
+         "humanReadablePath": "",
+         "title": "Are you legally authorized to work in the United States?",
+         "isNullable": false,
+         "isPrivate": false,
+         "isDeactivated": false,
+         "isMany": false,
+         "metadata": {},
+         "type": "Boolean",
+         "__autoSerializationID": "BooleanField"
+        },
+        "isRequired": true,
+        "descriptionHtml": null,
+        "isHidden": null
+       },
+       {
+        "id": "5a6afe19-488a-46d8-b14f-c3eb3e6a5d52_29fefa95-4f71-4abb-9d8f-258417ef178d",
+        "field": {
+         "id": "7fae695b-a737-4b81-b449-c22b39344cb8",
+         "path": "29fefa95-4f71-4abb-9d8f-258417ef178d",
+         "humanReadablePath": "",
+         "title": "Will you require work sponsorship now and/or in the future?",
+         "isNullable": false,
+         "isPrivate": false,
+         "isDeactivated": false,
+         "isMany": false,
+         "metadata": {},
+         "type": "Boolean",
+         "__autoSerializationID": "BooleanField"
+        },
+        "isRequired": true,
+        "descriptionHtml": null,
+        "isHidden": null
+       },
+       {
+        "id": "5a6afe19-488a-46d8-b14f-c3eb3e6a5d52_7054581f-4346-4d2b-88b2-f81a1bfd9dd8",
+        "field": {
+         "id": "bad757ec-ebf9-4850-8597-1ef93c0909f3",
+         "path": "7054581f-4346-4d2b-88b2-f81a1bfd9dd8",
+         "humanReadablePath": "",
+         "title": "Mercor follows an on-site work culture. Are you willing to work in the office Monday-Friday?",
+         "isNullable": false,
+         "isPrivate": false,
+         "isDeactivated": false,
+         "isMany": false,
+         "metadata": {},
+         "type": "Boolean",
+         "__autoSerializationID": "BooleanField"
+        },
+        "isRequired": true,
+        "descriptionHtml": null,
+        "isHidden": null
+       },
+       {
+        "id": "5a6afe19-488a-46d8-b14f-c3eb3e6a5d52_ee7b9818-b2ed-485c-bace-8bce75b1913f",
+        "field": {
+         "id": "865c6b9e-f765-4128-9eff-702cea9a6988",
+         "path": "ee7b9818-b2ed-485c-bace-8bce75b1913f",
+         "humanReadablePath": "",
+         "title": "Are you located in  San Francisco or NYC, and/or willing to relocate?",
+         "isNullable": false,
+         "isPrivate": false,
+         "isDeactivated": false,
+         "isMany": false,
+         "metadata": {},
+         "type": "Boolean",
+         "__autoSerializationID": "BooleanField"
+        },
+        "isRequired": true,
+        "descriptionHtml": null,
+        "isHidden": null
+       },
+       {
+        "id": "5a6afe19-488a-46d8-b14f-c3eb3e6a5d52_3bcb2b24-b577-4b92-a629-bb0ed40de579",
+        "field": {
+         "id": "b9e4b875-10f7-4493-9799-c108c3d4f67d",
+         "path": "3bcb2b24-b577-4b92-a629-bb0ed40de579",
+         "humanReadablePath": "",
+         "title": "Which office are you applying to? (Select both if appropriate)",
+         "isNullable": false,
+         "isPrivate": false,
+         "isDeactivated": false,
+         "isMany": false,
+         "metadata": {},
+         "type": "MultiValueSelect",
+         "selectableValues": [
+          {
+           "label": "San Francisco HQ - 181 Fremont Street",
+           "value": "San Francisco HQ - 181 Fremont Street"
+          },
+          {
+           "label": "New York City - 1 World Trade",
+           "value": "New York City - 1 World Trade",
+           "isArchived": false
+          }
+         ],
+         "__autoSerializationID": "MultiValueSelectField"
+        },
+        "isRequired": true,
+        "descriptionHtml": null,
+        "isHidden": null
+       }
+      ]
+     }
+    ]
+   }
+  }
+ }
+}

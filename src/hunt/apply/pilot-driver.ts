@@ -280,8 +280,8 @@ export async function applyWithPilot(params: {
     }
   }
 
-  await attachResume(page, resumePath).catch(() => undefined)
-  uploaded = true
+  // Fixed: remember whether the upload actually worked, so a later file input still gets the résumé.
+  uploaded = await attachResume(page, resumePath).catch(() => false)
 
   for (let step = 0; step < MAX_STEPS; step += 1) {
     if (await hasSubmissionConfirmation(page, page.url())) {
@@ -462,8 +462,12 @@ export async function applyWithPilot(params: {
     })
 
     if (pageKind === 'confirmation' || next === 'done') {
-      confirmed = true
-      break
+      // Fixed: the classifier saying "done" is not evidence. Only the page is.
+      if (await hasSubmissionConfirmation(page, page.url())) {
+        confirmed = true
+        break
+      }
+      history.push('done-unverified')
     }
     if (pageKind === 'closed') {
       return {
@@ -519,6 +523,11 @@ export async function applyWithPilot(params: {
       uploaded = true
       history.push('upload:resume')
       await new Promise((resolve) => setTimeout(resolve, 500))
+      continue
+    }
+    if (next === 'click' && target && submitClick) {
+      // Fixed: a final-submit click only ever happens through submitForm's durable fence.
+      history.push(`refused-unfenced-submit:${target.label}`)
       continue
     }
     if (next === 'click' && target) {

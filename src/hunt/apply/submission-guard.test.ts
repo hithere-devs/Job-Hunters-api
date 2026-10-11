@@ -22,3 +22,20 @@ it('submission scopes do not leak across concurrent users',async()=>{
  assert.equal(fences,2)
  assert.equal(submissionWasAttempted(),false)
 })
+it('allows another click only after a provably rejected one',async()=>{
+ const { recordSubmissionOutcome, releaseSubmissionAfterRejection } = await import('./submission-guard.js')
+ const outcomes:string[]=[]
+ let fences=0
+ await withSubmissionGuard(async()=>{
+  await beforeSubmission()
+  await recordSubmissionOutcome('rejected_validation','errors shown')
+  releaseSubmissionAfterRejection()
+  assert.equal(submissionWasAttempted(),false)
+  await beforeSubmission()
+  await recordSubmissionOutcome('uncertain','no signal')
+  assert.throws(()=>releaseSubmissionAfterRejection(),/provably rejected/)
+  await assert.rejects(beforeSubmission(),/already attempted/)
+ },async()=>{fences++},async(outcome)=>{outcomes.push(outcome)})
+ assert.equal(fences,2)
+ assert.deepEqual(outcomes,['rejected_validation','uncertain'])
+})

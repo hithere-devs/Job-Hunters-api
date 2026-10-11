@@ -1,5 +1,7 @@
 # OpenClaw application rollout
 
+> Historical. The live driver is now `planned` ([apply-planned.md](apply-planned.md)). The runner never used OpenClaw after Sep 19 (`APPLY_DRIVER=jev`).
+
 ## Current result, 2026-09-16
 
 The tenant 2 OpenClaw extension is installed, enabled, paired and active for application reasoning. Huntly's API, fallback apply agent, classify/draft/answer-resolver routes, and every tenant OpenClaw gateway now use DeepSeek V4.1 Flash (`deepseek-flash`) with an 8192-token application output cap. Vertex Gemini is no longer on the live apply path.

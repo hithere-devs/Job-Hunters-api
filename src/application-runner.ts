@@ -4,11 +4,14 @@ import { closeDatabase } from './db/client.js'
 import { closeAttemptEvents } from './hunt/apply/events.js'
 import { closeRedis } from './lib/redis.js'
 import { logger } from './lib/logger.js'
+import { closeEphemeralBrowser } from './browser/ephemeral.js'
+import { closeLanes } from './hunt/apply/lanes.js'
+import { runnerVersion } from './lib/build-info.js'
 
 /** The VM's runner process. LinkedIn/outreach workers deliberately stay off it. */
 if (!hasRedis || !env.PORTAL_AUTOMATION_ENABLED) throw new Error('VM application runner requires Redis and PORTAL_AUTOMATION_ENABLED=true')
 const worker = startApplicationWorker()
-logger.info({dryRun:env.APPLY_DRY_RUN,browserProvider:env.BROWSER_PROVIDER,applyDriver:env.APPLY_DRIVER,queue:env.APPLICATION_QUEUE_NAME},'VM application runner started; this process fills ATS forms')
+logger.info({version:runnerVersion(),dryRun:env.APPLY_DRY_RUN,browserProvider:env.BROWSER_PROVIDER,anonBrowser:env.APPLY_ANON_BROWSER,applyDriver:env.APPLY_DRIVER,concurrency:env.RUNNER_APPLY_CONCURRENCY,queue:env.APPLICATION_QUEUE_NAME},'VM application runner started; this process fills ATS forms')
 let stopping=false
 async function shutdown(signal:string) {
   if(stopping)return;stopping=true
@@ -18,6 +21,8 @@ async function shutdown(signal:string) {
   try {
     await worker.pause(true)
     await closeApplicationQueue()
+    await closeEphemeralBrowser()
+    await closeLanes()
     await closeAttemptEvents()
     await closeRedis()
     await closeDatabase()

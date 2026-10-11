@@ -16,7 +16,7 @@ describe('application execution policy',()=>{
     assert.equal(effectiveConcurrency(0,false),1)
   })
   it('never retries unknown or confirmed submissions',()=>{
-    for(const status of ['unknown','submitting','submitted','submitted_unconfirmed','pending']) assert.ok(safeRetryReason('needs_review',[{status}],[]))
+    for(const status of ['unknown','submitting','submitted','pending']) assert.ok(safeRetryReason('needs_review',[{status}],[]))
     assert.ok(safeRetryReason('applied',[],[]))
     assert.ok(safeRetryReason('failed',[{status:'failed'}],[{state:'submitting'}]))
     assert.ok(safeRetryReason('needs_review',[{status:'needs_review'}],[{state:'submitted'}]))
@@ -39,13 +39,21 @@ it('invalid_fields and no_form without a fence are retryable',()=>{
  assert.equal(safeRetryReason('needs_review',[{status:'needs_review',error:'Not submitted: invalid_fields',submitStartedAt:null}],[]),null)
  assert.equal(safeRetryReason('needs_review',[{status:'needs_review',error:'Not submitted: no_form'}],[]),null)
 })
-it('confirmedNotSubmitted allows a fenced unconfirmed miss and still refuses spam',()=>{
- const fenced={status:'unknown',submitStartedAt:new Date(),error:'Submit was clicked, but confirmation was not observed. Check the provider; do not retry automatically.'}
+it('the fence wins over the blanket confirmedNotSubmitted the UI always sends',()=>{
+ const fenced={status:'unknown',submitStartedAt:new Date(),submitOutcome:'uncertain',error:'Submit was clicked, but confirmation was not observed.'}
  assert.ok(safeRetryReason('needs_review',[fenced],[]))
- assert.equal(safeRetryReason('needs_review',[fenced],[],{confirmedNotSubmitted:true}),null)
- assert.ok(safeRetryReason('needs_review',[{status:'needs_review',error:'The provider rejected this submission as possible spam. This is not a missing-answer issue. Automatic retry is disabled; contact the provider to resolve the block.'}],[{state:'blocked',reason:'provider_blocked'}],{confirmedNotSubmitted:true}))
- assert.ok(safeRetryReason('needs_review',[{status:'needs_review',error:'The provider rejected this submission as possible spam. This is not a missing-answer issue. Automatic retry is disabled; contact the provider to resolve the block.'}],[],{confirmedNotSubmitted:true}))
- assert.ok(safeRetryReason('needs_review',[{status:'submitting'}],[],{confirmedNotSubmitted:true}))
+ assert.ok(safeRetryReason('needs_review',[fenced],[],{confirmedNotSubmitted:true}))
+ assert.equal(safeRetryReason('needs_review',[fenced],[],{confirmedNotSubmitted:true,providerChecked:true}),null)
+ assert.ok(safeRetryReason('needs_review',[{status:'needs_review',error:'The provider rejected this submission as possible spam. This is not a missing-answer issue. Automatic retry is disabled; contact the provider to resolve the block.'}],[{state:'blocked',reason:'provider_blocked'}],{confirmedNotSubmitted:true,providerChecked:true}))
+ assert.ok(safeRetryReason('needs_review',[{status:'needs_review',failureClass:'provider_rejected'}],[],{providerChecked:true}))
+ assert.ok(safeRetryReason('needs_review',[{status:'submitting'}],[],{confirmedNotSubmitted:true,providerChecked:true}))
+})
+it('a provably rejected click is retryable despite its fence',()=>{
+ assert.equal(safeRetryReason('needs_review',[{status:'needs_review',submitStartedAt:new Date(),submitOutcome:'rejected_validation',failureClass:'needs_answer'}],[{state:'submitting'}]),null)
+})
+it('a classified pre-submit failure is retryable; a confirmed submission never is',()=>{
+ assert.equal(safeRetryReason('failed',[{status:'failed',failureClass:'transient'}],[]),null)
+ assert.ok(safeRetryReason('needs_review',[{status:'needs_review',submitStartedAt:new Date(),submitOutcome:'confirmed_by_email'}],[],{providerChecked:true}))
 })
 it('an interrupted worker with no submit fence is retryable',()=>{
  assert.equal(safeRetryReason('needs_review',[{status:'unknown',error:'Application worker stopped before this attempt completed.',submitStartedAt:null}],[]),null)

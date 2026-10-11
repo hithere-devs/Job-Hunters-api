@@ -67,14 +67,15 @@ test('Flexport verification gate is not a submitted application', () => {
   assert.equal(terminal.unresolved[0]?.why, 'login_required')
 })
 
-test('empty required radios do not block submit; the page error after click is the source of truth', () => {
+test('a known-empty required field blocks submit instead of clicking and hoping', () => {
   const leftover = filterPilotUnresolved([
     element({ label: 'Do you now, or in the future require sponsorship?', role: 'radio', filled: false }),
   ])
   assert.equal(leftover.length, 1)
   const terminal = decidePilotTerminal({ leftover, confirmed: false, verificationPending: false, looksLikeForm: true, filledCount: 8 })
-  assert.equal(terminal.kind, 'can_submit')
-  assert.equal(terminal.canSubmit, true)
+  assert.equal(terminal.kind, 'needs_review')
+  assert.equal(terminal.canSubmit, false)
+  assert.equal(terminal.unresolved.length, 1)
 })
 
 test('confirmed thank-you maps to submitted', () => {

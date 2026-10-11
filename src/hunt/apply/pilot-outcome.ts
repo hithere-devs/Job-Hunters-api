@@ -47,8 +47,10 @@ export function decidePilotTerminal(input: {
       submitted: false,
     }
   }
-  if (input.looksLikeForm || input.filledCount > 0) {
-    return { kind: 'can_submit', unresolved: input.leftover, canSubmit: true, submitted: false }
+  // Fixed: a form with known-empty required fields is not submittable. This
+  // was production's largest failure ("Submit control", 47 attempts).
+  if ((input.looksLikeForm || input.filledCount > 0) && input.leftover.length === 0) {
+    return { kind: 'can_submit', unresolved: [], canSubmit: true, submitted: false }
   }
   if (input.leftover.length > 0) {
     return { kind: 'needs_review', unresolved: input.leftover, canSubmit: false, submitted: false }

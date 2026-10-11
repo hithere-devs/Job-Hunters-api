@@ -4,19 +4,41 @@ import type { Page } from 'playwright-core'
 import { formReady, pageLooksLikeNoForm, postingIsClosed, remeasureApplication, submitForm } from './fill.js'
 import { withSubmissionGuard } from './submission-guard.js'
 
-function fixturePage(confirmed:boolean) {
- let clicks=0; let observedBeforeClick=false
- const body={innerText:async()=>confirmed ? 'Thank you for applying' : 'Application form'}
- const submit={count:async()=>1,isVisible:async()=>true,evaluate:async()=>true,click:async()=>{clicks++}}
+const FAST={visibleMs:300,writesMs:200,quietMs:10,pollMs:20}
+
+/**
+ * A fake page rich enough for the click evidence: in-page state, submit
+ * visibility, and the request events the network watch listens to.
+ */
+function clickFixture(options:{url?:string;text?:string;onClick?:(page:{state:Record<string,unknown>;send:(method:string,path:string,status:number)=>void})=>void}={}) {
+ const url=options.url ?? 'https://jobs.ashbyhq.com/fixture/application'
+ const state:Record<string,unknown>={url,text:options.text ?? 'Application form\nSubmit application',formPresent:true,submitVisible:true,invalidCount:0,errorTexts:[],codeInputs:0}
+ const listeners:Record<string,Array<(arg:unknown)=>void>>={}
+ let clicks=0
+ const send=(method:string,path:string,status:number)=>{
+  const response={status:()=>status}
+  const request={method:()=>method,url:()=>new URL(path,url).toString(),isNavigationRequest:()=>false,response:async()=>response}
+  for(const fn of listeners.request??[])fn(request)
+  for(const fn of listeners.requestfinished??[])fn(request)
+ }
+ const submit={count:async()=>1,isVisible:async()=>Boolean(state.submitVisible),evaluate:async()=>true,click:async()=>{clicks++;options.onClick?.({state,send})}}
  const page={
-  url:()=> 'https://fixture.invalid/apply',
-  locator:(selector:string)=>selector==='body' ? body : {...submit,first:()=>submit},
-  waitForFunction:async()=>{observedBeforeClick=clicks===0;if(!confirmed)throw new Error('fixture timeout')},
-  waitForURL:async()=>{throw new Error('fixture same URL')},
-  waitForSelector:async()=>{throw new Error('fixture form remains')},
-  waitForResponse:async()=>{throw new Error('fixture no response')},
+  url:()=>String(state.url),
+  locator:(selector:string)=>selector==='body'?{innerText:async()=>String(state.text)}:{...submit,first:()=>submit},
+  evaluate:async(_fn:unknown,arg?:unknown)=>typeof arg==='string'?{emptyCombobox:false,emptyYesNo:false,emptySelect:false,emptyResume:false,emptyText:false}:({url:state.url,text:state.text,formPresent:state.formPresent,invalidCount:state.invalidCount,errorTexts:state.errorTexts,codeInputs:state.codeInputs}),
+  on:(event:string,fn:(arg:unknown)=>void)=>{(listeners[event]??=[]).push(fn)},
+  off:(event:string,fn:(arg:unknown)=>void)=>{listeners[event]=(listeners[event]??[]).filter(item=>item!==fn)},
  } as unknown as Page
- return {page,clicks:()=>clicks,observedBeforeClick:()=>observedBeforeClick}
+ return {page,clicks:()=>clicks,state}
+}
+async function withOpenPosting<T>(work:()=>Promise<T>):Promise<T>{
+ const original=globalThis.fetch
+ globalThis.fetch=(async()=>new Response('{}',{status:200})) as typeof fetch
+ try { return await work() } finally { globalThis.fetch=original }
+}
+function guarded<T>(work:()=>Promise<T>){
+ const record={fences:0,outcomes:[] as string[]}
+ return withSubmissionGuard(work,async()=>{record.fences++},async(outcome)=>{record.outcomes.push(outcome)}).then(result=>({result,...record}))
 }
 it('verification gate before click is invalid_fields and never clicks or fences',async()=>{
  let fences=0
@@ -24,10 +46,6 @@ it('verification gate before click is invalid_fields and never clicks or fences'
  const page={
   url:()=> 'https://job-boards.greenhouse.io/flexport/jobs/8141246',
   locator:(selector:string)=>selector==='body' ? {innerText:async()=>"A verification code was sent to mywritingfrenzy@gmail.com. Enter the 8-character code to confirm you're a human."} : {...submit,first:()=>submit},
-  waitForFunction:async()=>{throw new Error('fixture timeout')},
-  waitForURL:async()=>{throw new Error('fixture same URL')},
-  waitForSelector:async()=>{throw new Error('fixture form remains')},
-  waitForResponse:async()=>{throw new Error('fixture no response')},
  } as unknown as Page
  const result=await withSubmissionGuard(async()=>submitForm({page,url:'https://job-boards.greenhouse.io/flexport/jobs/8141246',dryRun:false}),async()=>{fences++})
  assert.equal(result.heldBack,'invalid_fields')
@@ -36,84 +54,57 @@ it('verification gate before click is invalid_fields and never clicks or fences'
  assert.equal(fences,0)
 })
 it('dry-run never clicks final submit',async()=>{
- const fixture=fixturePage(false)
- const result=await submitForm({page:fixture.page,url:'https://fixture.invalid/apply',dryRun:true})
+ const fixture=clickFixture()
+ const result=await submitForm({page:fixture.page,url:'https://fixture.invalid/apply',dryRun:true,settle:FAST})
  assert.equal(result.heldBack,'dry_run');assert.equal(fixture.clicks(),0)
 })
-it('absent confirmation after a fixture click is submitted_unconfirmed, never safe to retry',async()=>{
- const fixture=fixturePage(false)
- const result=await submitForm({page:fixture.page,url:'https://fixture.invalid/apply',dryRun:false})
- assert.equal(result.result,'submitted_unconfirmed');assert.equal(fixture.clicks(),1);assert.equal(fixture.observedBeforeClick(),true)
+it('the fence is written before the click, and an accepted write with no confirmation is uncertain',async()=>{
+ const order:string[]=[]
+ const fixture=clickFixture({onClick:({send})=>{order.push('click');send('POST','/api/non-user-graphql',200)}})
+ const {result,outcomes}=await withSubmissionGuard(async()=>({result:await submitForm({page:fixture.page,url:'https://jobs.ashbyhq.com/fixture/application',dryRun:false,settle:FAST}),outcomes:[]}),async()=>{order.push('fence')})
+ assert.deepEqual(order,['fence','click'])
+ assert.equal(result.result,'submitted_unconfirmed');assert.equal(result.outcome,'uncertain');assert.equal(outcomes.length,0)
 })
-it('confirmation after a fixture click is submitted',async()=>{
- const fixture=fixturePage(true)
- const result=await submitForm({page:fixture.page,url:'https://fixture.invalid/apply',dryRun:false})
- assert.equal(result.result,'submitted');assert.equal(result.submitted,true)
+it('confirmation text after the form closes is submitted',async()=>{
+ const fixture=clickFixture({onClick:({state,send})=>{send('POST','/api/non-user-graphql',200);state.text='Thanks for applying!\nYour application was successfully submitted.';state.formPresent=false;state.submitVisible=false}})
+ const {result,fences,outcomes}=await guarded(()=>submitForm({page:fixture.page,url:'https://jobs.ashbyhq.com/fixture/application',dryRun:false,settle:FAST}))
+ assert.equal(result.result,'submitted');assert.equal(result.submitted,true);assert.equal(fences,1);assert.deepEqual(outcomes,['confirmed'])
 })
-it('validation banner after click is invalid_fields and never fences',async()=>{
- let bodyText='Application form'
- let fences=0
- const submit={count:async()=>1,isVisible:async()=>true,evaluate:async()=>true,click:async()=>{bodyText='Your form needs corrections. This field is required.'}}
- const page={
-  url:()=> 'https://jobs.ashbyhq.com/fixture/application',
-  locator:(selector:string)=>selector==='body' ? {innerText:async()=>bodyText} : {...submit,first:()=>submit},
-  waitForFunction:async()=>{throw new Error('fixture timeout')},
-  waitForURL:async()=>{throw new Error('fixture same URL')},
-  waitForSelector:async()=>{throw new Error('fixture form remains')},
-  waitForResponse:async()=>{throw new Error('fixture no response')},
- } as unknown as Page
- const result=await withSubmissionGuard(async()=>submitForm({page,url:'https://jobs.ashbyhq.com/fixture/application',dryRun:false}),async()=>{fences++})
- assert.equal(result.heldBack,'invalid_fields');assert.equal(result.result,'not_submitted');assert.equal(fences,0)
+it('a job description that says thank you never confirms a click that sent nothing',async()=>{
+ const fixture=clickFixture({url:'https://job-boards.greenhouse.io/acme/jobs/1',text:'About Acme\nThank you for your interest in Acme!\nSubmit application'})
+ const {result,outcomes}=await withOpenPosting(()=>guarded(()=>submitForm({page:fixture.page,url:'https://job-boards.greenhouse.io/acme/jobs/1',dryRun:false,settle:FAST})))
+ assert.equal(result.submitted,false);assert.equal(result.heldBack,'invalid_fields');assert.deepEqual(outcomes,['rejected_validation'])
 })
-it('durable provider POST still fences as submitted_unconfirmed',async()=>{
- let fences=0
- const submit={count:async()=>1,isVisible:async()=>true,evaluate:async()=>true,click:async()=>{}}
- const page={
-  url:()=> 'https://jobs.ashbyhq.com/fixture/application',
-  locator:(selector:string)=>selector==='body' ? {innerText:async()=>'Application form'} : {...submit,first:()=>submit},
-  waitForFunction:async()=>{throw new Error('fixture timeout')},
-  waitForURL:async()=>{throw new Error('fixture same URL')},
-  waitForSelector:async()=>{throw new Error('fixture form remains')},
-  waitForResponse:async()=>'ok',
- } as unknown as Page
- const result=await withSubmissionGuard(async()=>submitForm({page,url:'https://jobs.ashbyhq.com/fixture/application',dryRun:false}),async()=>{fences++})
- assert.equal(result.result,'submitted_unconfirmed');assert.equal(fences,1)
+it('validation banner after click is a provable rejection and allows a corrected re-click',async()=>{
+ let round=0
+ const fixture=clickFixture({onClick:({state,send})=>{
+  round++
+  if(round===1){state.text='Application form\nYour form needs corrections. This field is required.';state.errorTexts=['This field is required.'];state.invalidCount=1;return}
+  send('POST','/api/non-user-graphql',200);state.text='Your application was successfully submitted.';state.formPresent=false;state.submitVisible=false
+ }})
+ const {result,fences,outcomes}=await guarded(async()=>{
+  const first=await submitForm({page:fixture.page,url:'https://jobs.ashbyhq.com/fixture/application',dryRun:false,settle:FAST})
+  assert.equal(first.heldBack,'invalid_fields');assert.equal(first.result,'not_submitted');assert.equal(first.outcome,'rejected_validation')
+  // The executor repairs the field; the banner goes away.
+  fixture.state.text='Application form\nSubmit application';fixture.state.errorTexts=[];fixture.state.invalidCount=0
+  return submitForm({page:fixture.page,url:'https://jobs.ashbyhq.com/fixture/application',dryRun:false,settle:FAST})
+ })
+ assert.equal(result.submitted,true);assert.equal(fences,2);assert.deepEqual(outcomes,['rejected_validation','confirmed'])
 })
-it('durable POST plus validation banner is invalid_fields and never fences',async()=>{
- let bodyText='Application form'
- let fences=0
- const submit={count:async()=>1,isVisible:async()=>true,evaluate:async()=>true,click:async()=>{bodyText='Your form needs corrections\nMissing entry for required field: How did you learn about this opportunity with Atlan?'}}
- const page={
-  url:()=> 'https://jobs.ashbyhq.com/fixture/application',
-  locator:(selector:string)=>selector==='body' ? {innerText:async()=>bodyText} : {...submit,first:()=>submit},
-  waitForFunction:async()=>{throw new Error('fixture timeout')},
-  waitForURL:async()=>{throw new Error('fixture same URL')},
-  waitForSelector:async()=>{throw new Error('fixture form remains')},
-  waitForResponse:async()=>'ok',
- } as unknown as Page
- const result=await withSubmissionGuard(async()=>submitForm({page,url:'https://jobs.ashbyhq.com/fixture/application',dryRun:false}),async()=>{fences++})
- assert.equal(result.heldBack,'invalid_fields');assert.equal(result.result,'not_submitted');assert.equal(fences,0)
+it('durable POST plus validation banner is a rejection, not a submission',async()=>{
+ const fixture=clickFixture({onClick:({state,send})=>{send('POST','/api/non-user-graphql',422);state.text='Your form needs corrections\nMissing entry for required field: How did you learn about this opportunity with Atlan?'}})
+ const {result,outcomes}=await guarded(()=>submitForm({page:fixture.page,url:'https://jobs.ashbyhq.com/fixture/application',dryRun:false,settle:FAST}))
+ assert.equal(result.heldBack,'invalid_fields');assert.equal(result.result,'not_submitted');assert.deepEqual(outcomes,['rejected_validation'])
 })
-it('delayed Greenhouse processing error after a 2xx POST is invalid_fields and never fences',async()=>{
- let reads=0
- let fences=0
- const submit={count:async()=>1,isVisible:async()=>true,evaluate:async()=>true,click:async()=>{}}
- const page={
-  url:()=> 'https://job-boards.greenhouse.io/reddit/jobs/8175520',
-  locator:(selector:string)=>selector==='body' ? {innerText:async()=>{
-    reads+=1
-    return reads<3 ? 'Application form Submit application' : 'There was an error processing your application. Please try again.\nSubmit application'
-  }} : {...submit,first:()=>submit},
-  waitForFunction:async()=>{throw new Error('fixture timeout')},
-  waitForURL:async()=>{throw new Error('fixture same URL')},
-  waitForSelector:async()=>{throw new Error('fixture form remains')},
-  waitForResponse:async()=>'ok',
- } as unknown as Page
- const result=await withSubmissionGuard(async()=>submitForm({page,url:'https://job-boards.greenhouse.io/reddit/jobs/8175520',dryRun:false}),async()=>{fences++})
- assert.equal(result.heldBack,'invalid_fields')
- assert.equal(result.result,'not_submitted')
- assert.equal(fences,0)
- assert.ok(reads>=3)
+it('Greenhouse processing error after a 2xx POST is a rejection',async()=>{
+ const fixture=clickFixture({url:'https://job-boards.greenhouse.io/reddit/jobs/8175520',onClick:({state,send})=>{send('POST','/reddit/jobs/8175520/applications',200);state.text='Application form\nThere was an error processing your application. Please try again.\nSubmit application'}})
+ const {result,outcomes}=await withOpenPosting(()=>guarded(()=>submitForm({page:fixture.page,url:'https://job-boards.greenhouse.io/reddit/jobs/8175520',dryRun:false,settle:FAST})))
+ assert.equal(result.heldBack,'invalid_fields');assert.equal(result.result,'not_submitted');assert.deepEqual(outcomes,['rejected_validation'])
+})
+it('the emailed-code gate after a click is verification_required and permits a second click',async()=>{
+ const fixture=clickFixture({url:'https://job-boards.greenhouse.io/acme/jobs/1',onClick:({state,send})=>{send('POST','/acme/jobs/1/applications',200);state.text='Application form\nA verification code was sent to you. Enter the 8-character code.';state.codeInputs=8}})
+ const {result,outcomes}=await withOpenPosting(()=>guarded(()=>submitForm({page:fixture.page,url:'https://job-boards.greenhouse.io/acme/jobs/1',dryRun:false,settle:FAST})))
+ assert.equal(result.result,'verification_required');assert.deepEqual(outcomes,['verification_required'])
 })
 it('empty required combobox is not formReady',async()=>{
  const submit={count:async()=>1,isVisible:async()=>true,evaluate:async()=>true,click:async()=>{throw new Error('must not click')}}

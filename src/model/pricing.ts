@@ -26,6 +26,11 @@ const RATES: Record<string, Rate> = {
   // TypeSafe Jev, published 2026-09: $0.042 / million input, output free.
   'jev-latest': { input: 0.042, output: 0 },
   jev: { input: 0.042, output: 0 },
+  // Anthropic first-party rates, 2026-10.
+  'claude-fable-5-1': { input: 10, output: 50 },
+  'claude-opus-5-5': { input: 4, output: 20 },
+  'claude-sonnet-5-5': { input: 2, output: 10 },
+  'claude-haiku-5-5': { input: 0.1, output: 0.5 },
   'claude-fable-5': { input: 10, output: 50 },
   'claude-mythos-5': { input: 10, output: 50 },
   'claude-opus-5': { input: 5, output: 25 },

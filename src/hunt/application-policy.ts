@@ -7,38 +7,55 @@ export function dailyBudget(used: number, configured = 100, now = new Date()) {
 export function effectiveConcurrency(configured: number, vmProfile: boolean) {
   return vmProfile ? 1 : Math.max(1, Math.min(4, configured))
 }
-/** Never retry evidence that may represent a completed external submission. */
+export interface RetryAttemptEvidence {
+  status: string
+  submitStartedAt?: Date | null
+  submitOutcome?: string | null
+  failureClass?: string | null
+  error?: string | null
+  submittedFields?: unknown
+}
+
+const FENCED_RETRY = 'A submit may have reached the employer. Check with the employer that no application was received, then confirm that to retry.'
+const SUBMITTED_RETRY = 'This application was submitted. Retrying would send a duplicate.'
+
+/**
+ * Never retry evidence that may represent a completed external submission.
+ *
+ * The durable fence decides, not the caller's say-so: `confirmedNotSubmitted`
+ * (which the UI sends on every retry) no longer unlocks a fenced attempt. Only
+ * an explicit `providerChecked` acknowledgement does, and only when the click
+ * was not provably rejected.
+ */
 export function safeRetryReason(
   status: string,
-  attempts: Array<{status: string; submitStartedAt?: Date | null; error?: string | null; submittedFields?: unknown}>,
+  attempts: RetryAttemptEvidence[],
   events: Array<{state: string; detail?: unknown; reason?: string | null}>,
-  options?: {confirmedNotSubmitted?: boolean},
+  options?: {confirmedNotSubmitted?: boolean; providerChecked?: boolean},
 ) {
   if (!['failed', 'needs_review', 'closed'].includes(status)) return 'Only failed, cancelled, or review applications can be retried.'
   const latest = attempts[0]
-  const spam = Boolean(latest?.error && /(?:flagged|rejected this submission) as possible spam/i.test(latest.error)) || events.some((event) => event.reason === 'provider_blocked')
-  if (spam) return 'The provider rejected this submission as possible spam. Automatic retry is disabled.'
-  if (latest?.status === 'submitted' || events.some((event) => event.state === 'submitted')) {
-    return 'Submission is completed or uncertain. Check the provider; automatic retry is unsafe.'
-  }
-  if (['submitting', 'pending'].includes(latest?.status ?? '')) {
-    return 'A submit was attempted. Check the provider; automatic retry is unsafe.'
-  }
-  const submittingLive = events.some((event) => event.state === 'submitting' && (event.detail as {dryRun?: boolean} | null)?.dryRun !== true)
-  const dryRun = latest?.status === 'unknown'
-    && ['Not submitted: dry_run', 'Not submitted: kill_switch'].includes(latest.error ?? '')
-    && !latest.submitStartedAt
-  const interrupted = /worker stopped before this attempt completed/i.test(latest?.error ?? '')
-  const heldBack = /Not submitted: (?:invalid_fields|no_form|dry_run|kill_switch|no_submit_control|posting_closed)/.test(latest?.error ?? '')
-  if ((heldBack || dryRun || interrupted) && !latest?.submitStartedAt && !submittingLive) return null
-  if (!latest?.submitStartedAt && !submittingLive && ['needs_review', 'failed'].includes(latest?.status ?? '')) return null
   if (!latest) return null
-  if (options?.confirmedNotSubmitted) return null
-  if (latest.submitStartedAt) return 'A submit was attempted. Check the provider; automatic retry is unsafe.'
-  if (['submitted', 'submitted_unconfirmed', 'unknown', 'submitting', 'pending'].includes(latest.status) && !dryRun) {
-    return 'Submission is completed or uncertain. Check the provider; automatic retry is unsafe.'
+  const spam = latest.failureClass === 'provider_rejected'
+    || /(?:flagged|rejected this submission) as possible spam/i.test(latest.error ?? '')
+    || events.some((event) => event.reason === 'provider_blocked')
+  if (spam) return 'The provider rejected this submission as possible spam. Automatic retry is disabled.'
+  if (latest.status === 'submitted' || ['confirmed', 'confirmed_by_email'].includes(latest.submitOutcome ?? '') || events.some((event) => event.state === 'submitted')) {
+    return SUBMITTED_RETRY
   }
-  if (submittingLive) return 'A submit was attempted. This application cannot be retried automatically.'
+  if (['submitting', 'pending'].includes(latest.status)) {
+    return 'This attempt is still running or stopped mid-submit. Check the provider; automatic retry is unsafe.'
+  }
+  const liveSubmitEvent = events.some((event) => event.state === 'submitting' && (event.detail as {dryRun?: boolean} | null)?.dryRun !== true)
+  const fenced = Boolean(latest.submitStartedAt) || liveSubmitEvent
+  const provablyRejected = ['rejected_validation', 'verification_required'].includes(latest.submitOutcome ?? '')
+  if (fenced && !provablyRejected) return options?.providerChecked ? null : FENCED_RETRY
+  if (latest.status === 'unknown' && !latest.failureClass) {
+    // Rows written before the fence moved ahead of the click: an `unknown`
+    // with no class may hide a click. Pre-submit evidence clears it.
+    const preSubmit = /Not submitted: (?:invalid_fields|no_form|dry_run|kill_switch|no_submit_control|posting_closed)|worker stopped before this attempt completed/i.test(latest.error ?? '')
+    if (!preSubmit) return options?.providerChecked ? null : 'The outcome of this attempt is unknown. Check the provider; automatic retry is unsafe.'
+  }
   return null
 }
 

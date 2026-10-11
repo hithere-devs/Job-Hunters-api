@@ -1,6 +1,6 @@
-import { and, desc, eq } from 'drizzle-orm'
+import { and, desc, eq, isNotNull } from 'drizzle-orm'
 import { db } from '../db/client.js'
-import { applications, emailAccounts, emailMessages, notifications } from '../db/schema.js'
+import { applicationEvents, applications, applyAttempts, emailAccounts, emailMessages, huntCandidates, notifications } from '../db/schema.js'
 import { logger } from '../lib/logger.js'
 import { classifyEmail, mightBeJobMail, URGENCY_FOR, type EmailClass } from './classify.js'
 import { matchEmail, type MatchableApplication } from './match.js'
@@ -154,6 +154,11 @@ export async function sweepInbox(userId: string, source: InboxSource): Promise<S
       result.announced += 1
     }
 
+    // A receipt settles an uncertain submit: the employer has the application.
+    if (classification.classification === 'application_ack' && match.applicationId) {
+      await confirmSubmissionByEmail(userId, match.applicationId, message.receivedAt).catch(() => undefined)
+    }
+
     // A rejection updates the application quietly rather than announcing
     // itself. It is the most common outcome of applying at volume, and being
     // greeted by a wall of them is how the one interview invite gets missed.
@@ -185,4 +190,29 @@ function titleFor(classification: EmailClass, company: string | null): string {
     default:
       return `Update${where}`
   }
+}
+
+/**
+ * An "application received" email for an application whose submit click was
+ * uncertain is the positive evidence we were missing. Upgrades the latest
+ * fenced attempt and the application to submitted; never touches an attempt
+ * that was not clicked.
+ */
+export async function confirmSubmissionByEmail(userId: string, applicationId: string, receivedAt: Date): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    const [application] = await tx.select().from(applications).where(and(eq(applications.id, applicationId), eq(applications.userId, userId))).limit(1)
+    if (!application?.jobId || ['applied', 'viewed', 'interview', 'rejected'].includes(application.status)) return false
+    const jobId = application.jobId
+    const [attempt] = await tx.select({ id: applyAttempts.id, submitStartedAt: applyAttempts.submitStartedAt, candidateId: applyAttempts.candidateId })
+      .from(applyAttempts)
+      .innerJoin(huntCandidates, eq(huntCandidates.id, applyAttempts.candidateId))
+      .where(and(eq(applyAttempts.userId, userId), eq(huntCandidates.jobId, jobId), isNotNull(applyAttempts.submitStartedAt)))
+      .orderBy(desc(applyAttempts.createdAt)).limit(1)
+    if (!attempt?.submitStartedAt || attempt.submitStartedAt.getTime() > receivedAt.getTime() + 60_000) return false
+    await tx.update(applyAttempts).set({ status: 'submitted', submitOutcome: 'confirmed_by_email', failureClass: null, updatedAt: new Date() }).where(eq(applyAttempts.id, attempt.id))
+    await tx.update(huntCandidates).set({ status: 'applied', updatedAt: new Date() }).where(eq(huntCandidates.id, attempt.candidateId))
+    await tx.update(applications).set({ status: 'applied', appliedAt: application.appliedAt ?? attempt.submitStartedAt, notes: 'Confirmed by the employer’s receipt email.', updatedAt: new Date() }).where(eq(applications.id, applicationId))
+    await tx.insert(applicationEvents).values({ applicationId, fromStatus: application.status, toStatus: 'applied', note: 'Confirmed by the employer’s receipt email.' })
+    return true
+  })
 }

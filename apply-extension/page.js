@@ -1,6 +1,6 @@
 /* Apply Pilot page script. MAIN world. Snapshot + primitive actions only. */
 (() => {
-  if (window.__APPLY_PILOT__?.version >= 16) return
+  if (window.__APPLY_PILOT__?.version >= 17) return
 
   const ENTRY_SEL = '.ashby-application-form-field-entry, [data-field-entry-id], fieldset[class*="fieldEntry"], .field-wrapper, .phone-input__country, .application-question, li.application-question, .opening-form__field, [data-qa="field"], .form-field, .application-field'
   const OPTION_SEL = [
@@ -305,6 +305,18 @@
       const wrap = checked.closest('label')?.textContent?.trim() || ''
       return (forLabel || wrap || checked.value || '').replace(/\s+/g, ' ').trim()
     }
+    const boxes = Array.from(node.querySelectorAll('input[type="checkbox"]'))
+    if (boxes.length > 1 && !(node instanceof HTMLInputElement)) {
+      return boxes
+        .filter((box) => box instanceof HTMLInputElement && box.checked)
+        .map((box) => {
+          const id = box.getAttribute('id')
+          const forLabel = id ? document.querySelector(`label[for="${CSS.escape(id)}"]`)?.textContent?.trim() || '' : ''
+          return (forLabel || box.closest('label')?.textContent?.trim() || box.value || '').replace(/\s+/g, ' ').trim()
+        })
+        .filter(Boolean)
+        .join(', ')
+    }
     const ariaRadio = Array.from(node.querySelectorAll('[role="radio"], [aria-pressed]')).find((item) => item.getAttribute('aria-checked') === 'true' || item.getAttribute('aria-pressed') === 'true')
     if (ariaRadio) return (ariaRadio.textContent || '').replace(/\s+/g, ' ').trim()
     const control = controlFor(node)
@@ -338,7 +350,7 @@
   function requiredOf(node, label, control) {
     if (/(?:[✱*]|\(required\))\s*$/i.test(label)) return true
     const scope = node instanceof Element ? (node.closest(ENTRY_SEL) || node) : node
-    if (scope instanceof Element && scope.querySelector('[required], [aria-required="true"], [class*="_required_"]')) return true
+    if (scope instanceof Element && scope.querySelector('[required], [aria-required="true"], [class*="_required_"], label .required, legend .required, label .asterisk, legend .asterisk')) return true
     if (control && (control.required || control.getAttribute?.('aria-required') === 'true')) return true
     return false
   }
@@ -355,6 +367,12 @@
   }
   function roleOf(node, control) {
     if (node instanceof Element && (node.matches('.ashby-application-form-input-yesno') || node.querySelector('.ashby-application-form-input-yesno'))) return 'yesno'
+    // A wrapper with no text-like control: it is a choice group. act() must agree
+    // with snapshot() here, or a checkbox group is "filled" as a text box.
+    if (node instanceof Element && !(node instanceof HTMLInputElement) && (control === node || control instanceof HTMLInputElement && (control.type === 'radio' || control.type === 'checkbox'))) {
+      if (node.querySelector('input[type="radio"]')) return 'radio'
+      if (node.querySelectorAll('input[type="checkbox"]').length > 1) return 'checkbox'
+    }
     if (control instanceof HTMLSelectElement) return 'select'
     if (control instanceof HTMLTextAreaElement) return 'textarea'
     if (control instanceof HTMLInputElement) {
@@ -432,6 +450,26 @@
     }
     return cleanLabel(control?.getAttribute?.('placeholder') || control?.getAttribute?.('name') || '').slice(0, 200)
   }
+  /**
+   * Stable identifiers near a control: its own id/name and those of inputs
+   * inside its wrapper. ATS schemas key fields by exactly these (Greenhouse
+   * `question_123`, Ashby field paths), so matching does not depend on labels.
+   */
+  function hintsFor(node, control) {
+    const out = []
+    const push = (value) => { const text = String(value || '').trim(); if (text && text.length < 160 && !out.includes(text)) out.push(text) }
+    for (const el of [control, node]) {
+      if (!(el instanceof Element)) continue
+      push(el.getAttribute('id')); push(el.getAttribute('name')); push(el.getAttribute('data-field-path')); push(el.getAttribute('aria-describedby'))
+    }
+    const scope = node instanceof Element ? (node.closest(ENTRY_SEL) || node) : null
+    if (scope instanceof Element) {
+      for (const input of Array.from(scope.querySelectorAll('input, select, textarea, label[for]')).slice(0, 8)) {
+        push(input.getAttribute('id')); push(input.getAttribute('name')); push(input.getAttribute('for'))
+      }
+    }
+    return out.slice(0, 10)
+  }
   function emitElement(found, node, extra) {
     const control = extra.control ?? controlFor(node)
     const role = extra.role ?? roleOf(node, control)
@@ -457,6 +495,7 @@
       options: options.slice(0, 30),
       enabled: !(control?.disabled),
       name: control?.getAttribute?.('name') || undefined,
+      hints: hintsFor(node, control),
     }
     if (role === 'button' || role === 'link') row.filled = false
     found.push(row)
@@ -479,8 +518,11 @@
       const textarea = entry.querySelector('textarea')
       const radios = Array.from(entry.querySelectorAll('input[type="radio"]'))
       const checks = Array.from(entry.querySelectorAll('input[type="checkbox"]')).filter((box) => !box.closest('.ashby-application-form-input-yesno'))
-      const rawLabel = questionLabel(entry) || (entry.querySelector('legend, .ashby-application-form-question-title, label')?.textContent || '').trim()
-      const label = cleanLabel(rawLabel)
+      // Required markers live in the raw label text ("Name*", "<span class=required>*</span>");
+      // questionLabel() cleans them away, so keep the raw text for requiredOf().
+      const titleNode = entry.querySelector('.application-label, legend, .ashby-application-form-question-title, label')
+      const rawLabel = (titleNode && !titleNode.querySelector('input, select, textarea') ? (titleNode.textContent || '').trim() : '') || questionLabel(entry)
+      const label = cleanLabel(questionLabel(entry) || rawLabel)
       if (yesno) {
         emitElement(found, yesno.closest(ENTRY_SEL) || yesno, { role: 'yesno', label: label || 'Yes or no', rawLabel, options: ['Yes', 'No'], control: yesno })
         covered.push(...Array.from(entry.querySelectorAll('input, select, textarea, button')))
@@ -831,7 +873,7 @@
       })
   })
 
-  const api = { version: 16, snapshot, act, harvest }
+  const api = { version: 17, snapshot, act, harvest }
   window.__APPLY_PILOT__ = api
   window.__HUNTLY_APPLY__ = api
 })()

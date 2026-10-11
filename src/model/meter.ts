@@ -29,6 +29,8 @@ export type Purpose =
   | 'apply-agent'
   | 'apply-jev'
   | 'apply-draft'
+  | 'apply-plan'
+  | 'apply-classify'
 
 export class ModelBudgetExceededError extends Error {
   constructor(spent: number, budget: number) {

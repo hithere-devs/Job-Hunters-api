@@ -26,7 +26,9 @@ import { listApplicationQuestions,listQuestionInbox,answerQuestions } from './qu
 import { safeRetryReason } from '../../hunt/application-policy.js'
 import { applicationPreflight } from './preflight.js'
 import { applicationQueueHealth } from '../../hunt/application-queue.js'
-import { cancelApplication, retryApplication, flagApplication } from './actions.js'
+import { cancelApplication, retryApplication, flagApplication, listOwnFlags, resolveOwnFlag } from './actions.js'
+import { applicationMetrics } from './metrics.js'
+import { FAILURE_COPY, type FailureClass } from '../../hunt/apply/failure.js'
 import { recordActivity } from '../../services/activity.js'
 
 export const applicationsRouter: Router = Router()
@@ -173,10 +175,17 @@ applicationsRouter.get('/preflight', asyncHandler(async (req, res) => {
 applicationsRouter.post('/:id/cancel', validate({params:idParamSchema}), asyncHandler(async(req,res) => {
   ok(res, await cancelApplication(currentUser(req).id,pathParam(req,'id')))
 }))
-applicationsRouter.post('/:id/retry', validate({params:idParamSchema,body:z.object({confirmedNotSubmitted:z.literal(true)})}), asyncHandler(async(req,res) => {
+applicationsRouter.post('/:id/retry', validate({params:idParamSchema,body:z.object({confirmedNotSubmitted:z.literal(true),providerChecked:z.boolean().optional()})}), asyncHandler(async(req,res) => {
   const preflight = await applicationPreflight(currentUser(req).id)
   if (!preflight.canApply) throw badRequest('Resolve application readiness issues before retrying.', {gaps:preflight.gaps})
-  ok(res, await retryApplication(currentUser(req).id,pathParam(req,'id'),{confirmedNotSubmitted:true}))
+  ok(res, await retryApplication(currentUser(req).id,pathParam(req,'id'),{confirmedNotSubmitted:true,providerChecked:req.body.providerChecked===true}))
+}))
+applicationsRouter.get('/metrics', validate({query:z.object({days:z.coerce.number().int().min(1).max(180).optional()})}), asyncHandler(async(req,res)=>{
+  ok(res, await applicationMetrics(currentUser(req).id, validatedQuery<{ days?: number }>(req).days ?? 30))
+}))
+applicationsRouter.get('/flags', asyncHandler(async(req,res)=>{ ok(res, await listOwnFlags(currentUser(req).id)) }))
+applicationsRouter.post('/flags/:id/resolve', validate({params:idParamSchema,body:z.object({note:z.string().trim().max(1000).optional()})}), asyncHandler(async(req,res)=>{
+  ok(res, await resolveOwnFlag(currentUser(req).id, pathParam(req,'id'), req.body.note))
 }))
 applicationsRouter.post('/:id/flag', validate({params:idParamSchema,body:z.object({note:z.string().trim().max(1000).optional()})}), asyncHandler(async(req,res) => {
   ok(res, await flagApplication(currentUser(req).id,pathParam(req,'id'),req.body.note))
@@ -326,14 +335,21 @@ applicationsRouter.get(
         : Promise.resolve([]),
     ])
 
-    const [latestAttempt] = row.jobId ? await db.select({id:applyAttempts.id,status:applyAttempts.status,submitStartedAt:applyAttempts.submitStartedAt,error:applyAttempts.error}).from(applyAttempts)
+    const [latestAttempt] = row.jobId ? await db.select({id:applyAttempts.id,status:applyAttempts.status,submitStartedAt:applyAttempts.submitStartedAt,submitOutcome:applyAttempts.submitOutcome,failureClass:applyAttempts.failureClass,error:applyAttempts.error,unresolvedFields:applyAttempts.unresolvedFields,schemaSource:applyAttempts.schemaSource}).from(applyAttempts)
       .innerJoin(huntCandidates,and(eq(huntCandidates.id,applyAttempts.candidateId),eq(huntCandidates.userId,auth.id),eq(huntCandidates.jobId,row.jobId)))
       .where(eq(applyAttempts.userId,auth.id)).orderBy(desc(applyAttempts.createdAt)).limit(1) : []
     const phases = latestAttempt ? await db.select({state:attemptEvents.state,reason:attemptEvents.reason,at:attemptEvents.at,detail:attemptEvents.detail}).from(attemptEvents).where(eq(attemptEvents.attemptId,latestAttempt.id)).orderBy(asc(attemptEvents.at)) : []
     ok(res, {
       ...serializeApplication(row),
       attemptId: latestAttempt?.id ?? null,
-      retryBlockedReason: safeRetryReason(row.status,latestAttempt?[latestAttempt]:[],phases,{confirmedNotSubmitted:true}),
+      retryBlockedReason: safeRetryReason(row.status,latestAttempt?[latestAttempt]:[],phases,{confirmedNotSubmitted:true,providerChecked:true}),
+      // True when a retry is allowed only after the user confirms with the employer.
+      retryNeedsProviderCheck: Boolean(safeRetryReason(row.status,latestAttempt?[latestAttempt]:[],phases,{confirmedNotSubmitted:true})) && !safeRetryReason(row.status,latestAttempt?[latestAttempt]:[],phases,{confirmedNotSubmitted:true,providerChecked:true}),
+      failureClass: latestAttempt?.failureClass ?? null,
+      failureMessage: latestAttempt?.failureClass ? FAILURE_COPY[latestAttempt.failureClass as FailureClass] ?? null : null,
+      submitOutcome: latestAttempt?.submitOutcome ?? null,
+      attemptError: latestAttempt?.error ?? null,
+      unresolvedFields: Array.isArray(latestAttempt?.unresolvedFields) ? (latestAttempt!.unresolvedFields as Array<{label?:string;why?:string}>).slice(0,20).map(field=>({label:String(field.label??''),why:String(field.why??'')})) : [],
       canCancel: row.status === 'queued' && !(await applicationRuntimes(auth.id,[row.id])).get(row.id)?.active,
       attemptTimeline: phases.map(phase=>({state:phase.state,reason:phase.reason,at:phase.at.toISOString()})),
       jobDescription: row.jobDescription,

@@ -10,6 +10,12 @@ User=huntly-runner
 Group=huntly-runner
 WorkingDirectory=/opt/huntly/api
 EnvironmentFile=/etc/huntly/runner.env
+# Written by deploy/deploy-runner.sh: the build identity reported in heartbeats.
+EnvironmentFile=-/etc/huntly/runner-version.env
+# Throwaway application browsers run inside this service: Chrome needs a
+# writable home and its binary path. Values in runner.env override these.
+Environment=HOME=/var/lib/huntly-runner
+Environment=CHROMIUM_EXECUTABLE_PATH=/usr/bin/google-chrome
 ExecStart=/usr/bin/node /opt/huntly/api/dist/application-runner.js
 Restart=on-failure
 RestartSec=5
@@ -22,7 +28,9 @@ ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/lib/huntly-runner
 LimitNOFILE=8192
-MemoryMax=4G
+# ~400 MB per concurrent throwaway context plus Node; 4 G starved four parallel applications.
+MemoryMax=12G
+TasksMax=4096
 
 [Install]
 WantedBy=multi-user.target

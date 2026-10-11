@@ -9,7 +9,8 @@ import { serviceUnavailable } from '../lib/errors.js'
 import { logger } from '../lib/logger.js'
 import { installHuntlyApplyExtension, launchAutomationBrowser, launchApplyExtensionContext } from '../hunt/browser.js'
 import { createBrowser, getBrowser, stopBrowser, type BrowserSessionInfo } from './client.js'
-import { applyTenant, getTenantStatus, stopTenant } from './vm-client.js'
+import { applyTenant, getTenantStatus, stopTenant, VmAgentBusyError } from './vm-client.js'
+import { openEphemeral } from './ephemeral.js'
 import { createSemaphore, type Slot } from './limit.js'
 
 /**
@@ -56,13 +57,22 @@ export interface SessionOptions {
    * request path pass something short.
    */
   maxWaitMs?: number
+  /** An isolated throwaway context on the runner's shared Chrome; no profile. */
+  ephemeral?: boolean
+  /** Called once if the browser dies or leaves apply mode mid-application. */
+  onBrowserLost?: (reason: string) => void
+  /**
+   * The caller holds this profile's lease, so a Chrome already in apply mode on
+   * it belongs to nobody (a crashed or killed runner): stop it and continue.
+   */
+  reclaimStaleApply?: boolean
 }
 
 export interface AgentSession {
   browser: Browser
   context: BrowserContext
   page: Page
-  provider: 'browser-use' | 'local' | 'vm'
+  provider: 'browser-use' | 'local' | 'vm' | 'ephemeral'
   /** A URL a human can open to watch and take over. Null when local. */
   liveUrl: string | null
   /** The hosted session id, for cost lookup and forced cleanup. Null local. */
@@ -220,7 +230,19 @@ async function openVmLocked(options: SessionOptions, slot: Slot, tx: BrowserTran
   const tenantIndex = parseVmProfile(options.profileId ?? '', env.VM_ID)
   const [owner] = await tx.select().from(userBrowserSessions).where(and(eq(userBrowserSessions.vmId, env.VM_ID), eq(userBrowserSessions.tenantIndex, tenantIndex))).limit(1)
   assertVmProfileOwner(owner, options.userId, env.VM_ID, tenantIndex)
-  const info = await applyTenant(tenantIndex)
+  let info: Awaited<ReturnType<typeof applyTenant>>
+  try {
+    info = await applyTenant(tenantIndex)
+  } catch (error) {
+    if (!(error instanceof VmAgentBusyError && error.currentMode === 'apply' && options.reclaimStaleApply)) throw error
+    // 241 production attempts were deferred in a loop behind exactly this: an
+    // apply-mode Chrome left by an interrupted runner, until the agent's
+    // 20-minute idle sweep. The caller holds the profile lease, so no live
+    // attempt owns that browser.
+    logger.warn({ tenantIndex }, 'reclaiming a stale apply-mode browser that no lease owns')
+    await stopTenant(tenantIndex)
+    info = await applyTenant(tenantIndex)
+  }
   let browser: Browser
   try {
     assertTenantCdpUrl(info.cdpUrl, tenantIndex)
@@ -236,14 +258,22 @@ async function openVmLocked(options: SessionOptions, slot: Slot, tx: BrowserTran
   }
   let closed = false
   let heartbeatRunning = false
+  let lostReported = false
+  const lost = (reason: string) => {
+    if (closed || lostReported) return
+    lostReported = true
+    clearInterval(heartbeat)
+    logger.warn({ tenantIndex, reason }, 'application browser lost mid-attempt')
+    options.onBrowserLost?.(reason)
+  }
+  // A dead Chrome used to be logged and then driven anyway until some later
+  // call failed. Now the attempt is told, and aborts as a transient failure.
+  browser.on('disconnected', () => lost('browser disconnected'))
   const heartbeat = setInterval(() => {
     if (closed || heartbeatRunning) return
     heartbeatRunning = true
     void getTenantStatus(tenantIndex).then((status) => {
-      if (status.mode !== 'apply') {
-        clearInterval(heartbeat)
-        logger.warn({ tenantIndex, mode: status.mode }, 'application browser is no longer in apply mode')
-      }
+      if (status.mode !== 'apply') lost(`tenant left apply mode (${status.mode})`)
     }).catch((error) => logger.warn({ err: error, tenantIndex }, 'application browser heartbeat failed')).finally(() => { heartbeatRunning = false })
   }, 30_000)
   heartbeat.unref()
@@ -271,6 +301,11 @@ export async function openSession(options: SessionOptions): Promise<AgentSession
 
   const slot = await browsers.acquire(options.label, options.maxWaitMs ?? DEFAULT_WAIT_MS)
   try {
+    if (options.ephemeral && !options.profileId) {
+      const session = await openEphemeral({ userId: options.userId, label: options.label, ...(options.viewport ? { viewport: options.viewport } : {}) }, slot)
+      session.browser.on('disconnected', () => options.onBrowserLost?.('browser disconnected'))
+      return session
+    }
     const provider = selectBrowserProvider(options.profileId, browserProvider)
     return provider === 'browser-use'
       ? await openHosted(options, slot)

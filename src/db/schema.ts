@@ -686,10 +686,33 @@ export const applyAttempts = pgTable(
     startedAt: timestamp('started_at', { withTimezone: true }),
     /** Durable irreversible-action fence; never cleared on failure. */
     submitStartedAt: timestamp('submit_started_at', { withTimezone: true }),
+    /**
+     * What the click produced, judged from network, URL and DOM evidence:
+     * `confirmed`, `rejected_validation` (provably not accepted), `provider_blocked`,
+     * `uncertain`, or `confirmed_by_email` once a receipt arrives.
+     */
+    submitOutcome: text('submit_outcome'),
+    /**
+     * Why an attempt ended without a submission: `transient`, `needs_answer`,
+     * `posting_closed`, `unsupported`, `uncertain_submit`, `provider_rejected`,
+     * `automation`, `internal`. Drives automatic retry and the metrics view.
+     */
+    failureClass: text('failure_class'),
+    /** Zero for the first try; incremented by each automatic transient retry. */
+    retryIndex: integer('retry_index').notNull().default(0),
+    /** Where the form definition came from: `greenhouse`, `ashby`, `dom`, ... */
+    schemaSource: text('schema_source'),
+    /** The planned answers, labels and provenance only for sensitive values. */
+    answerPlan: jsonb('answer_plan'),
+    /** Build identity of the runner that executed the attempt. */
+    runnerVersion: text('runner_version'),
     completedAt: timestamp('completed_at', { withTimezone: true }),
     ...timestamps,
   },
-  (table) => [index('apply_attempts_candidate_idx').on(table.candidateId, table.createdAt)],
+  (table) => [
+    index('apply_attempts_candidate_idx').on(table.candidateId, table.createdAt),
+    index('apply_attempts_failure_idx').on(table.failureClass, table.createdAt),
+  ],
 )
 
 /* --------------------------------------------------------------- playground */
@@ -1646,6 +1669,8 @@ export const applicationDispatches = pgTable('application_dispatches', {
   runId: uuid('run_id').notNull().references(() => huntRuns.id, { onDelete: 'cascade' }),
   portal: text('portal').notNull(),
   queueName: text('queue_name').notNull().default('hunt-apply'),
+  /** Earliest publish time; set for automatic retries with backoff. */
+  notBefore: timestamp('not_before', { withTimezone: true }),
   deliveredAt: timestamp('delivered_at', { withTimezone: true }),
   cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
   ...timestamps,

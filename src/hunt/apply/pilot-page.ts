@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import type { Page } from 'playwright-core'
 import { applyExtensionPageScript } from './extension-path.js'
 import type { FormField } from './fields.js'
@@ -12,6 +13,8 @@ export interface PilotElement {
   options: string[]
   enabled: boolean
   name?: string
+  /** Ids/names of the control and inputs in its wrapper; ATS schema keys match these. */
+  hints?: string[]
 }
 
 export interface PilotSnapshot {
@@ -40,7 +43,14 @@ export interface PilotActResult {
 
 const API = '__APPLY_PILOT__'
 
-const PILOT_VERSION = 16
+let pilotSource: string | null = null
+/** The page script's source, read once. Also used as a context init script. */
+export function applyPilotSource(): string {
+  pilotSource ??= readFileSync(applyExtensionPageScript(), 'utf8')
+  return pilotSource
+}
+
+const PILOT_VERSION = 17
 /** After typing in a dropdown, wait so the typeahead can finish before Jev or a click. */
 export const DROPDOWN_AFTER_TYPE_MS = 2_000
 
@@ -59,7 +69,9 @@ export async function ensureApplyPilot(page: Page, options?: { injectIfMissing?:
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
   if (!injectIfMissing) throw new Error('Apply Pilot extension did not inject on this page')
-  await page.addScriptTag({ path: applyExtensionPageScript() })
+  // Runtime evaluation is not subject to the page's Content-Security-Policy;
+  // a <script> tag is, and strict ATS pages refuse it.
+  await page.evaluate(applyPilotSource())
   await page.waitForFunction(({ key, version }) => {
     const api = (window as unknown as Record<string, { version?: number } | undefined>)[key]
     return (api?.version ?? 0) >= version

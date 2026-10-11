@@ -5,7 +5,8 @@ import { applicationQueueHealth } from '../../hunt/application-queue.js'
 import { dailyBudget, effectiveConcurrency } from '../../hunt/application-policy.js'
 import { readApplyFields } from '../../persona/apply-fields.js'
 import { providerCatalogue } from '../../browser/provider-catalogue.js'
-import { browserProvider, env, hasApplyAgent } from '../../config/env.js'
+import { browserProvider, env, hasApplyAgent, hasPlanner } from '../../config/env.js'
+import { loadPortalProfile } from '../../hunt/portal-profile.js'
 
 export async function applicationPreflight(userId: string, portals: string[] = []) {
   const [health, fields, [session], [schedule], accounts, [used], [flag], [spec]] = await Promise.all([
@@ -20,13 +21,21 @@ export async function applicationPreflight(userId: string, portals: string[] = [
   const budget = dailyBudget(used?.value ?? 0,spec?.target??100)
   const gaps: Array<{code: string; message: string; href: string}> = []
   const warnings: typeof gaps = []
-  if(!env.APPLY_DRY_RUN&&!hasApplyAgent)gaps.push({code:'agent_unavailable',message:'The autonomous browser model is not configured. The deployment must be repaired before live applications can run.',href:'/app/live-applications'})
+  const reasoningReady = env.APPLY_DRIVER === 'planned' ? hasPlanner : hasApplyAgent
+  if(!env.APPLY_DRY_RUN&&!reasoningReady)gaps.push({code:'agent_unavailable',message:'The answer planner model is not configured. The deployment must be repaired before live applications can run.',href:'/app/live-applications'})
   if (!health.redisAvailable || !health.workerConnected || health.paused) gaps.push({code: 'runner_unavailable', message: health.paused ? 'The application runner is paused. Your existing jobs are saved.' : 'The application runner is offline. Your existing jobs are saved.', href: '/app/jobs'})
+  else if (!health.runnerReady) warnings.push({code: 'runner_outdated', message: 'The application runner is connected but is not reporting its version. It may be running an older build.', href: '/app/jobs'})
+  if (health.versionMismatch) warnings.push({code: 'runner_version_mismatch', message: 'The application runner and the API are on different builds. Deploy the runner.', href: '/app/jobs'})
   if (!env.PORTAL_AUTOMATION_ENABLED) gaps.push({code: 'automation_disabled', message: 'Application automation is disabled by this deployment.', href: '/app/jobs'})
   if (!fields.hasBaseResume) gaps.push({code: 'resume_missing', message: 'Upload a resume before applying.', href: '/app/profile'})
   else if (fields.resumeStatus !== 'parsed') gaps.push({code:'resume_not_ready',message:fields.resumeStatus === 'failed'?'Resume parsing failed. Replace or retry the resume upload.':'Your resume is still being processed. Wait before applying.',href:'/app/profile'})
   for (const field of fields.missingRequired) gaps.push({code: `profile_${field}`, message: `Add ${fields.fields.find(f => f.id === field)?.label ?? field} to My Kit.`, href: '/app/profile'})
-  if (browserProvider === 'vm' && (!session || ['absent','failed'].includes(session.status))) gaps.push({code: 'browser_missing', message: 'Set up your browser before applying.', href: '/browser-session'})
+  // Anonymous ATS forms run in throwaway browsers; only account portals need the signed-in profile.
+  const profileRequired = browserProvider === 'vm' && env.APPLY_ANON_BROWSER === 'profile'
+  if (browserProvider === 'vm' && (!session || ['absent','failed'].includes(session.status))) {
+    if (profileRequired) gaps.push({code: 'browser_missing', message: 'Set up your browser before applying.', href: '/browser-session'})
+    else warnings.push({code: 'browser_missing', message: 'Set up your browser to apply on account-based portals (Wellfound, Instahyre) and to read emailed verification codes. ATS applications work without it.', href: '/browser-session'})
+  }
   if (session?.status === 'connecting') gaps.push({code: 'browser_busy', message: 'Save and exit browser setup before applying.', href: '/browser-session'})
   if (flag) gaps.push({code: 'review_paused', message: 'Your future applications are paused while a flagged attempt is reviewed.', href: '/app/jobs'})
   if (!budget.remaining) gaps.push({code: 'daily_limit', message: `Your daily application allowance resets at ${budget.resetsAt}.`, href: '/app/jobs'})
@@ -42,9 +51,15 @@ export async function applicationPreflight(userId: string, portals: string[] = [
   })
   if (env.APPLY_DRY_RUN) warnings.push({code: 'dry_run', message: 'Preparation mode: forms can be filled, but final submission is disabled.', href: '/app/jobs'})
   if (fields.missingOptional.length) warnings.push({code: 'profile_optional', message: 'Some commonly requested profile fields are missing. Individual applications may need review.', href: '/app/profile'})
+  const profile = fields.hasBaseResume ? await loadPortalProfile(userId).catch(() => null) : null
+  if (profile) {
+    if (!profile.visaSponsorship?.trim()) warnings.push({code: 'kit_sponsorship', message: 'Say in My Kit where you need visa sponsorship. Without it, sponsorship questions are asked per job.', href: '/app/profile'})
+    if (!profile.education?.trim()) warnings.push({code: 'resume_education', message: 'No education section was found in your résumé. Degree and school questions will need your answer.', href: '/app/profile'})
+    if (![profile.gender, profile.ethnicity, profile.veteranStatus, profile.disabilityStatus].some((value) => value?.trim())) warnings.push({code: 'kit_eeo', message: 'Voluntary demographic questions will be answered "decline to self-identify" unless you set them in My Kit.', href: '/app/profile'})
+  }
   return { ...health, canApply: gaps.length === 0, gaps, warnings, providers,
-    configuredConcurrency: schedule?.applyConcurrency ?? 1,
-    effectiveConcurrency: effectiveConcurrency(schedule?.applyConcurrency ?? 1, Boolean(session)),
+    configuredConcurrency: schedule?.applyConcurrency ?? env.APPLY_USER_CONCURRENCY,
+    effectiveConcurrency: effectiveConcurrency(schedule?.applyConcurrency ?? env.APPLY_USER_CONCURRENCY, profileRequired),
     dailyLimit: budget.limit, dailyUsed: budget.used, dailyRemaining: budget.remaining, resetsAt: budget.resetsAt,
     applicationEmail: fields.fields.find(f => f.id === 'email')?.value ?? null,
     browserSession: session ? {status: session.status, vmId: session.vmId, tenantIndex: session.tenantIndex} : null,

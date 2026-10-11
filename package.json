@@ -2,14 +2,14 @@
   "name": "job-hunters-api",
   "version": "0.1.0",
   "private": true,
-  "description": "Backend for Job Hunters \u2014 automated job applying and referral triage.",
+  "description": "Backend for Job Hunters — automated job applying and referral triage.",
   "type": "module",
   "engines": {
     "node": ">=22.19.0"
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc -p tsconfig.json && node scripts/copy-skill-assets.mjs",
+    "build": "tsc -p tsconfig.json && node scripts/copy-skill-assets.mjs && node scripts/write-build-info.mjs",
     "start": "node dist/index.js",
     "worker": "node dist/worker.js",
     "worker:dev": "tsx watch src/worker.ts",
@@ -35,7 +35,8 @@
     "browser:verify": "tsx src/scripts/verify-browser.ts",
     "skills:source": "tsx src/scripts/verify-skill-source.ts",
     "agent:verify": "tsx src/scripts/verify-agent.ts",
-    "playground:smoke": "tsx src/scripts/playground-smoke.ts"
+    "playground:smoke": "tsx src/scripts/playground-smoke.ts",
+    "apply:eval": "tsx src/scripts/apply-eval.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.122.0",

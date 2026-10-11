@@ -14,6 +14,12 @@ import { stopTenant, getTenantStatus } from '../browser/vm-client.js'
 import { withBrowserLifecycle } from '../browser/lifecycle.js'
 import { stopBrowser } from '../browser/client.js'
 import { applyApprovedCandidate } from './apply.js'
+import { acquireLane, profileLaneKey } from './apply/lanes.js'
+import { requiresSignedInProfile } from './apply/target.js'
+import { MAX_TRANSIENT_RETRIES, classifyError, retryDelayMs } from './apply/failure.js'
+import { previousTransientRetries } from './apply/attempt-store.js'
+import { runnerVersion } from '../lib/build-info.js'
+import os from 'node:os'
 
 const QUEUE_NAME = env.APPLICATION_QUEUE_NAME
 import { assertApprovalLease } from './approval-lock.js'
@@ -92,67 +98,118 @@ export function planApplicationOrder<T extends { portal: string }>(values: T[], 
   return roundRobin(applyPortalCaps(values)).slice(0, Math.min(target, MAX_DAILY_APPLICATIONS))
 }
 
-/** Token-owned leases renew for the entire browser operation. */
-async function acquireLane(key: string, onLost: () => void): Promise<(() => Promise<void>) | null> {
-  const token = crypto.randomUUID()
-  const ttl = 120_000
-  if (await redis().set(key, token, 'PX', ttl, 'NX') !== 'OK') return null
-  const timer = setInterval(() => {
-    void Promise.race([
-      redis().eval('if redis.call("get",KEYS[1]) == ARGV[1] then return redis.call("pexpire",KEYS[1],ARGV[2]) else return 0 end', 1, key, token, ttl),
-      sleep(5_000).then(() => { throw new Error('Application lease renewal timed out') }),
-    ])
-      .then(result => { if (result !== 1) { logger.error({ key }, 'application lane ownership lost'); onLost() } })
-      .catch(error => { logger.error({ err: error, key }, 'application lane renewal failed'); onLost() })
-  }, 20_000)
-  timer.unref()
-  return async () => {
-    clearInterval(timer)
-    await redis().eval('if redis.call("get",KEYS[1]) == ARGV[1] then return redis.call("del",KEYS[1]) else return 0 end', 1, key, token)
-  }
+/** Whether this candidate's application needs the user's signed-in profile. */
+async function candidateNeedsProfile(candidateId: string): Promise<boolean> {
+  const [row] = await db.select({ applyUrl: jobs.applyUrl, canonicalUrl: jobs.canonicalUrl, sourceApplyUrl: sql<string | null>`(select js.apply_url from job_sources js where js.job_id = ${jobs.id} order by js.fetched_at desc limit 1)` })
+    .from(huntCandidates).innerJoin(jobs, eq(jobs.id, huntCandidates.jobId)).where(eq(huntCandidates.id, candidateId)).limit(1)
+  if (!row) return false
+  return requiresSignedInProfile([row.applyUrl, row.canonicalUrl, row.sourceApplyUrl].filter((url): url is string => Boolean(url)))
 }
 
-async function acquireApplicationLanes(data: ApplyJobData, onLost: () => void): Promise<(() => Promise<void>) | null> {
+/**
+ * Lanes for one application. Anonymous ATS forms run in throwaway contexts,
+ * so a user may have several at once; account portals share the one signed-in
+ * profile, so they take its lane (and a per-portal lane) as before.
+ */
+async function acquireApplicationLanes(data: ApplyJobData, onLost: () => void): Promise<{ release: () => Promise<void>; holdsProfileLane: boolean } | null> {
+  const needsProfile = await candidateNeedsProfile(data.candidateId)
   const [[schedule], [session]] = await Promise.all([
     db.select().from(userSchedules).where(eq(userSchedules.userId, data.userId)).limit(1),
-    db.select().from(userBrowserSessions).where(eq(userBrowserSessions.userId, data.userId)).limit(1),
+    needsProfile ? db.select().from(userBrowserSessions).where(eq(userBrowserSessions.userId, data.userId)).limit(1) : Promise.resolve([]),
   ])
-  const limit = effectiveConcurrency(schedule?.applyConcurrency ?? 1, Boolean(session))
+  const limit = effectiveConcurrency(schedule?.applyConcurrency ?? env.APPLY_USER_CONCURRENCY, needsProfile)
   let userRelease: (() => Promise<void>) | null = null
   for (let slot = 0; slot < limit && !userRelease; slot++) userRelease = await acquireLane(`huntly:apply-user:${data.userId}:${slot}`, onLost)
   if (!userRelease) return null
-  const profileRelease = session ? await acquireLane(`huntly:apply-profile:${session.vmId}:${session.tenantIndex}`, onLost) : async () => {}
+  const profileRelease = needsProfile && session ? await acquireLane(profileLaneKey(session.vmId, session.tenantIndex), onLost) : async () => {}
   if (!profileRelease) { await userRelease(); return null }
-  const portalRelease = await acquireLane(`huntly:apply-lock:${data.userId}:${data.portal}`, onLost)
+  const portalRelease = needsProfile ? await acquireLane(`huntly:apply-lock:${data.userId}:${data.portal}`, onLost) : async () => {}
   if (!portalRelease) { await profileRelease(); await userRelease(); return null }
-  return async () => { await portalRelease(); await profileRelease(); await userRelease() }
+  return { release: async () => { await portalRelease(); await profileRelease(); await userRelease() }, holdsProfileLane: Boolean(needsProfile && session) }
+}
+
+const RUNNER_KEY_PREFIX = `huntly:runner:${QUEUE_NAME}:`
+let heartbeatTimer: ReturnType<typeof setInterval> | undefined
+
+/** What this runner is: version, driver, mode. The API refuses to call a runner "ready" without it. */
+function runnerIdentity() {
+  return {
+    version: runnerVersion(),
+    driver: env.APPLY_DRIVER,
+    dryRun: env.APPLY_DRY_RUN,
+    browserProvider: env.BROWSER_PROVIDER,
+    anonBrowser: env.APPLY_ANON_BROWSER,
+    concurrency: env.RUNNER_APPLY_CONCURRENCY,
+    host: os.hostname(),
+    pid: process.pid,
+    at: new Date().toISOString(),
+  }
+}
+
+export async function runnerHeartbeats(): Promise<Array<ReturnType<typeof runnerIdentity>>> {
+  const keys = await withDeadline(redis().keys(`${RUNNER_KEY_PREFIX}*`), 3_000)
+  if (!keys.length) return []
+  const values = await withDeadline(redis().mget(keys), 3_000)
+  return values.flatMap((value) => { try { return value ? [JSON.parse(value) as ReturnType<typeof runnerIdentity>] : [] } catch { return [] } })
 }
 
 export async function applicationQueueHealth() {
-  if (!hasRedis) return { redisAvailable: false, workerConnected: false, paused: false, dryRun: env.APPLY_DRY_RUN }
+  const empty = { redisAvailable: false, workerConnected: false, paused: false, dryRun: env.APPLY_DRY_RUN, runners: [] as Array<ReturnType<typeof runnerIdentity>>, runnerReady: false, versionMismatch: false }
+  if (!hasRedis) return empty
   try {
     const q = applicationQueue()
-    const [workers, paused] = await withDeadline(Promise.all([q.getWorkersCount(), q.isPaused()]),3_000)
-    return { redisAvailable: true, workerConnected: workers > 0, paused, dryRun: env.APPLY_DRY_RUN }
-  } catch { return { redisAvailable: false, workerConnected: false, paused: false, dryRun: env.APPLY_DRY_RUN } }
+    const [workers, paused, runners] = await withDeadline(Promise.all([q.getWorkersCount(), q.isPaused(), runnerHeartbeats()]),3_000)
+    const apiVersion = runnerVersion()
+    // A connected BullMQ worker is not a ready runner: require a fresh heartbeat.
+    const versionMismatch = runners.some((runner) => runner.version !== apiVersion && apiVersion !== 'dev' && runner.version !== 'dev')
+    // The runner's mode wins over the API's own config: it is the process that clicks.
+    return { redisAvailable: true, workerConnected: workers > 0, paused, dryRun: runners[0]?.dryRun ?? env.APPLY_DRY_RUN, runners, runnerReady: runners.length > 0, versionMismatch }
+  } catch { return empty }
 }
 
-/** Retrying a failed publish cannot duplicate the queue job. */
+/**
+ * Publish durable intents to the queue.
+ *
+ * Fair: each user has at most APPLY_DISPATCH_WINDOW_PER_USER jobs in Redis at
+ * once and users are served round-robin, so one large batch no longer blocks
+ * everyone queued behind it. Retries wait for their `not_before`. Retrying a
+ * failed publish cannot duplicate a job: ids are deterministic.
+ */
 export async function dispatchPendingApplications(): Promise<number> {
   const runnable = and(eq(applicationDispatches.queueName,QUEUE_NAME),isNull(applicationDispatches.cancelledAt), sql`exists (select 1 from ${huntCandidates} c where c.id = ${applicationDispatches.candidateId} and c.status = 'queued')`, sql`not exists (select 1 from ${applyAttempts} a where a.candidate_id = ${applicationDispatches.candidateId} and a.created_at >= ${applicationDispatches.createdAt})`)
-  // New intents are never starved behind a page of already delivered jobs.
-  const pending = await db.select().from(applicationDispatches).where(and(runnable,isNull(applicationDispatches.deliveredAt))).orderBy(applicationDispatches.createdAt).limit(200)
+  const due = sql`(${applicationDispatches.notBefore} is null or ${applicationDispatches.notBefore} <= now())`
+  const pending = await db.select().from(applicationDispatches).where(and(runnable, due, isNull(applicationDispatches.deliveredAt))).orderBy(applicationDispatches.createdAt).limit(500)
+  const inflightRows = await db.select({ userId: applicationDispatches.userId, value: count() }).from(applicationDispatches)
+    .where(and(eq(applicationDispatches.queueName, QUEUE_NAME), isNull(applicationDispatches.cancelledAt), isNotNull(applicationDispatches.deliveredAt),
+      sql`exists (select 1 from ${huntCandidates} c where c.id = ${applicationDispatches.candidateId} and c.status in ('queued','applying'))`))
+    .groupBy(applicationDispatches.userId)
+  const inflight = new Map(inflightRows.map((row) => [row.userId, Number(row.value)]))
+  const byUser = new Map<string, typeof pending>()
+  for (const row of pending) {
+    const list = byUser.get(row.userId)
+    if (list) list.push(row)
+    else byUser.set(row.userId, [row])
+  }
+  const fresh: typeof pending = []
+  for (let added = true; added;) {
+    added = false
+    for (const [userId, rows] of byUser) {
+      if ((inflight.get(userId) ?? 0) >= env.APPLY_DISPATCH_WINDOW_PER_USER || !rows.length) continue
+      fresh.push(rows.shift()!)
+      inflight.set(userId, (inflight.get(userId) ?? 0) + 1)
+      added = true
+    }
+  }
   const recovery = await db.select().from(applicationDispatches).where(and(runnable,isNotNull(applicationDispatches.deliveredAt), recoveredDispatchCursor ? sql`${applicationDispatches.id} > ${recoveredDispatchCursor}::uuid` : undefined)).orderBy(applicationDispatches.id).limit(200)
   recoveredDispatchCursor = recovery.length === 200 ? recovery[recovery.length-1]!.id : null
-  const rows = [...pending,...recovery]
-  for (const row of rows) {
+  for (const row of [...fresh, ...recovery]) {
     if (row.deliveredAt && await applicationQueue().getJob(`dispatch-${row.id}`)) continue
     await applicationQueue().add('apply-approved-candidate', { userId: row.userId, runId: row.runId, candidateId: row.candidateId, portal: row.portal, dispatchId: row.id }, {
       jobId: `dispatch-${row.id}`, attempts: 1, removeOnComplete: { age: 7 * 86_400 }, removeOnFail: { age: 30 * 86_400 },
     })
     await db.update(applicationDispatches).set({ deliveredAt: new Date(), updatedAt: new Date() }).where(eq(applicationDispatches.id, row.id))
   }
-  return rows.length
+  return fresh.length + recovery.length
 }
 
 export async function enqueueApprovedCandidates(
@@ -279,6 +336,19 @@ async function finishRunWhenSettled(job: BullJob<ApplyJobData>): Promise<void> {
     .where(eq(huntRuns.id, job.data.runId))
 }
 
+/** Stop the browser an interrupted attempt left behind. Ephemeral contexts died with their runner. */
+async function stopInterruptedVm(userId: string, browserSessionId: string): Promise<void> {
+  if (browserSessionId.startsWith('ephemeral:')) return
+  const vm = /^vm:(\d+)$/.exec(browserSessionId)
+  if (!vm) { await stopBrowser(browserSessionId); return }
+  const [owned] = await db.select().from(userBrowserSessions).where(and(eq(userBrowserSessions.userId, userId), eq(userBrowserSessions.tenantIndex, Number(vm[1])))).limit(1)
+  if (!owned) return
+  await withBrowserLifecycle(userId, async () => {
+    if (await redis().exists(profileLaneKey(owned.vmId, owned.tenantIndex))) return
+    if ((await getTenantStatus(owned.tenantIndex)).mode === 'apply') await stopTenant(owned.tenantIndex)
+  })
+}
+
 /**
  * A queue job can disappear after its database writes have begun — for
  * example when the browser runner is killed between creating an attempt and
@@ -304,6 +374,8 @@ export async function reconcileInterruptedApplications(): Promise<number> {
       candidateStatus: huntCandidates.status,
       attemptId: applyAttempts.id,
       browserSessionId: applyAttempts.browserSessionId,
+      submitStartedAt: applyAttempts.submitStartedAt,
+      portal: huntCandidates.sourcePortal,
     })
     .from(huntCandidates)
     .innerJoin(huntRuns, eq(huntRuns.id, huntCandidates.runId))
@@ -328,6 +400,27 @@ export async function reconcileInterruptedApplications(): Promise<number> {
   for (const row of stale) {
     if (liveJobs.has(`${row.runId}:${row.candidateId}`)) continue
 
+    // Interrupted before any submit click (runner killed, VM restarted): requeue
+    // with backoff instead of parking it for a human, within the retry budget.
+    if (env.APPLY_AUTO_RETRY && !row.submitStartedAt && await previousTransientRetries(row.candidateId) < MAX_TRANSIENT_RETRIES) {
+      const retries = await previousTransientRetries(row.candidateId)
+      const requeued = await db.transaction(async (tx) => {
+        const [candidate] = await tx.update(huntCandidates).set({ status: 'queued', updatedAt: new Date() })
+          .where(and(eq(huntCandidates.id, row.candidateId), inArray(huntCandidates.status, ['queued', 'applying']))).returning({ id: huntCandidates.id })
+        if (!candidate) return false
+        if (row.attemptId) await tx.update(applyAttempts).set({ status: 'failed', failureClass: 'transient', error: 'Application worker stopped before this attempt completed; retrying automatically.', completedAt: new Date(), updatedAt: new Date() }).where(and(eq(applyAttempts.id, row.attemptId), isNull(applyAttempts.completedAt)))
+        await tx.update(applicationDispatches).set({ cancelledAt: new Date(), updatedAt: new Date() }).where(and(eq(applicationDispatches.candidateId, row.candidateId), isNull(applicationDispatches.cancelledAt)))
+        await tx.insert(applicationDispatches).values({ userId: row.userId, runId: row.runId, candidateId: row.candidateId, portal: row.portal, queueName: QUEUE_NAME, notBefore: new Date(Date.now() + retryDelayMs(retries)) })
+        return true
+      })
+      if (requeued) {
+        if (row.browserSessionId?.startsWith('vm:')) await stopInterruptedVm(row.userId, row.browserSessionId).catch(() => undefined)
+        logger.warn({ candidateId: row.candidateId, retries }, 'requeued an interrupted pre-submit application')
+        repaired += 1
+        continue
+      }
+    }
+
     const [updatedCandidate] = await db
       .update(huntCandidates)
       .set({ status: 'needs_review', updatedAt: new Date() })
@@ -342,7 +435,10 @@ export async function reconcileInterruptedApplications(): Promise<number> {
       await db
         .update(applyAttempts)
         .set({
-          status: 'unknown',
+          // Only a fenced attempt may hide a click; an unfenced one provably never submitted.
+          status: row.submitStartedAt ? 'unknown' : 'failed',
+          failureClass: row.submitStartedAt ? 'uncertain_submit' : 'transient',
+          ...(row.submitStartedAt ? { submitOutcome: 'uncertain' } : {}),
           error: 'Application worker stopped before this attempt completed.',
           completedAt: new Date(),
           updatedAt: new Date(),
@@ -350,17 +446,7 @@ export async function reconcileInterruptedApplications(): Promise<number> {
         .where(eq(applyAttempts.id, row.attemptId))
     }
     if (row.browserSessionId) {
-      const stop = async () => {
-        const vm = /^vm:(\d+)$/.exec(row.browserSessionId!)
-        if (!vm) { await stopBrowser(row.browserSessionId!); return }
-        const [owned] = await db.select().from(userBrowserSessions).where(and(eq(userBrowserSessions.userId,row.userId),eq(userBrowserSessions.tenantIndex,Number(vm[1])))).limit(1)
-        if (!owned) return
-        await withBrowserLifecycle(row.userId,async () => {
-          if (await redis().exists(`huntly:apply-profile:${owned.vmId}:${owned.tenantIndex}`)) return
-          if ((await getTenantStatus(owned.tenantIndex)).mode === 'apply') await stopTenant(owned.tenantIndex)
-        })
-      }
-      await stop().catch((error: unknown) => {
+      await stopInterruptedVm(row.userId, row.browserSessionId).catch((error: unknown) => {
         logger.warn({ err: error, sessionId: row.browserSessionId }, 'could not stop an interrupted browser session')
       })
     }
@@ -424,7 +510,9 @@ async function handleFailedApplicationJob(job: BullJob<ApplyJobData>, error: Err
     await db
       .update(applyAttempts)
       .set({
-        status: 'unknown',
+        // `submitting` means the fence was written: that click may have landed.
+        status: sql`case when ${applyAttempts.submitStartedAt} is null then 'failed'::apply_attempt_status else 'unknown'::apply_attempt_status end`,
+        failureClass: sql`case when ${applyAttempts.submitStartedAt} is null then ${classifyError(error, { submitAttempted: false })} else 'uncertain_submit' end`,
         error: `Application job failed before completion: ${error.message}`,
         completedAt: new Date(),
         updatedAt: new Date(),
@@ -432,6 +520,7 @@ async function handleFailedApplicationJob(job: BullJob<ApplyJobData>, error: Err
       .where(and(
         eq(applyAttempts.candidateId, candidate.id),
         inArray(applyAttempts.status, ['pending', 'submitting']),
+        isNull(applyAttempts.completedAt),
       ))
     const [updated] = await db
       .update(huntCandidates)
@@ -469,8 +558,8 @@ export function startApplicationWorker(): Worker<ApplyJobData> {
       const [candidate] = await db.select().from(huntCandidates).where(and(eq(huntCandidates.id, job.data.candidateId), eq(huntCandidates.userId, job.data.userId))).limit(1)
       if (!candidate || !['queued', 'tailored'].includes(candidate.status)) return
       const controller = new AbortController()
-      const release = flag ? null : await acquireApplicationLanes(job.data, () => controller.abort(new Error('Application lease lost')))
-      if (!release) {
+      const lanes = flag ? null : await acquireApplicationLanes(job.data, () => controller.abort(new Error('Application lease lost')))
+      if (!lanes) {
         await job.moveToDelayed(Date.now() + 10_000, token)
         throw new DelayedError()
       }
@@ -484,11 +573,15 @@ export function startApplicationWorker(): Worker<ApplyJobData> {
               : sql`not exists (select 1 from ${applicationDispatches} d where d.candidate_id = ${job.data.candidateId})`,
           )).returning({id:huntCandidates.id})
         if (!claimed) return
-        await applyApprovedCandidate(job.data.userId, job.data.candidateId, { signal: controller.signal })
+        await applyApprovedCandidate(job.data.userId, job.data.candidateId, { signal: controller.signal, holdsProfileLane: lanes.holdsProfileLane })
       } catch (error) {
         if (error instanceof ApplicationDeferredError) { await job.moveToDelayed(Date.now() + 30_000, token); throw new DelayedError() }
         throw error
-      } finally { await release() }
+      } finally {
+        await lanes.release()
+        // Top the user's window up immediately rather than waiting for the sweep.
+        void dispatchPendingApplications().catch((error: unknown) => logger.warn({ err: error }, 'post-job dispatch deferred to the sweep'))
+      }
       await finishRunWhenSettled(job)
     },
     {
@@ -508,6 +601,10 @@ export function startApplicationWorker(): Worker<ApplyJobData> {
     })
   })
   applyWorker = worker
+  const beat = () => { void redis().set(`${RUNNER_KEY_PREFIX}${os.hostname()}:${process.pid}`, JSON.stringify(runnerIdentity()), 'EX', 60).catch((error: unknown) => logger.warn({ err: error }, 'runner heartbeat failed')) }
+  beat()
+  heartbeatTimer = setInterval(beat, 15_000)
+  heartbeatTimer.unref()
   let sweeping = false
   const sweep = async () => {
     if (sweeping) return
@@ -522,6 +619,8 @@ export function startApplicationWorker(): Worker<ApplyJobData> {
 
 export async function closeApplicationQueue(): Promise<void> {
   if (dispatcherTimer) clearInterval(dispatcherTimer)
+  if (heartbeatTimer) clearInterval(heartbeatTimer)
+  await connection?.del(`${RUNNER_KEY_PREFIX}${os.hostname()}:${process.pid}`).catch(() => undefined)
   if (applyWorker) await applyWorker.close()
   applyWorker = undefined
   if (queue) await queue.close()

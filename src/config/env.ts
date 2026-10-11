@@ -107,7 +107,27 @@ const schema = z.object({
    * queue — a job holding a BullMQ lock while it waits for a browser is a job
    * that can stall out and be retried for no reason.
    */
-  RUNNER_APPLY_CONCURRENCY: z.coerce.number().int().positive().max(4).default(1),
+  RUNNER_APPLY_CONCURRENCY: z.coerce.number().int().positive().max(8).default(1),
+  /**
+   * Concurrent applications per user on throwaway browsers. Anonymous ATS
+   * forms do not need the user's signed-in profile, so they are not bound to
+   * its one-at-a-time lane. The profile lane stays at one.
+   */
+  APPLY_USER_CONCURRENCY: z.coerce.number().int().positive().max(4).default(2),
+  /** Queue jobs held in Redis per user at once; the database keeps the rest, round-robin across users. */
+  APPLY_DISPATCH_WINDOW_PER_USER: z.coerce.number().int().positive().max(20).default(3),
+  /** Re-queue transient pre-submit failures with backoff (1, 5, 15 min). */
+  APPLY_AUTO_RETRY: booleanish.default('true'),
+  /**
+   * Which browser opens anonymous ATS forms (Greenhouse, Ashby, Lever, ...).
+   * `ephemeral` launches an isolated context per application on the runner;
+   * `profile` uses the user's signed-in VM profile as before.
+   */
+  APPLY_ANON_BROWSER: z.enum(['ephemeral', 'profile']).default('ephemeral'),
+  /** Throwaway browsers run headless unless a display is configured. */
+  EPHEMERAL_BROWSER_HEADLESS: booleanish.default('true'),
+  /** Build identity reported in runner heartbeats and on each attempt. */
+  RUNNER_VERSION: optionalString,
   /**
    * Opens a real window for interactive sign-in.
    *
@@ -212,7 +232,18 @@ const schema = z.object({
   META_API_KEY: optionalString,
   META_API_BASE: z.string().url().default('https://api.meta.ai/v1'),
   APPLY_AGENT_MODEL: z.string().default('google/gemini-3.1-flash-lite'),
-  APPLY_DRIVER: z.enum(['custom', 'openclaw', 'extension', 'jev']).default('extension'),
+  /**
+   * `planned` (default): read the ATS's published form schema, decide every
+   * answer before opening the browser, fill deterministically, verify each
+   * field, gate submit on verified completeness. The others are kept for
+   * rollback only.
+   */
+  APPLY_DRIVER: z.enum(['planned', 'custom', 'openclaw', 'extension', 'jev']).default('planned'),
+  /** Model that plans application answers. Anthropic first-party when a key is configured. */
+  APPLY_PLAN_MODEL: z.string().default('claude-opus-5-5'),
+  APPLY_PLAN_EFFORT: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('medium'),
+  /** `anthropic` uses the Claude API directly (with prompt caching); `gateway` uses MODEL_PROVIDER. */
+  APPLY_PLAN_PROVIDER: z.enum(['anthropic', 'gateway']).default('anthropic'),
   OPENCLAW_RUN_TIMEOUT_MS: z.coerce.number().int().min(10_000).max(600_000).default(300_000),
   OPENCLAW_GATEWAY_TOKENS: optionalString,
   OPENCLAW_BROWSER_PROFILES: optionalString,
@@ -404,3 +435,6 @@ export const hasApplyAgent = hasModelAccess
 export const hasJev = Boolean(env.TYPESAFE_API_KEY)
 
 export type Env = typeof env
+/** The answer planner can run: directly on Claude, or through the configured gateway. */
+export const hasAnthropicPlanner = env.APPLY_PLAN_PROVIDER === 'anthropic' && Boolean(env.ANTHROPIC_API_KEY)
+export const hasPlanner = hasAnthropicPlanner || hasModelAccess

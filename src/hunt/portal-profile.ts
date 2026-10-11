@@ -56,6 +56,26 @@ export interface PortalProfile {
     mimeType: string
   }
   resumeDocument: ResumeDocument | null
+  /** Full résumé text as parsed, for answering free-text questions. Empty when unavailable. */
+  resumeText?: string
+  /** The résumé's education section, verbatim. Forms ask for degree, school and year constantly. */
+  education?: string
+}
+
+const SECTION_HEADING = /^(?:professional\s+)?(?:summary|profile|objective|experience|work\s+experience|employment(?:\s+history)?|work\s+history|skills|technical\s+skills|projects?|certifications?|achievements?|awards?|publications?|languages?|interests|volunteer(?:ing)?|activities)\s*:?$/i
+
+/** The text under an "Education" heading, up to the next section heading. */
+export function educationSection(resumeText: string): string {
+  const lines = String(resumeText ?? '').replace(/\r/g, '').split('\n')
+  const start = lines.findIndex((line) => /^\s*(?:education(?:al)?(?:\s+(?:background|&\s*training|and\s+training))?|academic\s+(?:background|qualifications))\s*:?\s*$/i.test(line.trim()))
+  if (start < 0) return ''
+  const out: string[] = []
+  for (const line of lines.slice(start + 1)) {
+    if (SECTION_HEADING.test(line.trim())) break
+    out.push(line)
+    if (out.length >= 25) break
+  }
+  return out.join('\n').trim().slice(0, 2_000)
 }
 
 export async function loadPortalProfile(userId: string): Promise<PortalProfile> {
@@ -128,5 +148,7 @@ export async function loadPortalProfile(userId: string): Promise<PortalProfile> 
       mimeType: baseResume.mimeType,
     },
     resumeDocument: structured.success ? structured.data : null,
+    resumeText: (parsed?.rawText ?? '').slice(0, 24_000),
+    education: educationSection(parsed?.rawText ?? ''),
   }
 }

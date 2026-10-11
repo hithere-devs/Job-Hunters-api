@@ -52,6 +52,7 @@ import { publishAttemptEvent } from './apply/events.js'
 import { waitForApplicationAnswers } from './apply/live-questions.js'
 import { beforeSubmission, noteUnexpectedSubmission, submissionWasAttempted, withSubmissionGuard } from './apply/submission-guard.js'
 import { transition } from './apply/state.js'
+import { applyPlannedCandidate } from './apply/planned-apply.js'
 import { awaitTakeover, isWatched, startScreencast } from './apply/screencast.js'
 
 
@@ -73,6 +74,17 @@ async function persistEvidence(userId: string, attemptId: string, page: Page): P
 }
 
 export async function applyApprovedCandidate(
+  userId: string,
+  candidateId: string,
+  options?: { dryRun?: boolean; signal?: AbortSignal; holdsProfileLane?: boolean },
+): Promise<void> {
+  // The planned driver is the default. The code below is kept, unchanged in
+  // behaviour except for the fixes marked, as a rollback path only.
+  if (env.APPLY_DRIVER === 'planned') return applyPlannedCandidate(userId, candidateId, options)
+  return applyLegacyCandidate(userId, candidateId, options)
+}
+
+async function applyLegacyCandidate(
   userId: string,
   candidateId: string,
   options?: { dryRun?: boolean; signal?: AbortSignal },
@@ -197,7 +209,8 @@ export async function applyApprovedCandidate(
       candidateId,
       userId,
       portalId: source?.portalId ?? row.candidate.sourcePortal,
-      status: 'submitting',
+      // Fixed: `submitting` is set only when the durable fence is written.
+      status: 'pending',
       startedAt: new Date(),
     })
     .returning()
@@ -788,7 +801,9 @@ export async function applyApprovedCandidate(
       return
     }
     if (!session && error instanceof ApiError && error.status === 409) {
-      await db.update(applyAttempts).set({status:'failed',error:'Browser is busy; deferred before opening application.',completedAt:new Date(),updatedAt:new Date()}).where(eq(applyAttempts.id,attempt.id))
+      // Fixed: nothing ran, so leave no attempt behind (241 such rows polluted production metrics).
+      await db.delete(attemptEvents).where(eq(attemptEvents.attemptId,attempt.id))
+      await db.delete(applyAttempts).where(eq(applyAttempts.id,attempt.id))
       await db.update(huntCandidates).set({status:'queued',updatedAt:new Date()}).where(eq(huntCandidates.id,candidateId))
       await setRunJobStatus(row.candidate.runId,row.candidate.jobId,'queued')
       throw new ApplicationDeferredError()
