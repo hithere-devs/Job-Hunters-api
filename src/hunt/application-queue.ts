@@ -23,7 +23,7 @@ import os from 'node:os'
 
 const QUEUE_NAME = env.APPLICATION_QUEUE_NAME
 import { assertApprovalLease } from './approval-lock.js'
-import { ApplicationDeferredError, dailyBudget, effectiveConcurrency } from './application-policy.js'
+import { ApplicationDeferredError, configuredConcurrency, dailyBudget, effectiveConcurrency } from './application-policy.js'
 const MAX_DAILY_APPLICATIONS = 100
 const INTERRUPTED_AFTER_MS = 3 * 60_000
 const DEFAULT_PORTAL_CAP = 30
@@ -117,7 +117,7 @@ async function acquireApplicationLanes(data: ApplyJobData, onLost: () => void): 
     db.select().from(userSchedules).where(eq(userSchedules.userId, data.userId)).limit(1),
     needsProfile ? db.select().from(userBrowserSessions).where(eq(userBrowserSessions.userId, data.userId)).limit(1) : Promise.resolve([]),
   ])
-  const limit = effectiveConcurrency(schedule?.applyConcurrency ?? env.APPLY_USER_CONCURRENCY, needsProfile)
+  const limit = effectiveConcurrency(configuredConcurrency(schedule?.applyConcurrency, env.APPLY_USER_CONCURRENCY), needsProfile)
   let userRelease: (() => Promise<void>) | null = null
   for (let slot = 0; slot < limit && !userRelease; slot++) userRelease = await acquireLane(`huntly:apply-user:${data.userId}:${slot}`, onLost)
   if (!userRelease) return null

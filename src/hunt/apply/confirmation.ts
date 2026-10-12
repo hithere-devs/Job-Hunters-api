@@ -205,7 +205,9 @@ export async function capturePageState(page: Page, submitSelector: string): Prom
       const src = frame.getAttribute('src') || ''
       if (!/recaptcha\/(?:api2|enterprise)\/bframe|hcaptcha\.com\/.*(?:challenge|hcaptcha\.html#frame=challenge)|challenges\.cloudflare\.com/.test(src)) continue
       const rect = frame.getBoundingClientRect()
-      if (rect.width < 100 || rect.height < 100) continue
+      // Cloudflare Turnstile's "Verify you are human" box is about 300×65.
+      const turnstile = /challenges\.cloudflare\.com/.test(src)
+      if (rect.width < (turnstile ? 200 : 100) || rect.height < (turnstile ? 40 : 100)) continue
       let hidden = false
       for (let node: Element | null = frame; node; node = node.parentElement) {
         const style = getComputedStyle(node)

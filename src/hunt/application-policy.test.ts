@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe,it } from 'node:test'
-import { dailyBudget,effectiveConcurrency,safeRetryReason } from './application-policy.js'
+import { configuredConcurrency,dailyBudget,effectiveConcurrency,safeRetryReason } from './application-policy.js'
 
 describe('application execution policy',()=>{
   it('subtracts previous batches and resets at UTC midnight',()=>{
@@ -12,6 +12,10 @@ describe('application execution policy',()=>{
   it('serializes one VM profile even with multiple configured slots',()=>{
     assert.equal(effectiveConcurrency(4,true),1)
     assert.equal(effectiveConcurrency(2,false),2)
+    // The schedule column defaults to 1 and nothing writes it: it must not pin users to one at a time.
+    assert.equal(configuredConcurrency(1,2),2)
+    assert.equal(configuredConcurrency(3,2),3)
+    assert.equal(configuredConcurrency(undefined,2),2)
     assert.equal(effectiveConcurrency(99,false),4)
     assert.equal(effectiveConcurrency(0,false),1)
   })

@@ -4,6 +4,16 @@ export function dailyBudget(used: number, configured = 100, now = new Date()) {
   const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
   return { limit, used, remaining: Math.max(0, limit - used), start, resetsAt: new Date(start.getTime() + 86_400_000).toISOString() }
 }
+/**
+ * Applications a user may run at once. `user_schedules.apply_concurrency`
+ * defaults to 1 and nothing writes it, so reading it alone pinned every user
+ * to one application at a time; the runner setting is the default and the
+ * column can only raise it.
+ */
+export function configuredConcurrency(scheduled: number | null | undefined, runnerDefault: number) {
+  return Math.max(scheduled ?? 0, runnerDefault)
+}
+
 export function effectiveConcurrency(configured: number, vmProfile: boolean) {
   return vmProfile ? 1 : Math.max(1, Math.min(4, configured))
 }

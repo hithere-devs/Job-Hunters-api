@@ -2,7 +2,7 @@ import { and, count, eq, gte, sql } from 'drizzle-orm'
 import { db } from '../../db/client.js'
 import { applications, attemptFlags, portalAccounts, userBrowserSessions, userSchedules, huntSpecs } from '../../db/schema.js'
 import { applicationQueueHealth } from '../../hunt/application-queue.js'
-import { dailyBudget, effectiveConcurrency } from '../../hunt/application-policy.js'
+import { configuredConcurrency, dailyBudget, effectiveConcurrency } from '../../hunt/application-policy.js'
 import { readApplyFields } from '../../persona/apply-fields.js'
 import { providerCatalogue } from '../../browser/provider-catalogue.js'
 import { browserProvider, env, hasApplyAgent, hasPlanner } from '../../config/env.js'
@@ -58,8 +58,8 @@ export async function applicationPreflight(userId: string, portals: string[] = [
     if (![profile.gender, profile.ethnicity, profile.veteranStatus, profile.disabilityStatus].some((value) => value?.trim())) warnings.push({code: 'kit_eeo', message: 'Voluntary demographic questions will be answered "decline to self-identify" unless you set them in My Kit.', href: '/app/profile'})
   }
   return { ...health, canApply: gaps.length === 0, gaps, warnings, providers,
-    configuredConcurrency: schedule?.applyConcurrency ?? env.APPLY_USER_CONCURRENCY,
-    effectiveConcurrency: effectiveConcurrency(schedule?.applyConcurrency ?? env.APPLY_USER_CONCURRENCY, profileRequired),
+    configuredConcurrency: configuredConcurrency(schedule?.applyConcurrency, env.APPLY_USER_CONCURRENCY),
+    effectiveConcurrency: effectiveConcurrency(configuredConcurrency(schedule?.applyConcurrency, env.APPLY_USER_CONCURRENCY), profileRequired),
     dailyLimit: budget.limit, dailyUsed: budget.used, dailyRemaining: budget.remaining, resetsAt: budget.resetsAt,
     applicationEmail: fields.fields.find(f => f.id === 'email')?.value ?? null,
     browserSession: session ? {status: session.status, vmId: session.vmId, tenantIndex: session.tenantIndex} : null,

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
-import { describe, it } from 'node:test'
-import { addedText, atsFamily, classifySubmitOutcome, confirmationUrl, pageShowsConfirmation, siteOf, type NetworkEvent, type PageState } from './confirmation.js'
+import { after, describe, it } from 'node:test'
+import { chromium, type Browser } from 'playwright-core'
+import { addedText, atsFamily, capturePageState, classifySubmitOutcome, confirmationUrl, pageShowsConfirmation, siteOf, type NetworkEvent, type PageState } from './confirmation.js'
 
 const form = (overrides: Partial<PageState> = {}): PageState => ({
   url: 'https://job-boards.greenhouse.io/acme/jobs/1',
@@ -68,5 +69,26 @@ describe('confirmation helpers', () => {
   })
   it('diffs only new lines', () => {
     assert.equal(addedText('a\nb', 'a\nb\nc'), 'c')
+  })
+})
+
+const chromePath = process.env.TEST_CHROME_PATH ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+const browser: Browser | null = await chromium.launch({ headless: true, executablePath: chromePath }).catch(() => null)
+
+describe('challenge frames on screen', { skip: !browser }, () => {
+  after(async () => { await browser?.close() })
+  it('counts the Cloudflare Turnstile checkbox (Workable) but not an invisible reCAPTCHA badge', async () => {
+    const page = await browser!.newPage()
+    await page.route('**/*', (route) => route.request().url().startsWith('https://') ? route.fulfill({ body: '<html></html>' }) : route.continue())
+    try {
+      await page.setContent(`<form><input name="a"><input name="b"><button type="submit">Submit application</button>
+        <iframe src="https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/turnstile/if/ov2/av0/rcv/abc" style="width:300px;height:65px;border:0"></iframe></form>`)
+      assert.equal((await capturePageState(page, 'button[type=submit]')).captchaChallenge, true)
+      await page.setContent(`<form><input name="a"><input name="b"><button type="submit">Submit application</button>
+        <iframe src="https://www.google.com/recaptcha/api2/anchor?k=x" style="width:256px;height:60px;border:0"></iframe></form>`)
+      assert.equal((await capturePageState(page, 'button[type=submit]')).captchaChallenge, false)
+    } finally {
+      await page.close()
+    }
   })
 })
