@@ -114,6 +114,9 @@ export const ASHBY_HTML = `<!doctype html><html><body>
 <form class="ashby-application-form-container" onsubmit="return false">
   <div class="ashby-application-form-field-entry"><label class="ashby-application-form-question-title _required_x" for="_systemfield_name">Name</label><input id="_systemfield_name" name="_systemfield_name" type="text"></div>
   <div class="ashby-application-form-field-entry"><label class="ashby-application-form-question-title _required_x" for="_systemfield_email">Email</label><input id="_systemfield_email" name="_systemfield_email" type="email"></div>
+  <div class="ashby-application-form-field-entry" data-field-path="phone"><label class="ashby-application-form-question-title _required_x" for="phone">Phone</label><input id="phone" name="phone" type="tel" required placeholder="1-415-555-1234...">
+    <div class="_phoneNumberConsentLegalText_q1pga_1"><div><p>Check <strong>Yes</strong> or <strong>No</strong> to indicate your agreement to receive text message updates.</p></div>
+    <div class="_container_1rwuy_1 _consentRadioGroup_q1pga_13"><label><input type="radio" name="communicationConsent" value="given"><div><p>Yes</p></div></label><label><input type="radio" name="communicationConsent" value="notGiven"><div><p>No</p></div></label></div></div></div>
   <div class="ashby-application-form-field-entry"><label class="ashby-application-form-question-title _required_x" for="_systemfield_resume">Resume</label><input id="_systemfield_resume" name="_systemfield_resume" type="file"></div>
   <div class="ashby-application-form-field-entry" data-field-path="sponsor"><label class="ashby-application-form-question-title _required_x">Will you require work sponsorship now and/or in the future?</label>
     <div class="ashby-application-form-input-yesno"><button type="button" aria-pressed="false">Yes</button><button type="button" aria-pressed="false">No</button></div></div>
@@ -131,8 +134,9 @@ document.querySelector('.ashby-application-form-submit-button').addEventListener
     && document.getElementById('_systemfield_resume').files.length
     && document.querySelector('.ashby-application-form-input-yesno button[aria-pressed=true]')
     && document.querySelectorAll('input[name=office]:checked').length
+    && document.getElementById('phone').value && document.querySelector('input[name=communicationConsent]:checked')
   if (!ok) { document.querySelector('form').insertAdjacentHTML('beforeend', '<div role="alert" class="_error">Missing entry for required field</div>'); return }
-  const response = await fetch('/api/non-user-graphql?op=ApiApplicationFormSubmit', { method: 'POST', body: JSON.stringify({ offices: [...document.querySelectorAll('input[name=office]:checked')].map(b => b.value), sponsor: document.querySelector('.ashby-application-form-input-yesno button[aria-pressed=true]').textContent }) })
+  const response = await fetch('/api/non-user-graphql?op=ApiApplicationFormSubmit', { method: 'POST', body: JSON.stringify({ offices: [...document.querySelectorAll('input[name=office]:checked')].map(b => b.value), sponsor: document.querySelector('.ashby-application-form-input-yesno button[aria-pressed=true]').textContent, textConsent: document.querySelector('input[name=communicationConsent]:checked').value }) })
   if (response.ok) document.querySelector('form').outerHTML = '<div><h2>Thanks for applying!</h2><p>Your application was successfully submitted.</p></div>'
 })
 </script></body></html>`
@@ -162,6 +166,7 @@ export function ashbyFixtureSchema(url: string): FormSchema {
     field({ key: 'ashby:_systemfield_name', label: 'Name', kind: 'text', atsName: '_systemfield_name', section: 'profile' }),
     field({ key: 'ashby:_systemfield_email', label: 'Email', kind: 'email', atsName: '_systemfield_email', section: 'profile' }),
     field({ key: 'ashby:_systemfield_resume', label: 'Resume', kind: 'file', atsName: '_systemfield_resume', fileRole: 'resume', section: 'profile' }),
+    field({ key: 'ashby:phone', label: 'Phone', kind: 'phone', atsName: 'phone', section: 'profile' }),
     field({ key: 'ashby:sponsor', label: 'Will you require work sponsorship now and/or in the future?', kind: 'boolean', atsName: 'sponsor', options: [{ label: 'Yes' }, { label: 'No' }] }),
     field({ key: 'ashby:office', label: 'Which office are you applying to? (Select both if appropriate)', kind: 'multiselect', atsName: 'office', options: [{ label: 'San Francisco HQ - 181 Fremont Street' }, { label: 'New York City - 1 World Trade' }] }),
   ]

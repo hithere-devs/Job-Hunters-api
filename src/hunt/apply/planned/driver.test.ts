@@ -121,7 +121,7 @@ describe('planned driver on ATS replicas', { skip: !browser }, () => {
     await page.context().close()
   })
 
-  it('fills an Ashby-style form: yes/no buttons and a multi-select office question', async () => {
+  it('fills an Ashby-style form: yes/no buttons, a multi-select office question, and the texting consent inside Phone', async () => {
     const page = await open('/ashby/mercor/1/application')
     const transport = stubPlanner()
     const ready = await prepared(ashbyFixtureSchema(page.url()), transport, usJob)
@@ -129,9 +129,10 @@ describe('planned driver on ATS replicas', { skip: !browser }, () => {
     assert.deepEqual(result.blockers, [])
     const submitted = await withSubmissionGuard(() => submitForm({ page, url: page.url(), dryRun: false, skipWidgetReady: true, settle: FAST }), async () => {})
     assert.equal(submitted.submitted, true, JSON.stringify(submitted))
-    const body = fixtures.submissions.at(-1)!.body as { offices: string[]; sponsor: string }
+    const body = fixtures.submissions.at(-1)!.body as { offices: string[]; sponsor: string; textConsent: string }
     assert.deepEqual(body.offices.sort(), ['NYC', 'SF'])
     assert.equal(body.sponsor, 'Yes')
+    assert.equal(body.textConsent, 'notGiven')
     await page.context().close()
   })
 })

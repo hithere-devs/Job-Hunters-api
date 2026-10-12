@@ -1,6 +1,6 @@
 /* Apply Pilot page script. MAIN world. Snapshot + primitive actions only. */
 (() => {
-  if (window.__APPLY_PILOT__?.version >= 17) return
+  if (window.__APPLY_PILOT__?.version >= 18) return
 
   const ENTRY_SEL = '.ashby-application-form-field-entry, [data-field-entry-id], fieldset[class*="fieldEntry"], .field-wrapper, .phone-input__country, .application-question, li.application-question, .opening-form__field, [data-qa="field"], .form-field, .application-field'
   const OPTION_SEL = [
@@ -17,6 +17,7 @@
     '[data-radix-collection-item]',
     '.iti__country',
     '.iti__country-name',
+    '.dropdown-results .dropdown-location',
   ].join(', ')
   const PLACEHOLDER_OPTION = /^(?:select|choose|please\s+select|start typing|type to search|type your response|search|loading|no results|nothing found|n\/a|-|–|—)\b/i
   const PLACEHOLDER_PROMPT = /^(?:type your response|start typing|please select|select\.\.\.|choose an option)\b/i
@@ -275,7 +276,7 @@
     if (!(node instanceof Element)) return null
     const tel = node.querySelector('input[type="tel"]')
     if (tel) return tel
-    const combo = node.querySelector('[role="combobox"], input.ashby-application-form-input-autocomplete, input[aria-autocomplete]')
+    const combo = node.querySelector('[role="combobox"], input.ashby-application-form-input-autocomplete, input[aria-autocomplete], input.location-input')
     if (combo) return combo
     const select = node.querySelector('select')
     if (select) return select
@@ -382,7 +383,8 @@
       if (control.type === 'email') return 'email'
       if (control.type === 'tel') return 'tel'
       if (control.type === 'url') return 'url'
-      if (control.getAttribute('role') === 'combobox' || control.getAttribute('aria-autocomplete') || /autocomplete/i.test(control.className)) return 'combobox'
+      // Lever's location field must be picked from its results (they set a hidden selectedLocation).
+      if (control.getAttribute('role') === 'combobox' || control.getAttribute('aria-autocomplete') || /autocomplete|location-input/i.test(control.className)) return 'combobox'
       return control.type || 'textbox'
     }
     if (node instanceof HTMLButtonElement || node.getAttribute?.('role') === 'button') return 'button'
@@ -506,17 +508,31 @@
     const found = []
     const covered = []
     const scope = document
+    // Lever's .application-field is the input half of an .application-question;
+    // taken as the entry it lost the .application-label beside it, so custom
+    // questions were labelled by their input names ("cards[…][field0]").
+    const leverHalf = (node) => node.matches('.application-field') && Boolean(node.parentElement?.closest('.application-question'))
     const entries = Array.from(scope.querySelectorAll(ENTRY_SEL)).filter((entry) => {
+      if (leverHalf(entry)) return false
       if (!visible(entry) && !entry.querySelector('input[type="radio"], input[type="checkbox"]')) return false
-      return !entry.querySelector(ENTRY_SEL)
+      return !Array.from(entry.querySelectorAll(ENTRY_SEL)).some((inner) => !leverHalf(inner))
     })
     for (const entry of entries) {
       const yesno = entry.querySelector('.ashby-application-form-input-yesno')
-      const combo = entry.querySelector('[role="combobox"], input.ashby-application-form-input-autocomplete')
+      const combo = entry.querySelector('[role="combobox"], input.ashby-application-form-input-autocomplete, input.location-input')
       const file = entry.querySelector('input[type="file"]')
       const select = entry.querySelector('select')
       const textarea = entry.querySelector('textarea')
-      const radios = Array.from(entry.querySelectorAll('input[type="radio"]'))
+      // Ashby nests a texting-consent Yes/No inside the Phone entry. Labelled
+      // "Phone", it drew the phone number and minutes of failed writes, and hid
+      // the real tel input from the entry scan. It is its own question.
+      const consentRadios = Array.from(entry.querySelectorAll('input[type="radio"][name="communicationConsent"]'))
+      if (consentRadios.length) {
+        const consent = consentRadios[0].closest('[class*="consentRadioGroup"], [role="radiogroup"]') || consentRadios[0].parentElement
+        emitElement(found, consent, { role: 'radio', label: 'Consent to receive text messages about this application', required: true, options: ['Yes', 'No'], control: consentRadios[0] })
+        covered.push(...consentRadios)
+      }
+      const radios = Array.from(entry.querySelectorAll('input[type="radio"]')).filter((radio) => radio.name !== 'communicationConsent')
       const checks = Array.from(entry.querySelectorAll('input[type="checkbox"]')).filter((box) => !box.closest('.ashby-application-form-input-yesno'))
       // Required markers live in the raw label text ("Name*", "<span class=required>*</span>");
       // questionLabel() cleans them away, so keep the raw text for requiredOf().
@@ -582,6 +598,13 @@
       if (!['radio', 'checkbox'].includes(type) && !visible(element)) continue
       if (type === 'radio' && element.name) {
         if (found.some((row) => row.name === element.name && row.role === 'radio')) continue
+        // Ashby nests a texting-consent Yes/No inside the Phone entry; labelled
+        // "Phone", it drew the phone number and minutes of failed writes.
+        if (element.name === 'communicationConsent') {
+          const consent = element.closest('[class*="consentRadioGroup"], [role="radiogroup"]') || element
+          emitElement(found, consent, { role: 'radio', control: element, label: 'Consent to receive text messages about this application', required: true, options: ['Yes', 'No'] })
+          continue
+        }
         const group = element.closest('fieldset, [role="radiogroup"], .application-question, [class*="fieldEntry"]') || element
         emitElement(found, group, { role: 'radio', control: element })
         continue
@@ -873,7 +896,7 @@
       })
   })
 
-  const api = { version: 17, snapshot, act, harvest }
+  const api = { version: 18, snapshot, act, harvest }
   window.__APPLY_PILOT__ = api
   window.__HUNTLY_APPLY__ = api
 })()

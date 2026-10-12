@@ -208,7 +208,7 @@ export async function executePlannedApplication(params: {
       if (!answer || answer.action === 'upload_resume' || !match.element) return false
       const done = results.get(match.field.key)
       if (done?.status === 'filled' && match.element.filled) return false
-      if (done && done.status === 'failed' && done.attempts >= 6) return false
+      if (done && done.status === 'failed' && done.attempts >= 3) return false
       return answer.action === 'fill' ? !(match.element.filled && committedSatisfies(answer, match.element.value)) : !done
     })
     if (!todo.length && !extras.length) break
@@ -237,6 +237,8 @@ export async function executePlannedApplication(params: {
   matches = matchFields(fields, snapshot.elements)
   const lost = matches.filter((match) => {
     const answer = answers.get(match.field.key)
+    // Lost after a successful write, not a field that never took: those already had their tries.
+    if (results.get(match.field.key)?.status === 'failed') return false
     return answer?.action === 'fill' && match.element && !(match.element.filled && committedSatisfies(answer, match.element.value))
   })
   if (lost.length) {

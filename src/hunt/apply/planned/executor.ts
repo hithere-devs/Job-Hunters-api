@@ -152,50 +152,61 @@ export async function fillField(page: Page, element: PilotElement, answer: Plann
   }
   let attempts = 0
   let lastCommitted = ''
+  // One field may not hold the form hostage: a control that never accepts the
+  // value used to burn minutes across strategies, rounds and the final refill.
+  const startedAt = Date.now()
   for (let strategy = 0; strategy < 3; strategy += 1) {
+    if (strategy > 0 && Date.now() - startedAt > FIELD_BUDGET_MS) break
     attempts += 1
     try {
-      if (answer.kind === 'multiselect') {
-        const already = await checkedLabels(page, element.id)
-        for (const value of answer.values) {
-          if (already.some((label) => folded(label).includes(folded(value)))) continue
-          await writeOnce(page, element, answer, value)
-          await pause(150)
-        }
-        const checked = await checkedLabels(page, element.id)
-        const current = await readElement(page, element)
-        lastCommitted = checked.length ? checked.join(', ') : current?.value ?? ''
-      } else if (answer.kind === 'date') {
-        await writeDate(page, element, answer.values[0] ?? '')
-        lastCommitted = (await readElement(page, element))?.value ?? ''
-      } else {
-        let value = answer.values[0] ?? ''
-        if (strategy === 1 && ['select', 'boolean'].includes(answer.kind)) {
-          // The page's options may be worded differently from the schema's.
-          const harvested = await actOnPage(page, { op: 'harvest', id: element.id }).catch(() => null)
-          const live = (harvested?.options ?? element.options).map((label) => ({ label }))
-          value = matchOption(live, answer.values)?.label ?? value
-        }
-        if (strategy === 2 && ['text', 'textarea', 'email', 'url', 'number', 'phone'].includes(answer.kind)) {
-          const target = page.locator(`[data-apply-id="${element.id}"]`).first()
-          const input = (await target.evaluate((node) => node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement, undefined, { timeout: 3_000 }).catch(() => false)) ? target : target.locator('input, textarea').first()
-          await input.fill(value, { timeout: 5_000 }).catch(() => undefined)
-          await input.blur().catch(() => undefined)
-        } else {
-          await writeOnce(page, element, answer, value)
-        }
-        await pause(150)
-        lastCommitted = (await readElement(page, element))?.value ?? ''
-      }
+      await Promise.race([writeStrategy(strategy), pause(STRATEGY_TIMEOUT_MS).then(() => { throw new Error('field write timed out') })])
       if (committedSatisfies(answer, lastCommitted)) return { ...base, status: 'filled', committed: lastCommitted, attempts }
     } catch (error) {
       logger.debug({ err: error, label: answer.label }, 'field write attempt failed')
     }
-    await page.locator(`[data-apply-id="${element.id}"]`).first().scrollIntoViewIfNeeded().catch(() => undefined)
+    await page.locator(`[data-apply-id="${element.id}"]`).first().scrollIntoViewIfNeeded({ timeout: 3_000 }).catch(() => undefined)
     await pause(250)
   }
   return { ...base, status: 'failed', committed: lastCommitted, attempts, error: 'value did not stick after three strategies' }
+
+  async function writeStrategy(strategy: number): Promise<void> {
+    if (answer.kind === 'multiselect') {
+      const already = await checkedLabels(page, element.id)
+      for (const value of answer.values) {
+        if (already.some((label) => folded(label).includes(folded(value)))) continue
+        await writeOnce(page, element, answer, value)
+        await pause(150)
+      }
+      const checked = await checkedLabels(page, element.id)
+      const current = await readElement(page, element)
+      lastCommitted = checked.length ? checked.join(', ') : current?.value ?? ''
+    } else if (answer.kind === 'date') {
+      await writeDate(page, element, answer.values[0] ?? '')
+      lastCommitted = (await readElement(page, element))?.value ?? ''
+    } else {
+      let value = answer.values[0] ?? ''
+      if (strategy === 1 && ['select', 'boolean'].includes(answer.kind)) {
+        // The page's options may be worded differently from the schema's.
+        const harvested = await actOnPage(page, { op: 'harvest', id: element.id }).catch(() => null)
+        const live = (harvested?.options ?? element.options).map((label) => ({ label }))
+        value = matchOption(live, answer.values)?.label ?? value
+      }
+      if (strategy === 2 && ['text', 'textarea', 'email', 'url', 'number', 'phone'].includes(answer.kind)) {
+        const target = page.locator(`[data-apply-id="${element.id}"]`).first()
+        const input = (await target.evaluate((node) => node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement, undefined, { timeout: 3_000 }).catch(() => false)) ? target : target.locator('input, textarea').first()
+        await input.fill(value, { timeout: 5_000 }).catch(() => undefined)
+        await input.blur().catch(() => undefined)
+      } else {
+        await writeOnce(page, element, answer, value)
+      }
+      await pause(150)
+      lastCommitted = (await readElement(page, element))?.value ?? ''
+    }
+  }
 }
+
+const FIELD_BUDGET_MS = 30_000
+const STRATEGY_TIMEOUT_MS = 20_000
 
 /** Fill in page order, so conditional questions reveal themselves in sequence. */
 export async function fillAll(params: {

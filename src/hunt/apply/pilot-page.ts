@@ -50,7 +50,7 @@ export function applyPilotSource(): string {
   return pilotSource
 }
 
-const PILOT_VERSION = 17
+const PILOT_VERSION = 18
 /** After typing in a dropdown, wait so the typeahead can finish before Jev or a click. */
 export const DROPDOWN_AFTER_TYPE_MS = 2_000
 
