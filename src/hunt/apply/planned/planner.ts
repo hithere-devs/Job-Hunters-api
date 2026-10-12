@@ -226,7 +226,7 @@ export async function planAnswers(params: {
           userId: params.userId,
           signal: params.signal,
           dossierText: `CANDIDATE DOSSIER (JSON)\n${JSON.stringify(dossierForModel(params.dossier))}`,
-          requestText: `JOB (JSON)\n${JSON.stringify({ title: params.job.title, company: params.job.company, location: params.job.location, countries: params.job.countries, remote: params.job.remote, description: params.job.description })}\n\nFORM FIELDS TO ANSWER (JSON)\n${JSON.stringify(pending.map(fieldForModel))}`,
+          requestText: `TODAY: ${new Date().toISOString().slice(0, 10)}\n\nJOB (JSON)\n${JSON.stringify({ title: params.job.title, company: params.job.company, location: params.job.location, countries: params.job.countries, remote: params.job.remote, description: params.job.description })}\n\nFORM FIELDS TO ANSWER (JSON)\n${JSON.stringify(pending.map(fieldForModel))}`,
         })
         output = result.output
         model = result.model

@@ -10,6 +10,10 @@ const JUNK_TOKEN = /^(?:security|character|continue|password|username|greenhouse
  */
 export function extractGreenhouseEmailCode(text: string): string | null {
   const body = String(text ?? '').replace(/\u00a0/g, ' ')
+  // "Copy and paste this code into the security code field on your application: KJKGrgxE."
+  // Codes are often letters only, so the mixed-token fallback below misses them.
+  const pasted = body.match(/(?:security code|verification code)[^:\n]{0,80}:\s*([A-Za-z0-9]{8})\b/i)
+  if (pasted?.[1] && !JUNK_TOKEN.test(pasted[1])) return pasted[1]
   const labeled = body.match(/(?:verification code|security code|8-character code|your code is|code:)[^\nA-Za-z0-9]{0,48}([A-Za-z0-9]{8})\b/i)
   if (labeled?.[1] && !JUNK_TOKEN.test(labeled[1])) return labeled[1]
   const standalone = body.match(/(?:^|\n)\s*([A-Za-z0-9]{8})\s*(?:\n|$)/)
@@ -75,6 +79,68 @@ export async function verificationInputsFilled(page: Page): Promise<boolean> {
   }
 }
 
+/** Company names as they appear in Greenhouse's subject line ("application to Chime Financial, Inc"). */
+export function companyAliases(company: string | undefined): string[] {
+  const full = (company ?? '').trim().toLowerCase()
+  if (!full) return []
+  const bare = full.replace(/,?\s+(?:inc|llc|ltd|gmbh|corp|co)\.?$/i, '').trim()
+  return [...new Set([full, bare].filter((value) => value.length >= 2))]
+}
+
+/**
+ * The newest code in a conversation, from messages sent after `sinceMs`.
+ *
+ * Gmail threads every "Security code for your application to X" email into one
+ * conversation, and the list row shows neither the newest message's time nor
+ * its snippet. Reading the row picked an older code (rejected as incorrect) or
+ * skipped a fresh one as stale. Only the opened conversation is trustworthy.
+ */
+export function newestCodeIn(messages: Array<{ stamp: string; body: string }>, sinceMs: number, skip: Set<string> | undefined, nowMs = Date.now()): string | null {
+  for (const message of [...messages].reverse()) {
+    const at = gmailRowTimeMs(message.stamp, nowMs)
+    // Minute precision: a code sent at 22:12:55 for a click at 22:12:50 reads 22:12.
+    if (at == null || at + 60_000 < sinceMs) continue
+    const code = extractGreenhouseEmailCode(message.body)
+    if (code && !skip?.has(code)) return code
+  }
+  return null
+}
+
+async function conversationMessages(mail: Page): Promise<Array<{ stamp: string; body: string }>> {
+  const expand = mail.locator('[aria-label="Expand all"]').first()
+  if (await expand.isVisible().catch(() => false)) {
+    await expand.click({ timeout: 3_000 }).catch(() => undefined)
+    await new Promise((resolve) => setTimeout(resolve, 1_000))
+  }
+  const messages = await mail.locator('div.adn').evaluateAll((nodes) => nodes.map((node) => ({
+    stamp: node.querySelector('span.g3[title]')?.getAttribute('title') ?? '',
+    body: (node.querySelector('div.a3s') as HTMLElement | null)?.innerText ?? '',
+  }))).catch(() => [] as Array<{ stamp: string; body: string }>)
+  if (messages.some((message) => message.stamp && message.body)) return messages
+  // Older markup: pair stamps and bodies from the newest end.
+  const stamps = await mail.locator('span.g3[title]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('title') ?? '')).catch(() => [] as string[])
+  const bodies = await mail.locator('div.a3s').allInnerTexts().catch(() => [] as string[])
+  const count = Math.min(stamps.length, bodies.length)
+  return Array.from({ length: count }, (_, index) => ({ stamp: stamps[stamps.length - count + index]!, body: bodies[bodies.length - count + index]! }))
+}
+
+async function searchMail(mail: Page, query: string): Promise<boolean> {
+  // Re-running the same search does not refetch (the URL hash is unchanged),
+  // so a poll would keep reading the list from before the code arrived.
+  if (/#search\//.test(mail.url())) {
+    await mail.goto('https://mail.google.com/mail/u/0/#inbox', { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => undefined)
+    await new Promise((resolve) => setTimeout(resolve, 1_200))
+  }
+  const search = mail.locator('input[aria-label*="Search" i], input[name="q"]').first()
+  if (!await search.count()) return false
+  await search.click({ timeout: 4_000 }).catch(() => undefined)
+  await search.fill(query)
+  await search.press('Enter')
+  await mail.locator('tr.zA, div[role="listitem"]').first().waitFor({ timeout: 8_000 }).catch(() => undefined)
+  await new Promise((resolve) => setTimeout(resolve, 800))
+  return true
+}
+
 /**
  * The VM Chrome profile already has Gmail open.
  * Reuse that tab when it exists. Do not close it.
@@ -93,51 +159,43 @@ export async function readGmailVerificationCode(page: Page, sinceMs = Date.now()
       logger.info({ url: mail.url() }, 'Gmail tab is not signed in')
       return null
     }
-    // Re-running the same search does not refetch (the URL hash is unchanged),
-    // so a poll would keep reading the list from before the code arrived.
-    if (/#search\//.test(mail.url())) {
-      await mail.goto('https://mail.google.com/mail/u/0/#inbox', { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => undefined)
-      await new Promise((resolve) => setTimeout(resolve, 1_200))
-    }
-    const search = mail.locator('input[aria-label*="Search" i], input[name="q"]').first()
-    if (await search.count()) {
-      await search.click({ timeout: 4_000 }).catch(() => undefined)
-      await search.fill('newer_than:1h (from:greenhouse-mail.io OR from:greenhouse.io OR "8-character" OR "verification code" OR "confirm you\'re a human")')
-      await search.press('Enter')
-      await new Promise((resolve) => setTimeout(resolve, 2_200))
-    }
-    const rows = mail.locator('tr.zA, div[role="listitem"]')
-    const n = Math.min(await rows.count().catch(() => 0), 8)
-    // Several applications can be waiting for codes at once: prefer the email
-    // that names this employer, and never hand back a code already used.
-    const company = (options?.company ?? '').replace(/,?\s+(?:inc|llc|ltd|gmbh|corp)\.?$/i, '').trim().toLowerCase()
-    const candidates: Array<{ index: number; preview: string; named: boolean }> = []
-    for (let index = 0; index < n; index += 1) {
-      const row = rows.nth(index)
-      const titles = await row.locator('[title]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('title') || '')).catch(() => [] as string[])
-      if (!emailIsFromThisApply(titles, sinceMs)) {
-        logger.info({ titles: titles.slice(0, 3) }, 'skip Greenhouse email older than this apply')
-        continue
+    const aliases = companyAliases(options?.company)
+    const senders = '(from:greenhouse-mail.io OR from:greenhouse.io OR "8-character" OR "verification code" OR "security code" OR "confirm you\'re a human")'
+    // Search for this employer's email first: results are ordered by relevance, not time.
+    const queries = [
+      ...(aliases.length ? [`newer_than:1h ${senders} "${aliases[aliases.length - 1]}"`] : []),
+      ...(options?.requireCompany && aliases.length ? [] : [`newer_than:1h ${senders}`]),
+    ]
+    for (const query of queries) {
+      if (!await searchMail(mail, query)) break
+      const rows = mail.locator('tr.zA, div[role="listitem"]')
+      const n = Math.min(await rows.count().catch(() => 0), 6)
+      const candidates: Array<{ index: number; named: boolean }> = []
+      for (let index = 0; index < n; index += 1) {
+        const preview = ((await rows.nth(index).innerText().catch(() => '')) || '').slice(0, 500)
+        if (!OTP_MAIL.test(preview)) continue
+        const lower = preview.toLowerCase()
+        candidates.push({ index, named: aliases.some((alias) => lower.includes(alias)) })
       }
-      const preview = ((await row.innerText().catch(() => '')) || '').slice(0, 500)
-      if (!OTP_MAIL.test(preview) && !extractGreenhouseEmailCode(preview)) continue
-      candidates.push({ index, preview, named: Boolean(company) && preview.toLowerCase().includes(company) })
-    }
-    const ordered = [...candidates.filter((row) => row.named), ...candidates.filter((row) => !row.named)]
-    for (const candidate of ordered) {
-      const row = rows.nth(candidate.index)
-      await row.click({ timeout: 5_000 }).catch(() => undefined)
-      await new Promise((resolve) => setTimeout(resolve, 1_400))
-      const body = await mail.locator('div.a3s, div[data-message-id], body').innerText().catch(() => '')
-      const headerTitles = await mail.locator('span.g3[title], span[title*="202"]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('title') || '')).catch(() => [] as string[])
-      await mail.goBack({ timeout: 5_000 }).catch(() => undefined)
-      if (headerTitles.length && !emailIsFromThisApply(headerTitles, sinceMs)) continue
-      const named = candidate.named || (Boolean(company) && body.toLowerCase().includes(company))
-      if (options?.requireCompany && company && !named) continue
-      const code = extractGreenhouseEmailCode(body) ?? extractGreenhouseEmailCode(candidate.preview)
-      if (!code || skipCodes?.has(code)) continue
-      logger.info({ digits: code.length, reusedTab: !opened, matchedEmployer: named }, 'read Gmail verification code')
-      return code
+      for (const candidate of [...candidates.filter((row) => row.named), ...candidates.filter((row) => !row.named)]) {
+        if (options?.requireCompany && aliases.length && !candidate.named) continue
+        await rows.nth(candidate.index).click({ timeout: 5_000 }).catch(() => undefined)
+        await mail.locator('div.a3s').first().waitFor({ timeout: 6_000 }).catch(() => undefined)
+        // The list can re-render as mail arrives, shifting rows: trust the open conversation's subject.
+        const subject = (await mail.locator('h2.hP').first().innerText({ timeout: 2_000 }).catch(() => '')).toLowerCase()
+        const messages = await conversationMessages(mail)
+        await mail.goBack({ timeout: 5_000 }).catch(() => undefined)
+        await mail.locator('tr.zA, div[role="listitem"]').first().waitFor({ timeout: 5_000 }).catch(() => undefined)
+        const matchedEmployer = aliases.some((alias) => subject.includes(alias))
+        if (options?.requireCompany && aliases.length && !matchedEmployer) continue
+        const code = newestCodeIn(messages, sinceMs, skipCodes)
+        if (!code) {
+          logger.info({ messages: messages.length, newest: messages.at(-1)?.stamp ?? null }, 'no unused code newer than this apply in the conversation')
+          continue
+        }
+        logger.info({ digits: code.length, reusedTab: !opened, matchedEmployer, messages: messages.length }, 'read Gmail verification code')
+        return code
+      }
     }
     return null
   } catch (error) {
@@ -182,6 +240,8 @@ export async function fillVerificationCode(page: Page, code: string): Promise<bo
         hidden.dispatchEvent(new Event('change', { bubbles: true }))
       }
     }, chars).catch(() => undefined)
+    const typed = await boxes.evaluateAll((nodes) => nodes.map((node) => (node as HTMLInputElement).value).join('')).catch(() => '')
+    if (typed !== chars) logger.warn({ typedLength: typed.length, sameIgnoringCase: typed.toLowerCase() === chars.toLowerCase() }, 'security code boxes do not hold the code that was typed')
     return verificationInputsFilled(page)
   }
   const single = page.locator('input[maxlength="8"], input[name*="verif" i], input[id*="verif" i], input[autocomplete="one-time-code"], input[aria-label*="security code" i]').first()

@@ -126,6 +126,7 @@ export type Semantic =
   | 'consent_ack' | 'marketing_consent'
   | 'work_auth' | 'sponsorship' | 'noncompete'
   | 'referral_source' | 'previous_employee' | 'work_auth_countries'
+  | 'contact_preference' | 'contact_employer' | 'start_date' | 'office_commitment' | 'languages' | 'conditional_followup'
 
 const BY_ATS_NAME: Record<string, Semantic> = {
   first_name: 'first_name', last_name: 'last_name', preferred_name: 'preferred_name', email: 'email', phone: 'phone',
@@ -149,9 +150,15 @@ export function semanticOf(field: SchemaField): Semantic | null {
     if (/disabilit/.test(label)) return 'eeo_disability'
     if (/gender|^sex$/.test(label)) return 'eeo_gender'
   }
-  if (/\b(?:sms|text message|marketing|newsletter|promotional|future (?:job )?opportunit|talent (?:community|network|pool))/.test(label)) return 'marketing_consent'
+  if (/\b(?:sms|text message|whatsapp|marketing|newsletter|promotional|future (?:job )?opportunit|talent (?:community|network|pool))|opt[- ]?in to receive/.test(label)) return 'marketing_consent'
+  if (/^if (?:you )?(?:selected|answered|chose|checked|picked)\b|^if (?:yes|so|other|applicable)\b/.test(label) && (field.kind === 'text' || field.kind === 'textarea')) return 'conditional_followup'
+  if (/how (?:should|would you like|do you prefer|can|may) (?:we|us) (?:to )?(?:communicate|contact|reach)|preferred (?:method of |mode of )?(?:communication|contact)/.test(label)) return 'contact_preference'
+  if (/(?:may|can) we contact your (?:current |present )?employer|(?:ok|okay) to contact your (?:current |present )?employer/.test(label)) return 'contact_employer'
+  if (/when (?:can|could|would) you (?:start|join|begin)|earliest (?:possible )?(?:start|joining) date|available to (?:start|join)|availability to (?:start|join)|^(?:desired |expected |preferred )?start date/.test(label)) return 'start_date'
+  if (/languages? (?:do )?you speak|speak fluently|languages? (?:in which )?you (?:are|have) (?:business[- ]level )?fluen/.test(label)) return 'languages'
+  if (/\b(?:hybrid|in[- ]office|on[- ]?site|in the office|in our .{0,40}office)\b.{0,240}\b(?:days? (?:a|per|each) week|office)\b/.test(label) && (field.kind === 'select' || field.kind === 'boolean' || field.kind === 'checkbox')) return 'office_commitment'
   if (field.section === 'consent' || /^(?:by (?:checking|selecting|clicking|submitting)|i (?:agree|acknowledge|confirm|certify|consent|have read|understand))|arbitration|privacy (?:policy|notice)|ai policy|applicant (?:privacy|data)|terms (?:and|&) conditions|certify that|please (?:double-?)?check (?:all )?(?:the )?information|information (?:provided|i have provided) (?:is|above is) (?:true|accurate|complete)/.test(label)) return 'consent_ack'
-  if (/\b(?:how|where) did you (?:first )?(?:hear|learn|find out) about|how did you (?:first )?(?:come across|find) (?:this|us|the)|referral source|source of (?:application|referral)/.test(label)) return 'referral_source'
+  if (/\b(?:how|where) (?:did|have) you (?:first )?(?:hear|heard|learn|learned|learnt|find out|found out) about|how did you (?:first )?(?:come across|find) (?:this|us|the)|referral source|source of (?:application|referral)/.test(label)) return 'referral_source'
   if (/\b(?:have you|did you) (?:ever |previously )?(?:been )?(?:employed|worked|interned|contracted|interviewed)\b.{0,40}\b(?:at|for|with|before)\b|\bpreviously (?:been )?(?:employed|worked) (?:at|for|by)\b|\b(?:are you a |a )?(?:former|current|previous) (?:employee|intern|contractor)\b/.test(label)) return 'previous_employee'
   if (/\b(?:in )?(?:what|which) countr(?:y|ies)\b.{0,60}\b(?:right to work|authori[sz]ed to work|work authori[sz]ation|permitted to work|legally (?:work|able))/.test(label)) return 'work_auth_countries'
   const auth = classifyAuthorisationQuestion(field.label)
@@ -265,6 +272,17 @@ function fillWith(field: SchemaField, value: string, basis: AnswerBasis, reason:
   return answer(field, 'fill', [value.trim()], basis, reason)
 }
 
+/**
+ * "I am authorized to work for any employer…" / "I require/will require
+ * sponsorship…": options that state the situation instead of yes/no.
+ */
+function workRightsOption(field: SchemaField, needsSponsorship: boolean, reason: string): PlannedAnswer | null {
+  const sponsorNeeded = (label: string) => /\b(?:require|need|requires|needs)\b[^.]{0,60}sponsor/i.test(label) && !/\b(?:not|no|don['’]t|do not|does not|without)\b[^.]{0,20}(?:require|need)/i.test(label)
+  const authorised = (label: string) => !sponsorNeeded(label) && /authori[sz]ed to work|(?:do not|don['’]t|will not|won['’]t) (?:now or in the future )?(?:require|need)|no sponsorship|without (?:requiring |needing )?sponsorship|citizen|permanent resident/i.test(label)
+  const matches = field.options.filter((option) => needsSponsorship ? sponsorNeeded(option.label) : authorised(option.label))
+  return matches.length === 1 ? answer(field, 'fill', [matches[0]!.label], 'derived', reason) : null
+}
+
 function isChoice(field: SchemaField): boolean {
   return field.kind === 'select' || field.kind === 'multiselect' || field.kind === 'boolean'
 }
@@ -272,6 +290,8 @@ function isChoice(field: SchemaField): boolean {
 function chooseYesNo(field: SchemaField, yes: boolean, basis: AnswerBasis, reason: string): PlannedAnswer | null {
   if (field.kind === 'checkbox') return answer(field, 'fill', [yes ? 'true' : 'false'], basis, reason)
   if (field.kind === 'text' || field.kind === 'textarea') return answer(field, 'fill', [yes ? 'Yes' : 'No'], basis, reason)
+  // Options that load only when opened: type it; the executor verifies the pick.
+  if ((field.kind === 'select' || field.kind === 'boolean') && !field.options.length) return answer(field, 'fill', [yes ? 'Yes' : 'No'], basis, reason, 0.9)
   // "Yes, EU Blue Card" and "Yes, but not one of the visas listed here" both
   // say yes and mean different things: leave the choice to the planner.
   const candidates = field.options.filter((option) => (yes ? YES : NO).test(option.label))
@@ -315,7 +335,8 @@ export function deriveWorkRights(field: SchemaField, dossier: CandidateDossier, 
   if (!home) return null
   // One jurisdiction when the question names it, asks about residence, or every
   // location the job lists falls on the same side of "home vs abroad".
-  const jurisdiction = named ?? (aboutResidence ? home
+  const aboutDesired = job.remote && !listed.length && /\b(?:your )?desired (?:work )?location\b|where you (?:want|would like|plan|intend) to work/i.test(field.label)
+  const jurisdiction = named ?? (aboutResidence || aboutDesired ? home
     : listed.length && listed.every((code) => code === home) ? home
       : listed.length && listed.every((code) => code !== home) ? listed[0]!
         : null)
@@ -437,7 +458,8 @@ export function deterministicAnswer(field: SchemaField, dossier: CandidateDossie
     case 'sponsorship': {
       const derived = deriveWorkRights(field, dossier, job)
       if (!derived) return null
-      return chooseYesNo(field, derived.yes, 'derived', derived.reason)
+      const needsSponsorship = derived.kind === 'sponsorship' ? derived.yes : !derived.yes
+      return chooseYesNo(field, derived.yes, 'derived', derived.reason) ?? workRightsOption(field, needsSponsorship, derived.reason)
     }
     case 'noncompete': {
       const stated = dossier.boundByAgreements.trim()
@@ -457,9 +479,44 @@ export function deterministicAnswer(field: SchemaField, dossier: CandidateDossie
       return null
     }
     case 'referral_source': {
-      if (field.kind === 'text' || field.kind === 'textarea') return answer(field, 'fill', ['LinkedIn'], 'policy', 'Found through a job search.')
-      const option = matchOption(field.options, ['LinkedIn', 'Job board', 'Job Board / Job Site', 'Online job board', 'Company website', 'Careers page', 'Internet', 'Online', 'Other'])
+      // Huntly finds postings on the employer's own job board.
+      if (field.kind === 'text' || field.kind === 'textarea') return answer(field, 'fill', ['Company careers page'], 'policy', 'Found on the company careers page.')
+      // In order of truthfulness, not best string match: "LinkedIn" must not beat "…website".
+      const option = ['Company website', 'Careers page', 'Company careers page', 'Career site', 'Website', 'Job board', 'Job Board / Job Site', 'Online job board', 'Internet', 'Online', 'LinkedIn', 'Other']
+        .map((alias) => matchOption(field.options, [alias])).find((match) => match !== null) ?? null
       return option ? answer(field, 'fill', [option.label], 'policy', 'Found through a job search.') : null
+    }
+    case 'conditional_followup': return field.required ? answer(field, 'fill', ['N/A'], 'policy', 'Follow-up to a choice that does not apply.', 0.9) : answer(field, 'skip', [], 'policy', 'Follow-up to a choice that does not apply.')
+    case 'contact_preference': {
+      if (field.kind === 'text' || field.kind === 'textarea') return answer(field, 'fill', ['Email'], 'policy', 'Email, the address on this application.')
+      const option = matchOption(field.options, ['Email', 'E-mail'])
+      return option ? answer(field, 'fill', [option.label], 'policy', 'Email, the address on this application.') : null
+    }
+    // Contacting a current employer can cost the user their job: never volunteered.
+    case 'contact_employer': return chooseYesNo(field, false, 'policy', 'Your current employer is not contacted without asking you.')
+    case 'start_date': {
+      const notice = noticeIn('in days', 'number', dossier.noticePeriod || '')
+      const days = /^\d+(?:\.\d+)?$/.test(notice) ? Number(notice) : null
+      if (days === null) return null
+      const date = new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10)
+      if (field.kind === 'date') return answer(field, 'fill', [date], 'derived', `Today plus your ${dossier.noticePeriod} notice period.`)
+      if (field.kind === 'text' || field.kind === 'textarea') return answer(field, 'fill', [days === 0 ? 'Immediately' : `After my ${dossier.noticePeriod} notice period (from ${date})`], 'derived', 'From your notice period in My Kit.')
+      const aliases = days === 0 ? ['Immediately', 'Immediate', 'Now'] : days <= 14 ? ['Within 2 weeks', '2 weeks', 'Less than 2 weeks'] : days <= 31 ? ['Within 1 month', '1 month', '30 days', 'Within 30 days', '2-4 weeks'] : days <= 62 ? ['1-2 months', '2 months', 'Within 2 months', '60 days'] : ['2-3 months', '3 months', '90 days', 'More than 2 months']
+      const option = matchOption(field.options, aliases)
+      return option ? answer(field, 'fill', [option.label], 'derived', 'From your notice period in My Kit.') : null
+    }
+    case 'office_commitment': {
+      // Willingness, not location: follows from My Kit's relocation and work-mode answers.
+      const relocates = /^\s*(?:yes|true|open)/i.test(dossier.relocate)
+      const remoteOnly = /^\s*remote(?: only)?\s*$/i.test(dossier.workMode)
+      if (!relocates || remoteOnly) return null
+      return chooseYesNo(field, true, 'kit', 'My Kit says you will relocate and work hybrid or on-site.')
+    }
+    case 'languages': {
+      // The résumé and every application are in English; other languages only from the user.
+      if (field.kind === 'text' || field.kind === 'textarea') return answer(field, 'fill', ['English'], 'resume', 'Your résumé is written in English.', 0.9)
+      const option = matchOption(field.options, ['English'])
+      return option ? answer(field, 'fill', [option.label], 'resume', 'Your résumé is written in English.', 0.9) : null
     }
     case 'previous_employee': {
       const company = foldLabel(job.company).replace(/,? inc\.?$|,? llc$|,? ltd\.?$/, '').trim()

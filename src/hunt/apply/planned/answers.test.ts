@@ -220,3 +220,51 @@ describe('units the question asks for', () => {
     assert.deepEqual([notice.action, notice.values], ['fill', ['30']])
   })
 })
+
+describe('questions the planner used to bounce to the user', () => {
+  const yesNo = [{ label: 'Yes' }, { label: 'No' }]
+  const det = (overrides: Partial<SchemaField>, job: JobContext = usJob, kit = dossier()) => deterministicAnswer(field(overrides), kit, job)
+  it('declines WhatsApp and SMS recruiting opt-ins', () => {
+    const row = det({ label: 'Do you opt-in to receive WhatsApp messages from Stripe Recruiting?', kind: 'select', options: yesNo })!
+    assert.deepEqual([row.action, row.values], ['fill', ['No']])
+  })
+  it('names the careers page as the source, including "where have you learned about"', () => {
+    const row = det({ label: 'Where have you learned about Samsara? Select all that apply.', kind: 'multiselect', options: [{ label: 'LinkedIn' }, { label: 'Samsara blog or website' }, { label: 'Podcast' }] })!
+    assert.deepEqual(row.values, ['Samsara blog or website'])
+  })
+  it('prefers email for contact and never volunteers the current employer', () => {
+    assert.deepEqual(det({ label: 'How should we communicate with you?', kind: 'multiselect', options: [{ label: 'Email' }, { label: 'Phone Call' }, { label: 'WhatsApp' }] })!.values, ['Email'])
+    const employer = det({ label: 'May we contact your current employer?', kind: 'select', options: yesNo })!
+    assert.equal(semanticOf(field({ label: 'May we contact your current employer?', kind: 'select' })), 'contact_employer')
+    assert.deepEqual(employer.values, ['No'])
+  })
+  it('derives a start date from the notice period', () => {
+    const row = det({ label: 'When can you start a new role?', kind: 'date' })!
+    assert.equal(row.action, 'fill')
+    assert.match(row.values[0]!, /^\d{4}-\d{2}-\d{2}$/)
+    assert.ok(Date.parse(row.values[0]!) > Date.now() + 28 * 86_400_000)
+    assert.deepEqual(det({ label: 'When can you start?', kind: 'select', options: [{ label: 'Immediately' }, { label: 'Within 1 month' }, { label: '2-3 months' }] })!.values, ['Within 1 month'])
+  })
+  it('answers office-attendance commitments from relocation and work mode', () => {
+    const label = 'This position is hybrid and requires 4 days a week in office, including Thursdays in our Mountain View, CA headquarters'
+    assert.deepEqual(det({ label, kind: 'select', options: [] })!.values, ['Yes'])
+    assert.equal(det({ label, kind: 'select', options: [] }, usJob, dossier({ relocate: 'No' })), null)
+  })
+  it('picks the descriptive work-authorisation option', () => {
+    const canada: JobContext = { ...usJob, location: 'Toronto, Canada', countries: ['CA'] }
+    const row = det({ label: 'Work Authorization', kind: 'select', options: [
+      { label: 'I am authorized to work for any employer in the country in which this position is based.' },
+      { label: "I require/will require Lyft's sponsorship to obtain work authorization in the country in which this position is based." },
+    ] }, canada)!
+    assert.match(row.values[0]!, /require\/will require/)
+  })
+  it('a remote role asking about the desired location means home', () => {
+    const remote: JobContext = { ...usJob, location: 'Remote', countries: [], remote: true }
+    const row = det({ label: 'Do you require sponsorship to work in your desired location?', kind: 'select', options: yesNo }, remote)!
+    assert.deepEqual(row.values, ['No'])
+  })
+  it('answers English for spoken languages and N/A for inapplicable follow-ups', () => {
+    assert.deepEqual(det({ label: 'Please select all the languages you speak fluently.', kind: 'multiselect', options: [{ label: 'English' }, { label: 'French' }] })!.values, ['English'])
+    assert.deepEqual(det({ label: 'If you selected Employee Referral, Student Organization, or Other, please specify below.', kind: 'text' })!.values, ['N/A'])
+  })
+})

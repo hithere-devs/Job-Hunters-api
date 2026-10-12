@@ -3,7 +3,9 @@ import { after, describe, it, test } from 'node:test'
 import { chromium, type Browser, type Page } from 'playwright-core'
 import { checkRequiredConsentBoxes } from './fill.js'
 import {
+  companyAliases,
   emailIsFromThisApply,
+  newestCodeIn,
   extractGreenhouseEmailCode,
   fillVerificationCode,
   gmailRowTimeMs,
@@ -171,4 +173,28 @@ it('accepts a code email shown in the same minute as the submit click', () => {
   const click = new Date(2026, 9, 11, 22, 12, 50).getTime()
   assert.equal(emailIsFromThisApply(['Has attachment', 'Sun, 11 Oct 2026, 22:12'], click - 5_000, click + 30_000), true)
   assert.equal(emailIsFromThisApply(['Sun, 11 Oct 2026, 22:10'], click - 5_000, click + 30_000), false)
+})
+
+test('extracts a letters-only code from the current Greenhouse email wording', () => {
+  const body = 'Copy and paste this code into the security code field on your application: QwErTyUi. After you enter the code, resubmit your application.'
+  assert.equal(extractGreenhouseEmailCode(body), 'QwErTyUi')
+})
+
+test('reads the newest code in a threaded conversation, not an older one', () => {
+  // Gmail threads same-subject code emails; the list row showed an older time.
+  const click = new Date(2026, 9, 11, 22, 36, 41).getTime()
+  const email = (code: string) => `Copy and paste this code into the security code field on your application: ${code}.`
+  const thread = [
+    { stamp: '11 Oct 2026, 22:16', body: email('AAAAaaaa') },
+    { stamp: '11 Oct 2026, 22:29', body: email('BBBBbbbb') },
+    { stamp: '11 Oct 2026, 22:36', body: email('CCCCcccc') },
+  ]
+  assert.equal(newestCodeIn(thread, click - 5_000, undefined, click + 20_000), 'CCCCcccc')
+  assert.equal(newestCodeIn(thread.slice(0, 2), click - 5_000, undefined, click + 20_000), null)
+  assert.equal(newestCodeIn(thread, click - 5_000, new Set(['CCCCcccc']), click + 20_000), null)
+})
+
+test('matches the employer as Greenhouse names it', () => {
+  assert.deepEqual(companyAliases('Chime Financial, Inc'), ['chime financial, inc', 'chime financial'])
+  assert.deepEqual(companyAliases(undefined), [])
 })
