@@ -185,18 +185,23 @@ export async function readGmailVerificationCode(page: Page, sinceMs = Date.now()
       }
       for (const candidate of [...candidates.filter((row) => row.named), ...candidates.filter((row) => !row.named)]) {
         if (options?.requireCompany && aliases.length && !candidate.named) continue
-        await mail.keyboard.press('Escape').catch(() => undefined)
-        const opened = await rows.nth(candidate.index).click({ timeout: 5_000 }).then(() => true, (error: unknown) => {
-          logger.info({ err: String(error).slice(0, 160) }, 'could not open the code email')
-          return false
-        })
+        // Open by thread id: Gmail overlays (tips, toasts) intercept row clicks.
+        const thread = await rows.nth(candidate.index).locator('[data-legacy-thread-id]').first().getAttribute('data-legacy-thread-id', { timeout: 2_000 }).catch(() => null)
+        const listUrl = mail.url()
+        const opened = thread
+          ? await mail.goto(`https://mail.google.com/mail/u/0/#all/${thread}`, { waitUntil: 'domcontentloaded', timeout: 20_000 }).then(() => true, () => false)
+          : await rows.nth(candidate.index).click({ timeout: 5_000 }).then(() => true, () => rows.nth(candidate.index).click({ timeout: 3_000, force: true }).then(() => true, (error: unknown) => {
+            logger.info({ err: String(error).slice(0, 160) }, 'could not open the code email')
+            return false
+          }))
         if (!opened) continue
         // The borrowed profile is cold-started per poll; Gmail can take a while to render.
         await mail.locator('div.a3s').first().waitFor({ timeout: 12_000 }).catch(() => undefined)
         // The list can re-render as mail arrives, shifting rows: trust the open conversation's subject.
         const subject = (await mail.locator('h2.hP').first().innerText({ timeout: 2_000 }).catch(() => '')).toLowerCase()
         const messages = await conversationMessages(mail)
-        await mail.goBack({ timeout: 5_000 }).catch(() => undefined)
+        if (thread) await mail.goto(listUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => undefined)
+        else await mail.goBack({ timeout: 5_000 }).catch(() => undefined)
         await mail.locator(VISIBLE_ROWS).first().waitFor({ timeout: 5_000 }).catch(() => undefined)
         const matchedEmployer = aliases.some((alias) => subject.includes(alias))
         if (options?.requireCompany && aliases.length && !matchedEmployer) continue
