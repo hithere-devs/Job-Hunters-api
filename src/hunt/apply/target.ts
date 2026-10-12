@@ -5,6 +5,7 @@ import { skillForUrl } from '../../skills/registry.js'
 import { pageLooksLikeNoForm } from './fill.js'
 import { greenhouseEmbedApplicationUrl, greenhouseFromListingUrl, greenhouseJobBoardUrl, greenhouseJobPathUrl, openEmbeddedApplication, resolveApplyUrl } from './recipes.js'
 import { normaliseHttpUrl } from './urls.js'
+import { declineCookieBanner } from './cookie-banner.js'
 
 export interface ApplicationTarget {
   applyUrl: string
@@ -72,5 +73,6 @@ export async function openApplicationPage(page: Page, target: ApplicationTarget,
     logger.warn({ err: error, attemptId }, 'embedded application navigation failed')
     return null
   })
+  await declineCookieBanner(page, 2_500).catch(() => false)
   return embedded ?? page.url()
 }

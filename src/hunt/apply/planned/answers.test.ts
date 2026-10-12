@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { describe, it } from 'node:test'
-import { deterministicAnswer, deriveWorkRights, matchOption, semanticOf, validateModelAnswer, type CandidateDossier, type JobContext } from './answers.js'
+import { compensationIn, deterministicAnswer, deriveWorkRights, noticeIn, matchOption, semanticOf, validateModelAnswer, type CandidateDossier, type JobContext } from './answers.js'
 import { planAnswers, storablePlan, unansweredRequired, type PlannerTransport } from './planner.js'
 import { parseAshbyPayload } from './schema/ashby.js'
 import { parseGreenhousePayload } from './schema/greenhouse.js'
@@ -194,5 +194,29 @@ describe('planning', () => {
   it('redacts sensitive values before storage', () => {
     const stored = storablePlan({ fingerprint: 'f', model: 'm', createdAt: '', answers: [{ key: 'k', label: 'Race', kind: 'select', required: false, action: 'fill', values: ['Asian'], basis: 'kit', confidence: 1, sensitive: true }] })
     assert.deepEqual(stored.answers[0]!.values, ['[redacted]'])
+  })
+})
+
+describe('units the question asks for', () => {
+  it('converts compensation to lakhs, thousands or bare digits', () => {
+    assert.equal(compensationIn('What’s your current salary? (in lakhs per annum)', 'number', '4800000'), '48')
+    assert.equal(compensationIn('Current CTC (LPA)', 'text', '48,00,000'), '48')
+    assert.equal(compensationIn('Current CTC (in lakhs)', 'number', '48 LPA'), '48')
+    assert.equal(compensationIn('Expected salary', 'number', '4,800,000'), '4800000')
+    assert.equal(compensationIn('Expected salary (in thousands)', 'text', '$120k'), '120')
+    assert.equal(compensationIn('Expected salary', 'text', '48 LPA'), '4800000')
+    assert.equal(compensationIn('Expected salary', 'text', 'Negotiable'), 'Negotiable')
+  })
+  it('converts a notice period for numeric questions only', () => {
+    assert.equal(noticeIn('How many days is your notice period?', 'number', '30 days'), '30')
+    assert.equal(noticeIn('Notice period (in weeks)', 'text', '1 month'), '4.3')
+    assert.equal(noticeIn('Notice period', 'number', 'Immediate'), '0')
+    assert.equal(noticeIn('Notice period', 'text', '30 days'), '30 days')
+  })
+  it('answers the Workable salary and notice questions from My Kit', () => {
+    const salary = deterministicAnswer(field({ label: 'What’s your current salary? (in lakhs per annum)', kind: 'number' }), dossier({ currentCtc: '4800000' }), indiaJob)!
+    assert.deepEqual([salary.action, salary.values], ['fill', ['48']])
+    const notice = deterministicAnswer(field({ label: 'How many days is your notice period?', kind: 'number' }), dossier(), indiaJob)!
+    assert.deepEqual([notice.action, notice.values], ['fill', ['30']])
   })
 })

@@ -48,6 +48,10 @@ export function committedSatisfies(answer: PlannedAnswer, committed: string): bo
   if (!want) return false
   if (have === want || have.includes(want) || want.includes(have)) return true
   if (answer.kind === 'date') return committed.replace(/\D/g, '').length >= 6
+  // Number inputs that format as you type: "4800000" reads back "4,800,000".
+  if (/^[\d.,\s]+$/.test(answer.values[0] ?? '') && /^[\d.,\s]+$/.test(committed.trim())) {
+    return Number((answer.values[0] ?? '').replace(/[,\s]/g, '')) === Number(committed.replace(/[,\s]/g, ''))
+  }
   if (answer.kind === 'textarea' || answer.kind === 'text') return have.slice(0, 40) === want.slice(0, 40)
   return false
 }

@@ -93,6 +93,12 @@ export async function readGmailVerificationCode(page: Page, sinceMs = Date.now()
       logger.info({ url: mail.url() }, 'Gmail tab is not signed in')
       return null
     }
+    // Re-running the same search does not refetch (the URL hash is unchanged),
+    // so a poll would keep reading the list from before the code arrived.
+    if (/#search\//.test(mail.url())) {
+      await mail.goto('https://mail.google.com/mail/u/0/#inbox', { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => undefined)
+      await new Promise((resolve) => setTimeout(resolve, 1_200))
+    }
     const search = mail.locator('input[aria-label*="Search" i], input[name="q"]').first()
     if (await search.count()) {
       await search.click({ timeout: 4_000 }).catch(() => undefined)

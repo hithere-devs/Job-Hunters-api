@@ -15,6 +15,7 @@ import { greenhouseJobMissing } from './greenhouse-schema.js'
 import { ASHBY_FIELD_ENTRY_SEL, GENERIC, greenhouseJobPathUrl, greenhousePostingGoneUrl, readFields, recipeFor, recipeForPage, type Recipe } from './recipes.js'
 import { fillDropdown, shouldFillDropdown, type DropdownPlace } from './dropdowns.js'
 import type { BlockedReason } from './state.js'
+import { declineCookieBanner } from './cookie-banner.js'
 
 /**
  * Filling one application form.
@@ -829,8 +830,17 @@ export async function submitForm(params: {
 
   await waitUntilResumeParsed(page)
 
-  const valid=await submit.evaluate(element=>{const form=element instanceof HTMLButtonElement||element instanceof HTMLInputElement?element.form:element.closest('form');return !form||form.checkValidity()})
-  if(!valid)return {submitted:false,result:'not_submitted',heldBack:'invalid_fields'}
+  // The browser's own constraint check, naming what it refuses so the repair loop can see it.
+  const invalid = await submit.evaluate((element) => {
+    const form = element instanceof HTMLButtonElement || element instanceof HTMLInputElement ? element.form : element.closest('form')
+    if (!form || form.checkValidity()) return []
+    return Array.from(form.querySelectorAll('input, select, textarea')).filter((node) => !(node as HTMLInputElement).validity.valid).slice(0, 8).map((node) => {
+      const input = node as HTMLInputElement
+      const label = (input.labels?.[0]?.textContent ?? input.getAttribute('aria-label') ?? input.name ?? '').trim().slice(0, 80)
+      return `${label}: ${input.validationMessage}`
+    })
+  }).catch(() => [] as string[])
+  if (invalid.length) return { submitted: false, result: 'not_submitted', heldBack: 'invalid_fields', errors: invalid }
   if (!skipWidgetReady) {
     const ready = await formReady(page, url)
     if (!ready.ok) return { submitted: false, result: 'not_submitted', heldBack: 'invalid_fields' }
@@ -838,6 +848,8 @@ export async function submitForm(params: {
 
   if (dryRun) return { submitted: false, heldBack: 'dry_run' }
 
+  // A cookie dialog that appeared late would swallow the click.
+  await declineCookieBanner(page).catch(() => false)
   const bodyBefore = await page.locator('body').innerText().catch(() => '')
   if (pageHasVerificationGate(bodyBefore) && !(await verificationInputsFilled(page))) {
     return { submitted: false, result: 'not_submitted', heldBack: 'invalid_fields' }
@@ -860,7 +872,8 @@ export async function submitForm(params: {
       // The click itself failed and nothing was sent: provably not submitted.
       await recordSubmissionOutcome('rejected_validation', `submit click failed: ${error instanceof Error ? error.message : String(error)}`)
       releaseSubmissionAfterRejection()
-      return { submitted: false, result: 'not_submitted', heldBack: 'invalid_fields', outcome: 'rejected_validation', reason: 'submit click failed' }
+      const message = (error instanceof Error ? error.message : String(error)).split('\n').find((line) => /intercepts pointer events|not visible|disabled|timeout/i.test(line)) ?? 'submit click failed'
+      return { submitted: false, result: 'not_submitted', heldBack: 'invalid_fields', outcome: 'rejected_validation', reason: 'submit click failed', errors: [`Submit button could not be clicked: ${message.trim().slice(0, 160)}`] }
     }
     throw error
   }

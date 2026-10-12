@@ -184,6 +184,7 @@ export function semanticOf(field: SchemaField): Semantic | null {
     if (/years of (?:professional |relevant )?experience|total experience/.test(label)) return 'years_experience'
     if (/notice period/.test(label)) return 'notice_period'
   }
+  if (/how (?:many|long) (?:days |weeks |months )?(?:is )?your notice period|notice period \(in (?:days|weeks|months)\)/.test(label)) return 'notice_period'
   if (/current (?:salary|ctc|compensation)|what(?:'|’)?s your current salary/.test(label)) return 'current_salary'
   if (/(?:expected|desired) (?:salary|ctc|compensation)|salary expectation|compensation expectation/.test(label)) return 'expected_salary'
   if (field.kind === 'location') return 'location'
@@ -213,6 +214,44 @@ function missing(field: SchemaField, what: string): PlannedAnswer {
     : answer(field, 'skip', [], 'policy', `Optional, and ${what} is not in My Kit.`)
 }
 
+/**
+ * An annual amount in the unit the question asks for. "Current salary (in
+ * lakhs per annum)" wants 48, not 4,800,000; a number input wants bare digits.
+ * The Kit value is read as written ("4800000", "48,00,000", "48 LPA", "$120k").
+ */
+export function compensationIn(label: string, kind: SchemaField['kind'], raw: string): string {
+  const text = raw.trim()
+  const match = /(\d[\d,]*(?:\.\d+)?)\s*(lakhs?|lacs?|lpa|l\b|crores?|cr\b|k\b|thousand|m\b|mn\b|million)?/i.exec(text)
+  if (!match) return text
+  const scale: Record<string, number> = { lakh: 1e5, lakhs: 1e5, lac: 1e5, lacs: 1e5, lpa: 1e5, l: 1e5, crore: 1e7, crores: 1e7, cr: 1e7, k: 1e3, thousand: 1e3, m: 1e6, mn: 1e6, million: 1e6 }
+  const amount = Number(match[1]!.replace(/,/g, '')) * (scale[(match[2] ?? '').toLowerCase()] ?? 1)
+  if (!Number.isFinite(amount) || amount <= 0) return text
+  const asked = label.toLowerCase()
+  const unit = /lakh|\blacs?\b|\blpa\b/.test(asked) ? 1e5 : /crore/.test(asked) ? 1e7 : /in thousands|\(k\)|in k\b/.test(asked) ? 1e3 : /in millions/.test(asked) ? 1e6 : 1
+  if (unit === 1 && kind !== 'number' && !match[2]) return text
+  const value = amount / unit
+  return String(Number.isInteger(value) ? value : Number(value.toFixed(2)))
+}
+
+/** "30 days" / "1 month" / "Immediate", in the unit a numeric question asks for. */
+export function noticeIn(label: string, kind: SchemaField['kind'], raw: string): string {
+  const text = raw.trim()
+  const asked = label.toLowerCase()
+  const wantsNumber = kind === 'number' || /how many (?:days|weeks|months)|\(in (?:days|weeks|months)\)|in (?:days|weeks|months)\b/.test(asked)
+  if (!wantsNumber) return text
+  let days: number | null = null
+  if (/immediate|^0\b|none|serving/i.test(text)) days = 0
+  const match = /(\d+(?:\.\d+)?)\s*(days?|d\b|weeks?|w\b|months?|m\b)?/i.exec(text)
+  if (days === null && match) {
+    const unit = (match[2] ?? 'days').toLowerCase()
+    days = Number(match[1]) * (unit.startsWith('w') ? 7 : unit.startsWith('m') ? 30 : 1)
+  }
+  if (days === null) return text
+  const per = /weeks/.test(asked) ? 7 : /months/.test(asked) ? 30 : 1
+  const value = days / per
+  return String(Number.isInteger(value) ? value : Number(value.toFixed(1)))
+}
+
 /** Text or a matching option, depending on the control. */
 function fillWith(field: SchemaField, value: string, basis: AnswerBasis, reason: string, aliases: string[] = []): PlannedAnswer | null {
   if (!value.trim()) return null
@@ -224,6 +263,10 @@ function fillWith(field: SchemaField, value: string, basis: AnswerBasis, reason:
     return option ? answer(field, 'fill', [option.label], basis, reason) : null
   }
   return answer(field, 'fill', [value.trim()], basis, reason)
+}
+
+function isChoice(field: SchemaField): boolean {
+  return field.kind === 'select' || field.kind === 'multiselect' || field.kind === 'boolean'
 }
 
 function chooseYesNo(field: SchemaField, yes: boolean, basis: AnswerBasis, reason: string): PlannedAnswer | null {
@@ -351,9 +394,17 @@ export function deterministicAnswer(field: SchemaField, dossier: CandidateDossie
     case 'current_company': return dossier.currentCompany ? fillWith(field, dossier.currentCompany, 'resume', 'Current employer from your résumé.') : null
     case 'current_title': return dossier.currentTitle ? fillWith(field, dossier.currentTitle, 'resume', 'Current title from your résumé.') : null
     case 'years_experience': return field.kind === 'text' || field.kind === 'number' ? (dossier.totalExperience ? answer(field, 'fill', [dossier.totalExperience.replace(/[^\d.]/g, '') || dossier.totalExperience], 'kit', 'Total experience from My Kit.') : null) : null
-    case 'notice_period': return field.kind === 'text' && dossier.noticePeriod ? answer(field, 'fill', [dossier.noticePeriod], 'kit', 'Notice period from My Kit.') : null
-    case 'current_salary': return dossier.currentCtc ? fillWith(field, dossier.currentCtc, 'kit', 'Current compensation from My Kit.') : missing(field, 'Your current compensation')
-    case 'expected_salary': return dossier.expectedCtc ? fillWith(field, dossier.expectedCtc, 'kit', 'Expected compensation from My Kit.') : missing(field, 'Your expected compensation')
+    case 'notice_period': {
+      if (!dossier.noticePeriod) return null
+      if (field.kind === 'text') return answer(field, 'fill', [noticeIn(field.label, field.kind, dossier.noticePeriod)], 'kit', 'Notice period from My Kit.')
+      if (field.kind === 'number') {
+        const value = noticeIn(field.label, field.kind, dossier.noticePeriod)
+        return /^\d+(?:\.\d+)?$/.test(value) ? answer(field, 'fill', [value], 'kit', 'Notice period from My Kit.') : null
+      }
+      return null
+    }
+    case 'current_salary': return dossier.currentCtc ? fillWith(field, isChoice(field) ? dossier.currentCtc : compensationIn(field.label, field.kind, dossier.currentCtc), 'kit', 'Current compensation from My Kit.') : missing(field, 'Your current compensation')
+    case 'expected_salary': return dossier.expectedCtc ? fillWith(field, isChoice(field) ? dossier.expectedCtc : compensationIn(field.label, field.kind, dossier.expectedCtc), 'kit', 'Expected compensation from My Kit.') : missing(field, 'Your expected compensation')
     case 'eeo_gender': return eeo(field, dossier.eeo.gender, /^male$/i.test(dossier.eeo.gender) ? ['Man'] : /^female$/i.test(dossier.eeo.gender) ? ['Woman'] : [])
     case 'eeo_orientation': return eeo(field, dossier.eeo.sexualOrientation, /hetero|straight/i.test(dossier.eeo.sexualOrientation) ? ['Heterosexual', 'Straight'] : [])
     case 'eeo_race': return eeo(field, dossier.eeo.ethnicity, /indian|south asian/i.test(dossier.eeo.ethnicity) ? ['Asian Indian', 'South Asian', 'Asian'] : [])

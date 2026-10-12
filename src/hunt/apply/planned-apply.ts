@@ -256,7 +256,9 @@ export async function applyPlannedCandidate(userId: string, candidateId: string,
       const clickAt = Date.now()
       let outcome: SubmitResult = await submitForm({ page, url: formUrl, dryRun, skipWidgetReady: true })
       // Provably rejected: repair what the page complains about and click again.
-      for (let repair = 0; repair < 2 && outcome.outcome === 'rejected_validation'; repair += 1) {
+      // Also when the browser's own constraint check refused before any click.
+      const repairable = () => outcome.outcome === 'rejected_validation' || (outcome.heldBack === 'invalid_fields' && !outcome.outcome)
+      for (let repair = 0; repair < 2 && repairable(); repair += 1) {
         logger.info({ attemptId: attempt.id, repair, errors: outcome.errors }, 'submit rejected by validation; repairing and retrying')
         execution = await executePlannedApplication({ page, prepared: { ...prepared, plan: execution.plan, schema: execution.schema }, userId, applicationId: application.id, attemptId: attempt.id, resumePath, signal })
         audit = execution.fields
