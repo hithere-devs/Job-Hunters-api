@@ -5,6 +5,7 @@ import { checkRequiredConsentBoxes } from './fill.js'
 import {
   companyAliases,
   emailIsFromThisApply,
+  namesAnEmployer,
   newestCodeIn,
   extractGreenhouseEmailCode,
   fillVerificationCode,
@@ -197,4 +198,9 @@ test('reads the newest code in a threaded conversation, not an older one', () =>
 test('matches the employer as Greenhouse names it', () => {
   assert.deepEqual(companyAliases('Chime Financial, Inc'), ['chime financial, inc', 'chime financial'])
   assert.deepEqual(companyAliases(undefined), [])
+})
+
+test('a subject naming an employer identifies whose code it is', () => {
+  assert.equal(namesAnEmployer('security code for your application to klaviyo'), true)
+  assert.equal(namesAnEmployer('your verification code'), false)
 })

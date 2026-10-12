@@ -864,6 +864,12 @@ export async function submitForm(params: {
     await submit.click({ timeout: 10_000 })
   } catch (error) {
     network = watch.stop()
+    // An hCaptcha/Turnstile overlay that rose after an earlier click covers the button.
+    if (!network.length && (await capturePageState(page, plan.submit).catch(() => null))?.captchaChallenge) {
+      await recordSubmissionOutcome('captcha_required', 'a CAPTCHA challenge covers the submit button')
+      releaseSubmissionAfterRejection()
+      return { submitted: false, result: 'not_submitted', heldBack: 'captcha', outcome: 'captcha_required', reason: 'a CAPTCHA challenge covers the submit button' }
+    }
     if (!network.length) {
       // The click itself failed and nothing was sent: provably not submitted.
       await recordSubmissionOutcome('rejected_validation', `submit click failed: ${error instanceof Error ? error.message : String(error)}`)

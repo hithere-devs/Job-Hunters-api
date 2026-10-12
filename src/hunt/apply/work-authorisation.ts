@@ -61,7 +61,9 @@ export type AuthorisationQuestion = 'authorised' | 'sponsorship' | null
 export function classifyAuthorisationQuestion(label: string): AuthorisationQuestion {
   // Sponsorship first: "will you require sponsorship to work in the US" also
   // may match the authorisation wording. The answers are separate facts.
-  if (/\b(?:sponsor\w*|visa\s+status|work\s+permit|require\s+.{0,20}visa)\b/i.test(label)) return 'sponsorship'
+  // "…require our company to file a petition or application for employment-based
+  // immigration status on your behalf" (Lever/Match Group) is sponsorship too.
+  if (/\b(?:sponsor\w*|visa\s+status|work\s+permit|require\s+.{0,20}visa)\b/i.test(label) || /\bpetition\b.{0,120}\bimmigration\b|\bimmigration (?:status|case|benefit)\b.{0,60}\bon your behalf\b/i.test(label)) return 'sponsorship'
   if (/\b(?:authori[sz]ed|authori[sz]ation|right\s+to\s+work|eligible\s+to\s+work|permission\s+to\s+work|legally\s+able)\b/i.test(label)) return 'authorised'
   return null
 }

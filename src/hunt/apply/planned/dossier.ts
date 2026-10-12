@@ -10,6 +10,19 @@ function splitName(fullName: string): { first: string; last: string } {
   return { first: parts[0] ?? '', last: parts.slice(1).join(' ') }
 }
 
+/**
+ * A résumé parse sometimes stores the role description as the company
+ * ("Leading full stack and AI Infrastructure development for Samora AI.").
+ * Keep a name; recover one from "…for/at X"; otherwise leave it empty so the
+ * question is asked rather than answered with a sentence.
+ */
+export function companyName(raw: string): string {
+  const value = raw.trim().replace(/\.$/, '')
+  if (value.split(/\s+/).length <= 5) return value
+  const named = /\b(?:for|at|with)\s+([A-Z][\w&.'-]*(?:\s+[A-Z0-9][\w&.'-]*){0,4})\s*$/.exec(value)
+  return named?.[1]?.trim() ?? ''
+}
+
 export function dossierFromProfile(profile: PortalProfile, savedAnswers: CandidateDossier['savedAnswers'] = []): CandidateDossier {
   const { first, last } = splitName(profile.fullName)
   const current = profile.experience.find((row) => row.isCurrent) ?? profile.experience[0]
@@ -31,7 +44,7 @@ export function dossierFromProfile(profile: PortalProfile, savedAnswers: Candida
     },
     links: profile.links,
     totalExperience: profile.totalExperience ?? '',
-    currentCompany: current?.company ?? '',
+    currentCompany: companyName(current?.company ?? ''),
     currentTitle: current?.role ?? '',
     noticePeriod: profile.noticePeriod,
     currentCtc: profile.currentCtc,

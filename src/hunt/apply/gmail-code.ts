@@ -106,6 +106,11 @@ export function newestCodeIn(messages: Array<{ stamp: string; body: string }>, s
   return null
 }
 
+/** Greenhouse names the employer in the subject: "Security code for your application to X". */
+export function namesAnEmployer(subject: string): boolean {
+  return /\bapplication to \S/i.test(subject)
+}
+
 async function conversationMessages(mail: Page): Promise<Array<{ stamp: string; body: string }>> {
   const expand = mail.locator('[aria-label="Expand all"]').first()
   if (await expand.isVisible().catch(() => false)) {
@@ -180,7 +185,8 @@ export async function readGmailVerificationCode(page: Page, sinceMs = Date.now()
       for (const candidate of [...candidates.filter((row) => row.named), ...candidates.filter((row) => !row.named)]) {
         if (options?.requireCompany && aliases.length && !candidate.named) continue
         await rows.nth(candidate.index).click({ timeout: 5_000 }).catch(() => undefined)
-        await mail.locator('div.a3s').first().waitFor({ timeout: 6_000 }).catch(() => undefined)
+        // The borrowed profile is cold-started per poll; Gmail can take a while to render.
+        await mail.locator('div.a3s').first().waitFor({ timeout: 12_000 }).catch(() => undefined)
         // The list can re-render as mail arrives, shifting rows: trust the open conversation's subject.
         const subject = (await mail.locator('h2.hP').first().innerText({ timeout: 2_000 }).catch(() => '')).toLowerCase()
         const messages = await conversationMessages(mail)
@@ -188,6 +194,9 @@ export async function readGmailVerificationCode(page: Page, sinceMs = Date.now()
         await mail.locator('tr.zA, div[role="listitem"]').first().waitFor({ timeout: 5_000 }).catch(() => undefined)
         const matchedEmployer = aliases.some((alias) => subject.includes(alias))
         if (options?.requireCompany && aliases.length && !matchedEmployer) continue
+        // "…your application to Klaviyo" is Klaviyo's code, never Coursera's: with
+        // two applications waiting at once, the fallback handed each the other's.
+        if (aliases.length && !matchedEmployer && namesAnEmployer(subject)) continue
         const code = newestCodeIn(messages, sinceMs, skipCodes)
         if (!code) {
           logger.info({ messages: messages.length, newest: messages.at(-1)?.stamp ?? null }, 'no unused code newer than this apply in the conversation')

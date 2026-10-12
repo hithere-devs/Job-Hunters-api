@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { describe, it } from 'node:test'
 import { compensationIn, deterministicAnswer, deriveWorkRights, noticeIn, matchOption, semanticOf, validateModelAnswer, type CandidateDossier, type JobContext } from './answers.js'
+import { companyName } from './dossier.js'
 import { planAnswers, storablePlan, unansweredRequired, type PlannerTransport } from './planner.js'
 import { parseAshbyPayload } from './schema/ashby.js'
 import { parseGreenhousePayload } from './schema/greenhouse.js'
@@ -290,4 +291,27 @@ describe('honesty rules', () => {
     const row = deterministicAnswer(field({ label: 'Where did you first hear about this job?', kind: 'select', options: [{ label: 'LinkedIn - Job Posting' }, { label: 'Indeed' }, { label: 'Other' }] }), dossier(), usJob)!
     assert.deepEqual(row.values, ['Other'])
   })
+})
+
+describe('more screening wording', () => {
+  const yesNo = [{ label: 'Yes' }, { label: 'No' }]
+  it('reads a petition for employment-based immigration status as sponsorship', () => {
+    const label = 'Will you now or in the future require our company to file a petition or application for employment - based immigration status on your behalf to begin or continue employment with our company?'
+    assert.equal(semanticOf(field({ label, kind: 'select', options: yesNo })), 'sponsorship')
+    assert.deepEqual(deterministicAnswer(field({ label, kind: 'select', options: yesNo }), dossier(), usJob)!.values, ['Yes'])
+  })
+  it('answers "work from our US office three days per week" from relocation', () => {
+    const row = deterministicAnswer(field({ label: 'Are you able to work from our US office three days per week?', kind: 'boolean', options: yesNo }), dossier(), usJob)!
+    assert.deepEqual(row.values, ['Yes'])
+  })
+  it('maps the degree from the résumé education', () => {
+    const row = deterministicAnswer(field({ label: 'Degree', kind: 'select', options: [{ label: "Associate's Degree" }, { label: "Bachelor's Degree" }, { label: "Master's Degree" }] }), dossier(), usJob)!
+    assert.deepEqual(row.values, ["Bachelor's Degree"])
+  })
+})
+
+it('recovers a company name from a description the résumé parse stored as the company', () => {
+  assert.equal(companyName('Leading full stack and AI Infrastructure development for Samora AI.'), 'Samora AI')
+  assert.equal(companyName('Acme Corp'), 'Acme Corp')
+  assert.equal(companyName('Built many distributed systems and led a team of engineers'), '')
 })

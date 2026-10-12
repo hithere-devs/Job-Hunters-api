@@ -27,7 +27,9 @@ export async function invalidFormFields(page: Page, submitSelector: string): Pro
       .slice(0, 8)
       .map((element) => {
         const input = element as HTMLInputElement
-        const label = (input.labels?.[0]?.textContent ?? input.closest('fieldset')?.querySelector('legend')?.textContent ?? input.getAttribute('aria-label') ?? input.name ?? '').trim().replace(/\s+/g, ' ').slice(0, 80)
+        // A react-select's hidden mirror or a file input has no label of its own; its container does.
+        const container = input.closest('.select__container, .field-wrapper, .file-upload, [class*="upload" i], .application-question, fieldset')
+        const label = (input.labels?.[0]?.textContent || container?.querySelector('label, legend')?.textContent || input.getAttribute('aria-label') || input.name || input.type || '').trim().replace(/\s+/g, ' ').slice(0, 80)
         return `${label}: ${input.validationMessage}`
       })
   }).catch(() => [] as string[])

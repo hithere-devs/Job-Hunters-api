@@ -126,7 +126,7 @@ export type Semantic =
   | 'consent_ack' | 'marketing_consent'
   | 'work_auth' | 'sponsorship' | 'noncompete'
   | 'referral_source' | 'previous_employee' | 'work_auth_countries'
-  | 'contact_preference' | 'contact_employer' | 'start_date' | 'office_commitment' | 'languages' | 'conditional_followup' | 'pronouns'
+  | 'contact_preference' | 'contact_employer' | 'start_date' | 'office_commitment' | 'languages' | 'conditional_followup' | 'pronouns' | 'degree'
 
 const BY_ATS_NAME: Record<string, Semantic> = {
   first_name: 'first_name', last_name: 'last_name', preferred_name: 'preferred_name', email: 'email', phone: 'phone',
@@ -158,7 +158,9 @@ export function semanticOf(field: SchemaField): Semantic | null {
   if (/(?:may|can) we contact your (?:current |present )?employer|(?:ok|okay) to contact your (?:current |present )?employer/.test(label)) return 'contact_employer'
   if (/when (?:can|could|would) you (?:start|join|begin)|earliest (?:possible )?(?:start|joining) date|available to (?:start|join)|availability to (?:start|join)|^(?:desired |expected |preferred )?start date/.test(label)) return 'start_date'
   if (/languages? (?:do )?you speak|speak fluently|languages? (?:in which )?you (?:are|have) (?:business[- ]level )?fluen/.test(label)) return 'languages'
-  if (/\b(?:hybrid|in[- ]office|on[- ]?site|in the office|in our .{0,40}office)\b.{0,240}\b(?:days? (?:a|per|each) week|office)\b/.test(label) && (field.kind === 'select' || field.kind === 'boolean' || field.kind === 'checkbox')) return 'office_commitment'
+  if ((/\b(?:hybrid|in[- ]office|on[- ]?site|in the office|(?:in|from|at) (?:our|the) .{0,40}office)\b.{0,240}\b(?:days? (?:a|per|each) week|office)\b/.test(label) || /\b(?:work|be) (?:from|in|at) (?:our|the) .{0,40}office\b.{0,60}\b(?:days?|times?) (?:a|per|each) week\b/.test(label))
+    && (field.kind === 'select' || field.kind === 'boolean' || field.kind === 'checkbox')) return 'office_commitment'
+  if (/^(?:highest )?(?:degree|degree type|level of education|education level|highest (?:level of )?(?:education|degree)(?: (?:completed|obtained|earned))?)\??$/.test(label)) return 'degree'
   if (field.section === 'consent' || /^(?:by (?:checking|selecting|clicking|submitting)|i (?:agree|acknowledge|confirm|certify|consent|have read|understand))|arbitration|privacy (?:policy|notice)|ai policy|applicant (?:privacy|data)|terms (?:and|&) conditions|certify that|please (?:double-?)?check (?:all )?(?:the )?information|information (?:provided|i have provided) (?:is|above is) (?:true|accurate|complete)/.test(label)) return 'consent_ack'
   if (/\b(?:how|where) (?:did|have) you (?:first )?(?:hear|heard|learn|learned|learnt|find out|found out) about|how did you (?:first )?(?:come across|find) (?:this|us|the)|referral source|source of (?:application|referral)/.test(label)) return 'referral_source'
   if (/\b(?:have you|did you) (?:ever |previously )?(?:been )?(?:employed|worked|interned|contracted|interviewed)\b.{0,40}\b(?:at|for|with|before)\b|\bpreviously (?:been )?(?:employed|worked) (?:at|for|by)\b|\b(?:are you a |a )?(?:former|current|previous) (?:employee|intern|contractor)\b/.test(label)) return 'previous_employee'
@@ -493,6 +495,18 @@ export function deterministicAnswer(field: SchemaField, dossier: CandidateDossie
       if (!field.required) return answer(field, 'skip', [], 'policy', 'Pronouns are optional and not in My Kit.')
       const neutral = ['Use name only', 'Prefer not to say', 'I prefer not to say'].map((alias) => matchOption(field.options, [alias])).find((match) => match !== null)
       return neutral ? answer(field, 'fill', [neutral.label], 'policy', 'Pronouns are not in My Kit.') : missing(field, 'Your pronouns')
+    }
+    case 'degree': {
+      const text = `${dossier.education} ${dossier.resumeText.slice(0, 4_000)}`
+      const aliases = /\bph\.?\s?d\b|\bdoctor(?:ate| of philosophy)\b/i.test(text) ? ['Doctor of Philosophy (Ph.D.)', 'Ph.D.', 'PhD', 'Doctorate']
+        : /\bm\.?\s?tech\b|\bmaster(?:'?s)?\b|\bm\.?\s?sc?\b|\bmba\b|\bm\.e\.?\b/i.test(dossier.education) ? ["Master's Degree", 'Master', 'Masters']
+          : /\bb\.?\s?tech\b|\bbachelor(?:'?s)?\b|\bb\.?\s?sc?\b|\bb\.e\.?\b|\bb\.?\s?a\b|\bbca\b/i.test(text) ? ["Bachelor's Degree", 'Bachelor', 'Bachelors', "Bachelor's"]
+            : null
+      if (!aliases) return missing(field, 'Your highest degree')
+      if (field.kind === 'text' || field.kind === 'textarea') return answer(field, 'fill', [aliases[0]!], 'resume', 'From the education on your résumé.')
+      if (!field.options.length) return answer(field, 'fill', [aliases[0]!], 'resume', 'From the education on your résumé.', 0.9)
+      const option = aliases.map((alias) => matchOption(field.options, [alias])).find((match) => match !== null) ?? null
+      return option ? answer(field, 'fill', [option.label], 'resume', 'From the education on your résumé.') : null
     }
     case 'conditional_followup': return field.required ? answer(field, 'fill', ['N/A'], 'policy', 'Follow-up to a choice that does not apply.', 0.9) : answer(field, 'skip', [], 'policy', 'Follow-up to a choice that does not apply.')
     case 'contact_preference': {
