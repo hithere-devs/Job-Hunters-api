@@ -558,6 +558,35 @@ export function deterministicAnswer(field: SchemaField, dossier: CandidateDossie
  * policy for its kind of question. Returns the corrected answer, or an `ask`.
  */
 /** Does one of the user's own saved answers back this value for this question? */
+/**
+ * The user's own earlier reply to this same question ("Degree", a conflict-of-
+ * interest disclosure, "Are you open to on-call?"). Answered once, it applies
+ * to every later form that asks it, before any model sees the question; the
+ * deterministic layer's "not in My Kit" no longer re-asks it each time.
+ */
+export function savedAnswerFor(field: SchemaField, saved: CandidateDossier['savedAnswers']): PlannedAnswer | null {
+  const want = sameQuestionKey(field.label)
+  if (want.length < 3) return null
+  const hit = saved.find((row) => row.answer.trim() && sameQuestionKey(row.question) === want)
+  if (!hit) return null
+  const reply = hit.answer.trim()
+  if (field.kind === 'multiselect' && field.options.length) {
+    const picked = reply.split(/\s*[,;\n]\s*/).map((value) => matchOption(field.options, [value])).filter((option): option is FieldOption => option !== null)
+    return picked.length ? answer(field, 'fill', [...new Set(picked.map((option) => option.label))], 'saved_answer', 'Your earlier answer to this question.') : null
+  }
+  if ((field.kind === 'select' || field.kind === 'boolean') && field.options.length) {
+    const option = matchOption(field.options, [reply])
+    return option ? answer(field, 'fill', [option.label], 'saved_answer', 'Your earlier answer to this question.') : null
+  }
+  if (field.kind === 'checkbox') return answer(field, 'fill', [/^(?:true|yes|checked|1)$/i.test(reply) ? 'true' : 'false'], 'saved_answer', 'Your earlier answer to this question.')
+  if (field.kind === 'file') return null
+  return answer(field, 'fill', [reply], 'saved_answer', 'Your earlier answer to this question.', (field.kind === 'select' || field.kind === 'multiselect') ? 0.9 : 1)
+}
+
+function sameQuestionKey(label: string): string {
+  return foldLabel(label).replace(/[^a-z0-9]+/g, ' ').trim()
+}
+
 function savedAnswerSupports(field: SchemaField, values: string[], saved: CandidateDossier['savedAnswers']): boolean {
   const want = new Set(foldLabel(field.label).replace(/[^a-z0-9]+/g, ' ').split(' ').filter((token) => token.length > 3))
   if (!want.size) return false

@@ -864,13 +864,16 @@ export async function submitForm(params: {
     await submit.click({ timeout: 10_000 })
   } catch (error) {
     network = watch.stop()
+    // Only a write to the ATS itself can be a submission; an hCaptcha frame's
+    // own traffic made a blocked click look like it might have reached Lever.
+    const reachedAts = network.some((event) => event.sameSite && event.method !== 'GET')
     // An hCaptcha/Turnstile overlay that rose after an earlier click covers the button.
-    if (!network.length && (await capturePageState(page, plan.submit).catch(() => null))?.captchaChallenge) {
+    if (!reachedAts && (await capturePageState(page, plan.submit).catch(() => null))?.captchaChallenge) {
       await recordSubmissionOutcome('captcha_required', 'a CAPTCHA challenge covers the submit button')
       releaseSubmissionAfterRejection()
       return { submitted: false, result: 'not_submitted', heldBack: 'captcha', outcome: 'captcha_required', reason: 'a CAPTCHA challenge covers the submit button' }
     }
-    if (!network.length) {
+    if (!reachedAts) {
       // The click itself failed and nothing was sent: provably not submitted.
       await recordSubmissionOutcome('rejected_validation', `submit click failed: ${error instanceof Error ? error.message : String(error)}`)
       releaseSubmissionAfterRejection()

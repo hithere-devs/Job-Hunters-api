@@ -5,7 +5,7 @@ import { env, hasAnthropicPlanner, hasModelAccess } from '../../../config/env.js
 import { logger } from '../../../lib/logger.js'
 import { structured } from '../../../model/gateway.js'
 import { assertWithinBudget, recordUsage } from '../../../model/meter.js'
-import { deterministicAnswer, validateModelAnswer, type AnswerBasis, type CandidateDossier, type JobContext, type PlannedAnswer } from './answers.js'
+import { deterministicAnswer, savedAnswerFor, validateModelAnswer, type AnswerBasis, type CandidateDossier, type JobContext, type PlannedAnswer } from './answers.js'
 import type { FormSchema, SchemaField } from './schema/types.js'
 
 /**
@@ -211,6 +211,9 @@ export async function planAnswers(params: {
     .map((row) => [row.key, row]))
   for (const field of fields) {
     const decided = deterministicAnswer(field, params.dossier, params.job)
+    if (decided && decided.action !== 'ask') { answers.set(field.key, decided); continue }
+    const saved = savedAnswerFor(field, params.dossier.savedAnswers)
+    if (saved) { answers.set(field.key, saved); continue }
     if (decided) { answers.set(field.key, decided); continue }
     const earlier = reusable.get(field.key)
     if (earlier && earlier.label === field.label) { answers.set(field.key, earlier); continue }

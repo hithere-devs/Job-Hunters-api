@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { describe, it } from 'node:test'
-import { compensationIn, deterministicAnswer, deriveWorkRights, noticeIn, matchOption, semanticOf, validateModelAnswer, type CandidateDossier, type JobContext } from './answers.js'
+import { compensationIn, deterministicAnswer, savedAnswerFor, deriveWorkRights, noticeIn, matchOption, semanticOf, validateModelAnswer, type CandidateDossier, type JobContext } from './answers.js'
 import { companyName } from './dossier.js'
 import { planAnswers, storablePlan, unansweredRequired, type PlannerTransport } from './planner.js'
 import { parseAshbyPayload } from './schema/ashby.js'
@@ -314,4 +314,18 @@ it('recovers a company name from a description the résumé parse stored as the 
   assert.equal(companyName('Leading full stack and AI Infrastructure development for Samora AI.'), 'Samora AI')
   assert.equal(companyName('Acme Corp'), 'Acme Corp')
   assert.equal(companyName('Built many distributed systems and led a team of engineers'), '')
+})
+
+describe('answered once, reused everywhere', () => {
+  const saved = [{ question: 'Degree*', answer: "Bachelor's Degree", options: [] }, { question: 'Do you have any conflicts of interest?', answer: 'No', options: ['Yes', 'No'] }]
+  it('fills the same question from the user\'s earlier reply, matching this form\'s options', () => {
+    const degree = savedAnswerFor(field({ label: 'Degree', kind: 'select', options: [{ label: "Bachelor's Degree" }, { label: "Master's Degree" }] }), saved)!
+    assert.deepEqual([degree.values, degree.basis], [["Bachelor's Degree"], 'saved_answer'])
+    assert.equal(savedAnswerFor(field({ label: 'School', kind: 'text' }), saved), null)
+  })
+  it('the planner prefers the saved reply over a "not in My Kit" question', async () => {
+    const schema = { source: 'greenhouse' as const, url: 'u', fingerprint: 'f', fields: [field({ key: 'gh:degree', label: 'Degree', kind: 'select', options: [{ label: "Bachelor's Degree" }] })] }
+    const plan = await planAnswers({ userId: 'u', schema, dossier: dossier({ education: 'NIT Surat, 2024', resumeText: 'no degree here', savedAnswers: saved }), job: usJob, transport: null })
+    assert.deepEqual(plan.answers[0]!.values, ["Bachelor's Degree"])
+  })
 })
