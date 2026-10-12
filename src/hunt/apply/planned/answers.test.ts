@@ -277,6 +277,10 @@ describe('honesty rules', () => {
     const row = validateModelAnswer(field({ label, kind: 'textarea' }), { action: 'fill', values: ['At Acme I built...'], basis: 'resume', confidence: 0.9 })
     assert.equal(row.action, 'ask')
   })
+  it('reads "Gender Pronouns (…)" as pronouns, never as gender', () => {
+    const row = deterministicAnswer(field({ label: 'Gender Pronouns (She/Her/Hers, He/Him/His, They/Them/Theirs, etc.)', kind: 'text', required: false }), dossier({ eeo: { gender: 'Male', sexualOrientation: '', ethnicity: '', veteran: '', disability: '' } }), usJob)!
+    assert.equal(row.action, 'skip')
+  })
   it('skips optional pronouns and never guesses them', () => {
     assert.equal(deterministicAnswer(field({ label: 'What are your pronouns?', kind: 'textarea', required: false }), dossier(), usJob)!.action, 'skip')
     const required = deterministicAnswer(field({ label: 'Pronouns', kind: 'multiselect', options: [{ label: 'He/him' }, { label: 'She/her' }, { label: 'Use name only' }] }), dossier(), usJob)!

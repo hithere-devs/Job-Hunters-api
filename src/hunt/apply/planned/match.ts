@@ -83,9 +83,17 @@ export function matchFields(fields: SchemaField[], elements: PilotElement[]): Fi
 /** Required inputs on the page that no schema field claimed: conditional or unpublished questions. */
 export function unclaimedRequired(elements: PilotElement[], matches: FieldMatch[]): PilotElement[] {
   const claimed = new Set(matches.map((match) => match.element?.id).filter(Boolean))
+  // A react-select's hidden required input repeats its question's label; the
+  // question is already claimed, and the mirror cannot be typed into.
+  const claimedLabels = new Set(matches.filter((match) => match.element).map((match) => normalisedLabel(match.element!.label)))
   return elements.filter((element) =>
     element.required
     && !claimed.has(element.id)
+    && !claimedLabels.has(normalisedLabel(element.label))
     && !['button', 'link'].includes(element.role)
     && !/^phone country code$/i.test(element.label))
+}
+
+function normalisedLabel(label: string): string {
+  return label.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
 }

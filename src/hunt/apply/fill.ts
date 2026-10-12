@@ -16,6 +16,7 @@ import { ASHBY_FIELD_ENTRY_SEL, GENERIC, greenhouseJobPathUrl, greenhousePosting
 import { fillDropdown, shouldFillDropdown, type DropdownPlace } from './dropdowns.js'
 import type { BlockedReason } from './state.js'
 import { declineCookieBanner } from './cookie-banner.js'
+import { invalidFormFields } from './form-validity.js'
 
 /**
  * Filling one application form.
@@ -831,15 +832,7 @@ export async function submitForm(params: {
   await waitUntilResumeParsed(page)
 
   // The browser's own constraint check, naming what it refuses so the repair loop can see it.
-  const invalid = await submit.evaluate((element) => {
-    const form = element instanceof HTMLButtonElement || element instanceof HTMLInputElement ? element.form : element.closest('form')
-    if (!form || form.checkValidity()) return []
-    return Array.from(form.querySelectorAll('input, select, textarea')).filter((node) => !(node as HTMLInputElement).validity.valid).slice(0, 8).map((node) => {
-      const input = node as HTMLInputElement
-      const label = (input.labels?.[0]?.textContent ?? input.getAttribute('aria-label') ?? input.name ?? '').trim().slice(0, 80)
-      return `${label}: ${input.validationMessage}`
-    })
-  }).catch(() => [] as string[])
+  const invalid = await invalidFormFields(page, plan.submit)
   if (invalid.length) return { submitted: false, result: 'not_submitted', heldBack: 'invalid_fields', errors: invalid }
   if (!skipWidgetReady) {
     const ready = await formReady(page, url)

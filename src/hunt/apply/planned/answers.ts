@@ -141,6 +141,8 @@ export function semanticOf(field: SchemaField): Semantic | null {
   if (field.kind === 'file') return field.fileRole === 'cover_letter' ? 'cover_letter' : field.fileRole === 'resume' ? 'resume' : null
   const label = foldLabel(field.label)
   const short = label.length <= 60
+  // Before EEO: "Gender Pronouns (She/Her/Hers, …)" is about pronouns, not gender.
+  if (/\bpronouns?\b/.test(label)) return 'pronouns'
   if (field.section === 'eeo' || /\b(?:gender|sexual orientation|race|ethnicit|hispanic|latino|veteran|disabilit|transgender)/.test(label)) {
     if (/transgender/.test(label)) return 'eeo_transgender'
     if (/sexual orientation|orientation/.test(label)) return 'eeo_orientation'
@@ -150,7 +152,6 @@ export function semanticOf(field: SchemaField): Semantic | null {
     if (/disabilit/.test(label)) return 'eeo_disability'
     if (/gender|^sex$/.test(label)) return 'eeo_gender'
   }
-  if (/^(?:what are )?(?:your )?(?:preferred )?pronouns\??$/.test(label)) return 'pronouns'
   if (/\b(?:sms|text message|whatsapp|marketing|newsletter|promotional|future (?:job )?opportunit|talent (?:community|network|pool))|opt[- ]?in to receive/.test(label)) return 'marketing_consent'
   if (/^if (?:you )?(?:selected|answered|chose|checked|picked)\b|^if (?:yes|so|other|applicable)\b/.test(label) && (field.kind === 'text' || field.kind === 'textarea')) return 'conditional_followup'
   if (/how (?:should|would you like|do you prefer|can|may) (?:we|us) (?:to )?(?:communicate|contact|reach)|preferred (?:method of |mode of )?(?:communication|contact)/.test(label)) return 'contact_preference'

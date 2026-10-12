@@ -5,6 +5,7 @@ import type { PlannedAnswer } from './answers.js'
 import type { FieldResult } from './executor.js'
 import type { FieldMatch } from './match.js'
 import type { SchemaField } from './schema/types.js'
+import { invalidFormFields } from '../form-validity.js'
 
 /**
  * The only door to the submit button.
@@ -64,10 +65,6 @@ export async function evaluateSubmitGate(params: {
   const state = await capturePageState(params.page, params.submitSelector)
   if (!state.submitVisible) blockers.push({ label: 'Submit button', reason: 'no_submit_control' })
   for (const text of state.errorTexts.filter((line) => ERROR_TEXT.test(line)).slice(0, 5)) blockers.push({ label: text, reason: 'validation_error' })
-  const valid = await params.page.locator(params.submitSelector).first().evaluate((node) => {
-    const form = node instanceof HTMLButtonElement || node instanceof HTMLInputElement ? node.form : node.closest('form')
-    return !form || form.checkValidity()
-  }).catch(() => true)
-  if (!valid) blockers.push({ label: 'The form reports invalid fields', reason: 'invalid_form' })
+  for (const invalid of await invalidFormFields(params.page, params.submitSelector)) blockers.push({ label: invalid, reason: 'invalid_form' })
   return { ok: blockers.length === 0, blockers }
 }

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { after, describe, it } from 'node:test'
 import { chromium, type Browser } from 'playwright-core'
+import { invalidFormFields } from './form-validity.js'
 import { addedText, atsFamily, capturePageState, classifySubmitOutcome, confirmationUrl, pageShowsConfirmation, siteOf, type NetworkEvent, type PageState } from './confirmation.js'
 
 const form = (overrides: Partial<PageState> = {}): PageState => ({
@@ -77,6 +78,23 @@ const browser: Browser | null = await chromium.launch({ headless: true, executab
 
 describe('challenge frames on screen', { skip: !browser }, () => {
   after(async () => { await browser?.close() })
+  it('a Greenhouse checkbox group with one box ticked is satisfied; an empty required field is named', async () => {
+    const page = await browser!.newPage()
+    try {
+      await page.setContent(`<form><fieldset><legend>How should we communicate with you?</legend>
+        <label><input type="checkbox" name="q[]" value="1" required checked>Email</label>
+        <label><input type="checkbox" name="q[]" value="2" required>Phone Call</label></fieldset>
+        <label for="city">City</label><input id="city" name="city" required>
+        <button type="submit">Submit application</button></form>`)
+      const invalid = await invalidFormFields(page, 'button[type=submit]')
+      assert.equal(invalid.length, 1)
+      assert.match(invalid[0]!, /^City:/)
+      await page.fill('#city', 'Bengaluru')
+      assert.deepEqual(await invalidFormFields(page, 'button[type=submit]'), [])
+    } finally {
+      await page.close()
+    }
+  })
   it('counts the Cloudflare Turnstile checkbox (Workable) but not an invisible reCAPTCHA badge', async () => {
     const page = await browser!.newPage()
     await page.route('**/*', (route) => route.request().url().startsWith('https://') ? route.fulfill({ body: '<html></html>' }) : route.continue())
