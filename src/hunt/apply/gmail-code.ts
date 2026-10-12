@@ -143,7 +143,9 @@ async function searchMail(mail: Page, query: string): Promise<boolean> {
   }
   await mail.goto(`https://mail.google.com/mail/u/0/#search/${encodeURIComponent(query)}`, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => undefined)
   await mail.locator(VISIBLE_ROWS).first().waitFor({ timeout: 10_000 }).catch(() => undefined)
-  await new Promise((resolve) => setTimeout(resolve, 800))
+  // Rows render before their thread ids; the id is how the conversation is opened.
+  await mail.locator('tr.zA:visible [data-legacy-thread-id]').first().waitFor({ timeout: 5_000 }).catch(() => undefined)
+  await new Promise((resolve) => setTimeout(resolve, 500))
   return /mail\.google\.com/.test(mail.url())
 }
 
