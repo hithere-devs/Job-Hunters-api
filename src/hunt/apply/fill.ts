@@ -850,6 +850,9 @@ export async function submitForm(params: {
 
   // A cookie dialog that appeared late would swallow the click.
   await declineCookieBanner(page).catch(() => false)
+  // Workable keeps the button disabled while it processes the résumé (~5 s).
+  const enabled = () => typeof submit.isEnabled === 'function' ? submit.isEnabled({ timeout: 1_000 }).catch(() => true) : Promise.resolve(true)
+  for (const deadline = Date.now() + 30_000; Date.now() < deadline && !(await enabled());) await page.waitForTimeout(500)
   const bodyBefore = await page.locator('body').innerText().catch(() => '')
   if (pageHasVerificationGate(bodyBefore) && !(await verificationInputsFilled(page))) {
     return { submitted: false, result: 'not_submitted', heldBack: 'invalid_fields' }

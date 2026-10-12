@@ -126,7 +126,7 @@ export type Semantic =
   | 'consent_ack' | 'marketing_consent'
   | 'work_auth' | 'sponsorship' | 'noncompete'
   | 'referral_source' | 'previous_employee' | 'work_auth_countries'
-  | 'contact_preference' | 'contact_employer' | 'start_date' | 'office_commitment' | 'languages' | 'conditional_followup'
+  | 'contact_preference' | 'contact_employer' | 'start_date' | 'office_commitment' | 'languages' | 'conditional_followup' | 'pronouns'
 
 const BY_ATS_NAME: Record<string, Semantic> = {
   first_name: 'first_name', last_name: 'last_name', preferred_name: 'preferred_name', email: 'email', phone: 'phone',
@@ -150,6 +150,7 @@ export function semanticOf(field: SchemaField): Semantic | null {
     if (/disabilit/.test(label)) return 'eeo_disability'
     if (/gender|^sex$/.test(label)) return 'eeo_gender'
   }
+  if (/^(?:what are )?(?:your )?(?:preferred )?pronouns\??$/.test(label)) return 'pronouns'
   if (/\b(?:sms|text message|whatsapp|marketing|newsletter|promotional|future (?:job )?opportunit|talent (?:community|network|pool))|opt[- ]?in to receive/.test(label)) return 'marketing_consent'
   if (/^if (?:you )?(?:selected|answered|chose|checked|picked)\b|^if (?:yes|so|other|applicable)\b/.test(label) && (field.kind === 'text' || field.kind === 'textarea')) return 'conditional_followup'
   if (/how (?:should|would you like|do you prefer|can|may) (?:we|us) (?:to )?(?:communicate|contact|reach)|preferred (?:method of |mode of )?(?:communication|contact)/.test(label)) return 'contact_preference'
@@ -482,9 +483,15 @@ export function deterministicAnswer(field: SchemaField, dossier: CandidateDossie
       // Huntly finds postings on the employer's own job board.
       if (field.kind === 'text' || field.kind === 'textarea') return answer(field, 'fill', ['Company careers page'], 'policy', 'Found on the company careers page.')
       // In order of truthfulness, not best string match: "LinkedIn" must not beat "…website".
-      const option = ['Company website', 'Careers page', 'Company careers page', 'Career site', 'Website', 'Job board', 'Job Board / Job Site', 'Online job board', 'Internet', 'Online', 'LinkedIn', 'Other']
+      const option = ['Company website', 'Careers page', 'Company careers page', 'Career site', 'Website', 'Job board', 'Job Board / Job Site', 'Online job board', 'Internet', 'Online', 'Other', 'LinkedIn']
         .map((alias) => matchOption(field.options, [alias])).find((match) => match !== null) ?? null
       return option ? answer(field, 'fill', [option.label], 'policy', 'Found through a job search.') : null
+    }
+    // Identity, not a fact the résumé implies: only what the user states.
+    case 'pronouns': {
+      if (!field.required) return answer(field, 'skip', [], 'policy', 'Pronouns are optional and not in My Kit.')
+      const neutral = ['Use name only', 'Prefer not to say', 'I prefer not to say'].map((alias) => matchOption(field.options, [alias])).find((match) => match !== null)
+      return neutral ? answer(field, 'fill', [neutral.label], 'policy', 'Pronouns are not in My Kit.') : missing(field, 'Your pronouns')
     }
     case 'conditional_followup': return field.required ? answer(field, 'fill', ['N/A'], 'policy', 'Follow-up to a choice that does not apply.', 0.9) : answer(field, 'skip', [], 'policy', 'Follow-up to a choice that does not apply.')
     case 'contact_preference': {
@@ -548,12 +555,19 @@ function savedAnswerSupports(field: SchemaField, values: string[], saved: Candid
   })
 }
 
+const AI_DISCLOSURE = /\bif (?:you are |you're |this is )?(?:an? )?(?:ai|llm|large language model|language model|ai model|ai assistant|chatbot|chatgpt)\b.{0,120}\b(?:must|should|include|begin|start|mention|write|use the word)\b|\b(?:ai|llm|language model)s?\b.{0,40}\bon (?:the|a) (?:user|candidate|applicant)['’]?s behalf\b/i
+
 export function validateModelAnswer(field: SchemaField, proposed: { action: AnswerAction; values: string[]; basis: AnswerBasis; confidence: number; reason?: string }, saved: CandidateDossier['savedAnswers'] = []): PlannedAnswer {
   const sensitive = Boolean(sensitiveReason(field.label, field.options.map((option) => option.label))) || field.section === 'eeo'
   const ask = (why: string): PlannedAnswer => field.required
     ? answer(field, 'ask', [], 'policy', why, 0)
     : answer(field, 'skip', [], 'policy', why)
   if (proposed.action === 'ask') return ask(proposed.reason || 'The model could not answer this from your profile.')
+  // The employer asks AI-written answers to identify themselves. Hiding that
+  // would misrepresent who wrote it; the user answers these in their own words.
+  if ((field.kind === 'text' || field.kind === 'textarea') && AI_DISCLOSURE.test(`${field.label} ${field.description ?? ''}`)) {
+    return ask('The employer asks AI-generated answers to identify themselves; answer this one in your own words.')
+  }
   if (proposed.action === 'skip') return field.required ? ask('Required, but the model chose to leave it blank.') : answer(field, 'skip', [], 'model', proposed.reason || 'Optional; left blank.')
   if (field.kind === 'file') return ask('File fields other than the résumé need a file from you.')
   const confidence = Math.max(0, Math.min(1, Number(proposed.confidence) || 0))
