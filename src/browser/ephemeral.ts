@@ -64,6 +64,12 @@ async function sharedBrowser(): Promise<Browser> {
   shared = chromium.launch({
     ...(executablePath ? { executablePath } : {}),
     headless: env.EPHEMERAL_BROWSER_HEADLESS,
+    // Playwright closes the browser on SIGTERM by default, under applications
+    // still filling or mid-submit; the runner's shutdown drains them first and
+    // closes it itself.
+    handleSIGTERM: false,
+    handleSIGINT: false,
+    handleSIGHUP: false,
     args: [...ARGS, ...(env.EPHEMERAL_BROWSER_HEADLESS ? [] : ['--window-size=1440,900', '--window-position=0,0'])],
     ...(screen ? { env: { ...process.env, DISPLAY: screen } } : {}),
   })
