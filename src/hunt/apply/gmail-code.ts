@@ -79,6 +79,9 @@ export async function verificationInputsFilled(page: Page): Promise<boolean> {
   }
 }
 
+// Gmail keeps the inbox list in the DOM, hidden, while a search shows; only visible rows are results.
+const VISIBLE_ROWS = 'tr.zA:visible, div[role="listitem"]:visible'
+
 /** Company names as they appear in Greenhouse's subject line ("application to Chime Financial, Inc"). */
 export function companyAliases(company: string | undefined): string[] {
   const full = (company ?? '').trim().toLowerCase()
@@ -139,7 +142,7 @@ async function searchMail(mail: Page, query: string): Promise<boolean> {
     await new Promise((resolve) => setTimeout(resolve, 1_200))
   }
   await mail.goto(`https://mail.google.com/mail/u/0/#search/${encodeURIComponent(query)}`, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => undefined)
-  await mail.locator('tr.zA, div[role="listitem"]').first().waitFor({ timeout: 10_000 }).catch(() => undefined)
+  await mail.locator(VISIBLE_ROWS).first().waitFor({ timeout: 10_000 }).catch(() => undefined)
   await new Promise((resolve) => setTimeout(resolve, 800))
   return /mail\.google\.com/.test(mail.url())
 }
@@ -171,7 +174,7 @@ export async function readGmailVerificationCode(page: Page, sinceMs = Date.now()
     ]
     for (const query of queries) {
       if (!await searchMail(mail, query)) break
-      const rows = mail.locator('tr.zA, div[role="listitem"]')
+      const rows = mail.locator(VISIBLE_ROWS)
       const n = Math.min(await rows.count().catch(() => 0), 6)
       const candidates: Array<{ index: number; named: boolean }> = []
       for (let index = 0; index < n; index += 1) {
@@ -194,7 +197,7 @@ export async function readGmailVerificationCode(page: Page, sinceMs = Date.now()
         const subject = (await mail.locator('h2.hP').first().innerText({ timeout: 2_000 }).catch(() => '')).toLowerCase()
         const messages = await conversationMessages(mail)
         await mail.goBack({ timeout: 5_000 }).catch(() => undefined)
-        await mail.locator('tr.zA, div[role="listitem"]').first().waitFor({ timeout: 5_000 }).catch(() => undefined)
+        await mail.locator(VISIBLE_ROWS).first().waitFor({ timeout: 5_000 }).catch(() => undefined)
         const matchedEmployer = aliases.some((alias) => subject.includes(alias))
         if (options?.requireCompany && aliases.length && !matchedEmployer) continue
         // "…your application to Klaviyo" is Klaviyo's code, never Coursera's: with
