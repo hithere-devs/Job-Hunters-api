@@ -130,20 +130,18 @@ async function conversationMessages(mail: Page): Promise<Array<{ stamp: string; 
 }
 
 async function searchMail(mail: Page, query: string): Promise<boolean> {
+  // Navigate to the search instead of typing it: the search box's suggestion
+  // dropdown stayed over the first result, so the click never opened it.
   // Re-running the same search does not refetch (the URL hash is unchanged),
-  // so a poll would keep reading the list from before the code arrived.
+  // so bounce through the inbox first.
   if (/#search\//.test(mail.url())) {
     await mail.goto('https://mail.google.com/mail/u/0/#inbox', { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => undefined)
     await new Promise((resolve) => setTimeout(resolve, 1_200))
   }
-  const search = mail.locator('input[aria-label*="Search" i], input[name="q"]').first()
-  if (!await search.count()) return false
-  await search.click({ timeout: 4_000 }).catch(() => undefined)
-  await search.fill(query)
-  await search.press('Enter')
-  await mail.locator('tr.zA, div[role="listitem"]').first().waitFor({ timeout: 8_000 }).catch(() => undefined)
+  await mail.goto(`https://mail.google.com/mail/u/0/#search/${encodeURIComponent(query)}`, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => undefined)
+  await mail.locator('tr.zA, div[role="listitem"]').first().waitFor({ timeout: 10_000 }).catch(() => undefined)
   await new Promise((resolve) => setTimeout(resolve, 800))
-  return true
+  return /mail\.google\.com/.test(mail.url())
 }
 
 /**
@@ -184,7 +182,12 @@ export async function readGmailVerificationCode(page: Page, sinceMs = Date.now()
       }
       for (const candidate of [...candidates.filter((row) => row.named), ...candidates.filter((row) => !row.named)]) {
         if (options?.requireCompany && aliases.length && !candidate.named) continue
-        await rows.nth(candidate.index).click({ timeout: 5_000 }).catch(() => undefined)
+        await mail.keyboard.press('Escape').catch(() => undefined)
+        const opened = await rows.nth(candidate.index).click({ timeout: 5_000 }).then(() => true, (error: unknown) => {
+          logger.info({ err: String(error).slice(0, 160) }, 'could not open the code email')
+          return false
+        })
+        if (!opened) continue
         // The borrowed profile is cold-started per poll; Gmail can take a while to render.
         await mail.locator('div.a3s').first().waitFor({ timeout: 12_000 }).catch(() => undefined)
         // The list can re-render as mail arrives, shifting rows: trust the open conversation's subject.
